@@ -410,8 +410,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Batch done  ·  {len(results)} images  ·  {n_meas} measurements  ·  {n_fail} failures"
         )
-        ann_out = None
-        viewer = BatchReviewDialog(results, annotated_dir=ann_out, parent=self)
+        QTimer.singleShot(0, self._open_batch_review)
+
+    def _open_batch_review(self) -> None:
+        viewer = BatchReviewDialog(self._batch_results, annotated_dir=None, parent=self)
         viewer.export_requested.connect(self._export)
         viewer.report_requested.connect(self._quick_report)
         viewer.export_annotated_requested.connect(self._export_annotated_from_viewer)
@@ -473,7 +475,7 @@ class MainWindow(QMainWindow):
             return
         opts = OverlayOptions(**opts_dict)
         self._export_annotated_images(self._batch_results, Path(out_dir), opts)
-        QMessageBox.information(self, "Batch Output Exported", f"Saved to:\\n{out_dir}")
+        QMessageBox.information(self, "Batch Output Exported", f"Saved to:\n{out_dir}")
 
     @pyqtSlot(str)
     def _on_measure_updated(self, text: str) -> None:
