@@ -1,12 +1,12 @@
-"""Draw measurement overlays on a grayscale SEM image.
+"""Draw CD measurement overlays on a SEM image.
 
-Colours (BGR):
-  MG mask overlay  – cyan   (255, 255,   0)  semi-transparent
-  Normal gap line  – green  (  0, 255,   0)
-  MIN Y-CD line    – red    (  0,   0, 255)
-  MAX Y-CD line    – blue   (255,   0,   0)
-  Bounding box     – matches line colour
-  Label text       – white with dark outline
+Annotated mode: measurement lines + tick marks + CD labels only.
+No mask overlay — that belongs to the separate "Mask" view mode.
+
+Colours:
+  MIN Y-CD  →  red   #e05555
+  MAX Y-CD  →  blue  #5588ee
+  Normal    →  cyan  #44aadd
 """
 
 from __future__ import annotations
@@ -15,85 +15,97 @@ import numpy as np
 from .cmg_analyzer import CMGCut, YCDMeasurement
 
 _COLOUR = {
-    "MIN": (0, 0, 255),     # red
-    "MAX": (255, 0, 0),     # blue
-    "":    (0, 200, 0),     # green
+    "MIN": (85, 85, 224),     # BGR red
+    "MAX": (238, 136, 85),    # BGR blue
+    "":   (221, 170, 68),     # BGR cyan
 }
-_MASK_COLOUR = np.array([255, 255, 0], dtype=np.uint8)   # cyan
-_MASK_ALPHA = 0.35
-_LINE_THICKNESS = 1
-_BOX_THICKNESS = 1
-
-
-def _font_scale(img_h: int) -> float:
-    return max(0.35, img_h / 1200)
+_TICK_HALF   = 6    # px half-width of tick mark
+_LINE_W      = 1
+_LABEL_PAD_X = 8    # gap between measurement line and label
+_LABEL_PAD_Y = 4    # vertical nudge for label text baseline
+_BG_ALPHA    = 0.65
 
 
 def draw_overlays(
     img_gray: np.ndarray,
-    mask: np.ndarray,
+    _mask: np.ndarray,        # accepted for API compatibility, not used here
     cuts: list[CMGCut],
 ) -> np.ndarray:
-    """Return annotated BGR image with mask overlay + measurement annotations."""
+    """Return annotated BGR image (measurement lines + labels, no mask)."""
     canvas = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
-
-    # ── cyan mask overlay ────────────────────────────────────────────────────
-    overlay = canvas.copy()
-    mg_pixels = mask > 0
-    overlay[mg_pixels] = _MASK_COLOUR
-    cv2.addWeighted(overlay, _MASK_ALPHA, canvas, 1 - _MASK_ALPHA, 0, canvas)
-
     h = img_gray.shape[0]
     fs = _font_scale(h)
 
     for cut in cuts:
         for m in cut.measurements:
-            colour = _COLOUR.get(m.flag, _COLOUR[""])
-            _draw_measurement(canvas, m, colour, fs)
+            _draw_measurement(canvas, m, _COLOUR.get(m.flag, _COLOUR[""]), fs)
 
     return canvas
+
+
+# ── drawing helpers ────────────────────────────────────────────────────────────
+
+def _font_scale(img_h: int) -> float:
+    return max(0.38, img_h / 1400)
 
 
 def _draw_measurement(
     canvas: np.ndarray,
     m: YCDMeasurement,
     colour: tuple[int, int, int],
-    font_scale: float,
+    fs: float,
 ) -> None:
     ub, lb = m.upper_blob, m.lower_blob
 
-    # bounding boxes for upper and lower blobs
-    cv2.rectangle(canvas, (ub.x0, ub.y0), (ub.x1 - 1, ub.y1 - 1), colour, _BOX_THICKNESS)
-    cv2.rectangle(canvas, (lb.x0, lb.y0), (lb.x1 - 1, lb.y1 - 1), colour, _BOX_THICKNESS)
-
-    # vertical measurement line at mid-X of the overlapping region
+    # x_mid: centre of the X-overlap between upper and lower blobs
     x_mid = int((max(ub.x0, lb.x0) + min(ub.x1, lb.x1)) / 2)
-    y_top = ub.y1
-    y_bot = lb.y0
-    cv2.line(canvas, (x_mid, y_top), (x_mid, y_bot), colour, _LINE_THICKNESS)
+    y_top = ub.y1        # bottom edge of upper MG
+    y_bot = lb.y0        # top edge of lower MG
 
-    # tick marks
-    tick = max(3, int(font_scale * 6))
-    cv2.line(canvas, (x_mid - tick, y_top), (x_mid + tick, y_top), colour, _LINE_THICKNESS)
-    cv2.line(canvas, (x_mid - tick, y_bot), (x_mid + tick, y_bot), colour, _LINE_THICKNESS)
+    if y_bot <= y_top:
+        return
 
-    # label
-    label = f"{m.y_cd_nm:.1f}nm"
+    # ── vertical measurement line ─────────────────────────────────────────
+    cv2.line(canvas, (x_mid, y_top), (x_mid, y_bot), colour, _LINE_W, cv2.LINE_AA)
+
+    # ── tick marks ────────────────────────────────────────────────────────
+    cv2.line(canvas, (x_mid - _TICK_HALF, y_top),
+             (x_mid + _TICK_HALF, y_top), colour, _LINE_W, cv2.LINE_AA)
+    cv2.line(canvas, (x_mid - _TICK_HALF, y_bot),
+             (x_mid + _TICK_HALF, y_bot), colour, _LINE_W, cv2.LINE_AA)
+
+    # ── label ─────────────────────────────────────────────────────────────
+    text = f"{m.y_cd_nm:.1f} nm"
     if m.flag:
-        label = f"[{m.flag}] {label}"
-    y_label = int((y_top + y_bot) / 2)
-    _put_text(canvas, label, (x_mid + tick + 2, y_label), font_scale, colour)
+        text = f"[{m.flag}] {text}"
 
+    font     = cv2.FONT_HERSHEY_SIMPLEX
+    th       = max(1, round(fs))
+    (tw, th_px), baseline = cv2.getTextSize(text, font, fs, th)
 
-def _put_text(
-    canvas: np.ndarray,
-    text: str,
-    org: tuple[int, int],
-    scale: float,
-    colour: tuple[int, int, int],
-) -> None:
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    thickness = max(1, int(scale * 1.5))
-    # dark outline for readability
-    cv2.putText(canvas, text, org, font, scale, (0, 0, 0), thickness + 1, cv2.LINE_AA)
-    cv2.putText(canvas, text, org, font, scale, colour, thickness, cv2.LINE_AA)
+    # position: right of the measurement line, vertically centred in gap
+    y_label  = int((y_top + y_bot) / 2) + th_px // 2
+    x_label  = x_mid + _TICK_HALF + _LABEL_PAD_X
+
+    # dark pill background for contrast
+    pad = 3
+    x1b, y1b = x_label - pad, y_label - th_px - pad
+    x2b, y2b = x_label + tw + pad, y_label + baseline + pad
+
+    # clamp to canvas bounds
+    H, W = canvas.shape[:2]
+    x1b, y1b = max(0, x1b), max(0, y1b)
+    x2b, y2b = min(W - 1, x2b), min(H - 1, y2b)
+
+    # blend dark background
+    roi = canvas[y1b:y2b, x1b:x2b]
+    if roi.size > 0:
+        dark = np.zeros_like(roi)
+        cv2.addWeighted(dark, _BG_ALPHA, roi, 1 - _BG_ALPHA, 0, roi)
+        canvas[y1b:y2b, x1b:x2b] = roi
+
+    # text
+    cv2.putText(canvas, text, (x_label, y_label),
+                font, fs, (0, 0, 0), th + 1, cv2.LINE_AA)
+    cv2.putText(canvas, text, (x_label, y_label),
+                font, fs, colour, th, cv2.LINE_AA)
