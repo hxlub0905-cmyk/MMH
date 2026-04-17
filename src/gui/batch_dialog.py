@@ -98,13 +98,13 @@ def _serialise_cuts(cuts) -> list:
 class _BatchWorker(QThread):
     progress = pyqtSignal(int, int, str)   # done, total, current_file
     finished = pyqtSignal(list)            # list of result dicts
-    cancelled = False
 
     def __init__(self, image_paths: list[Path], params: dict, max_workers: int):
         super().__init__()
         self._paths = image_paths
         self._params = params
         self._max_workers = max_workers
+        self.cancelled = False
 
     def run(self) -> None:
         results = []
@@ -193,6 +193,7 @@ class BatchDialog(QDialog):
         self._cancel_btn.setText("Close")
         self._lbl_current.setText("Done.")
         self.batch_done.emit(results)
+        self.accept()
 
     def _cancel(self) -> None:
         if self._worker.isRunning():
