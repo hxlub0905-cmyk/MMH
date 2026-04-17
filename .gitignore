@@ -1,4 +1,11 @@
+.venv/
+.idea/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
 __pycache__/
 *.pyc
-*.pycache
+*.pyo
+*.pyd
+*.py,cover

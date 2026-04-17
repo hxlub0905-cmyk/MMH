@@ -263,9 +263,6 @@ QCheckBox::indicator:checked {
     border-color: #f29f4b;
     image: none;
 }
-QCheckBox::indicator:checked::after {
-    content: "✓";
-}
 
 /* ════════════════════════ Tree ══════════════════════════════════════════ */
 QTreeWidget {
