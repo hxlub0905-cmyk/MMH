@@ -1,5 +1,6 @@
 """Shared helper: flatten batch results into a pandas DataFrame."""
 
+from __future__ import annotations
 from pathlib import Path
 import pandas as pd
 

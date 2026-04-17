@@ -1,5 +1,6 @@
 """Load SEM images (TIFF/PNG/JPEG/BMP) and convert to uint8 grayscale."""
 
+from __future__ import annotations
 from pathlib import Path
 import cv2
 import numpy as np

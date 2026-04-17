@@ -1,5 +1,6 @@
 """Pre-processing pipeline: blur → CLAHE → threshold → morphological ops → blob filter."""
 
+from __future__ import annotations
 from dataclasses import dataclass
 import cv2
 import numpy as np

@@ -1,5 +1,6 @@
 """Export measurement results to CSV."""
 
+from __future__ import annotations
 from pathlib import Path
 import pandas as pd
 from ._common import results_to_dataframe
