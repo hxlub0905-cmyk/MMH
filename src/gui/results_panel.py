@@ -3,13 +3,13 @@
 from __future__ import annotations
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
-    QLabel, QHeaderView, QAbstractItemView, QFrame, QHBoxLayout,
+    QLabel, QHeaderView, QAbstractItemView, QFrame, QHBoxLayout, QComboBox,
 )
 from PyQt6.QtGui import QColor
 from PyQt6.QtCore import pyqtSignal, Qt
 from ..core.cmg_analyzer import CMGCut
 
-_COLUMNS = ["Image", "CMG", "Col", "Y-CD (px)", "Y-CD (nm)", "Flag", "Status"]
+_COLUMNS = ["State", "Image", "CMG", "Col", "CD (px)", "CD (nm)", "Axis", "Flag", "Status"]
 
 _ROW_COLOURS = {
     "MIN": QColor(255, 244, 232),
@@ -23,6 +23,7 @@ _FLAG_TEXT = {
 
 class ResultsPanel(QWidget):
     row_selected = pyqtSignal(int, int)   # cmg_id, col_id
+    state_filter_changed = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -40,6 +41,10 @@ class ResultsPanel(QWidget):
         self._status_label.setStyleSheet("color:#8f7f6b; font-size:11px;")
         hbox.addWidget(self._status_label)
         hbox.addStretch()
+        self._state_filter = QComboBox()
+        self._state_filter.addItem("All states")
+        self._state_filter.currentIndexChanged.connect(self._on_state_filter_changed)
+        hbox.addWidget(self._state_filter)
 
         layout.addWidget(header)
 
@@ -56,11 +61,12 @@ class ResultsPanel(QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.itemSelectionChanged.connect(self._on_selection)
         layout.addWidget(self._table)
+        self._rows: list[dict] = []
 
     # ── public API ────────────────────────────────────────────────────────────
 
     def show_results(self, image_name: str, cuts: list[CMGCut]) -> None:
-        self._table.setRowCount(0)
+        self._rows = []
         total = sum(len(c.measurements) for c in cuts)
         n_cuts = len(cuts)
         self._status_label.setText(
@@ -69,42 +75,41 @@ class ResultsPanel(QWidget):
         )
         for cut in cuts:
             for m in cut.measurements:
-                row = self._table.rowCount()
-                self._table.insertRow(row)
-                values = [
-                    image_name,
-                    str(m.cmg_id),
-                    str(m.col_id),
-                    f"{m.y_cd_px:.1f}",
-                    f"{m.y_cd_nm:.2f}",
-                    m.flag or "—",
-                    "OK",
-                ]
-                bg = _ROW_COLOURS.get(m.flag)
-                for col, val in enumerate(values):
-                    item = QTableWidgetItem(val)
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    if bg:
-                        item.setBackground(bg)
-                    if col == 5 and m.flag in _FLAG_TEXT:
-                        item.setForeground(_FLAG_TEXT[m.flag])
-                    self._table.setItem(row, col, item)
+                self._rows.append({
+                    "state_name": getattr(m, "state_name", "") or "Default",
+                    "image_name": image_name,
+                    "cmg_id": m.cmg_id,
+                    "col_id": m.col_id,
+                    "y_cd_px": m.y_cd_px,
+                    "y_cd_nm": m.y_cd_nm,
+                    "axis": getattr(m, "axis", "Y"),
+                    "flag": m.flag or "—",
+                    "status": "OK",
+                })
+        self._sync_state_filter()
+        self._render_table()
 
     def show_fail(self, image_name: str, reason: str = "") -> None:
-        self._table.setRowCount(0)
+        self._rows = []
         self._status_label.setText(
             f"{image_name}  ·  FAIL{('  — ' + reason) if reason else ''}"
         )
         self._table.insertRow(0)
-        for col, val in enumerate([image_name, "—", "—", "—", "—", "—", f"FAIL"]):
+        fail_vals = ["—", image_name, "—", "—", "—", "—", "—", "—", "FAIL"]
+        for col, val in enumerate(fail_vals):
             item = QTableWidgetItem(val)
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item.setForeground(QColor(200, 80, 80))
             self._table.setItem(0, col, item)
 
     def clear(self) -> None:
+        self._rows = []
         self._table.setRowCount(0)
         self._status_label.setText("Select an image and press  ▶ Run Single  to measure.")
+        self._state_filter.blockSignals(True)
+        self._state_filter.clear()
+        self._state_filter.addItem("All states")
+        self._state_filter.blockSignals(False)
 
     def update_summary(self, n_images: int, n_meas: int, n_fail: int) -> None:
         self._status_label.setText(
@@ -119,8 +124,45 @@ class ResultsPanel(QWidget):
         if row < 0:
             return
         try:
-            cmg_id = int(self._table.item(row, 1).text())
-            col_id = int(self._table.item(row, 2).text())
+            cmg_id = int(self._table.item(row, 2).text())
+            col_id = int(self._table.item(row, 3).text())
             self.row_selected.emit(cmg_id, col_id)
         except (AttributeError, ValueError):
             pass
+
+    def _sync_state_filter(self) -> None:
+        states = sorted({r["state_name"] for r in self._rows})
+        cur = self._state_filter.currentText()
+        self._state_filter.blockSignals(True)
+        self._state_filter.clear()
+        self._state_filter.addItem("All states")
+        self._state_filter.addItems(states)
+        idx = self._state_filter.findText(cur)
+        self._state_filter.setCurrentIndex(max(0, idx))
+        self._state_filter.blockSignals(False)
+
+    def _render_table(self) -> None:
+        sel = self._state_filter.currentText()
+        rows = self._rows if sel == "All states" else [r for r in self._rows if r["state_name"] == sel]
+        self._table.setRowCount(0)
+        for r in rows:
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+            values = [
+                r["state_name"], r["image_name"], str(r["cmg_id"]), str(r["col_id"]),
+                f"{r['y_cd_px']:.1f}", f"{r['y_cd_nm']:.2f}", r["axis"], r["flag"], r["status"],
+            ]
+            bg = _ROW_COLOURS.get(r["flag"])
+            for col, val in enumerate(values):
+                item = QTableWidgetItem(val)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if bg:
+                    item.setBackground(bg)
+                if col == 7 and r["flag"] in _FLAG_TEXT:
+                    item.setForeground(_FLAG_TEXT[r["flag"]])
+                self._table.setItem(row, col, item)
+
+    def _on_state_filter_changed(self) -> None:
+        self._render_table()
+        txt = self._state_filter.currentText()
+        self.state_filter_changed.emit("" if txt == "All states" else txt)

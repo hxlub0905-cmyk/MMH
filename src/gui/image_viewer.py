@@ -48,6 +48,8 @@ class ImageViewer(QGraphicsView):
         self._raw: np.ndarray | None = None
         self._mask: np.ndarray | None = None
         self._annotated: np.ndarray | None = None
+        self._profile_masks: list[tuple[np.ndarray, tuple[int, int, int], str]] = []
+        self._mask_state_filter: str = ""
         self._mode: str = "raw"
         self._nm_per_pixel: float = 1.0
         self._measure_start: QPointF | None = None
@@ -61,10 +63,12 @@ class ImageViewer(QGraphicsView):
         raw: np.ndarray,
         mask: np.ndarray | None = None,
         annotated: np.ndarray | None = None,
+        profile_masks: list[tuple[np.ndarray, tuple[int, int, int], str]] | None = None,
     ) -> None:
         self._raw = raw
         self._mask = mask
         self._annotated = annotated
+        self._profile_masks = profile_masks or []
         self._refresh()
 
     def set_mode(self, mode: str) -> None:
@@ -85,6 +89,10 @@ class ImageViewer(QGraphicsView):
     def set_nm_per_pixel(self, nm_per_pixel: float) -> None:
         self._nm_per_pixel = max(1e-9, nm_per_pixel)
 
+    def set_mask_state_filter(self, state_name: str) -> None:
+        self._mask_state_filter = state_name
+        self._refresh()
+
     # ── internal ──────────────────────────────────────────────────────────────
 
     def _refresh(self) -> None:
@@ -99,10 +107,15 @@ class ImageViewer(QGraphicsView):
         if self._mode == "annotated" and self._annotated is not None:
             return self._annotated
         if self._mode == "mask" and self._mask is not None:
-            # cyan overlay on grayscale
             bgr = cv2.cvtColor(self._raw, cv2.COLOR_GRAY2BGR)
             overlay = bgr.copy()
-            overlay[self._mask > 0] = (255, 255, 0)
+            if self._profile_masks:
+                for pmask, col, _name in self._profile_masks:
+                    if self._mask_state_filter and _name != self._mask_state_filter:
+                        continue
+                    overlay[pmask > 0] = col
+            else:
+                overlay[self._mask > 0] = (255, 255, 0)
             cv2.addWeighted(overlay, 0.35, bgr, 0.65, 0, bgr)
             return bgr
         return self._raw

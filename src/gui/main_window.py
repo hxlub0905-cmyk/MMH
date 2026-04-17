@@ -43,6 +43,8 @@ class MainWindow(QMainWindow):
         self._current_path: Path | None = None
         self._current_raw  = None
         self._current_mask = None
+        self._current_profile_masks: list = []
+        self._active_state_filter: str = ""
         self._current_cuts: list = []
         self._batch_results: list = []
         self._last_batch_input: Path | None = None
@@ -227,6 +229,7 @@ class MainWindow(QMainWindow):
         self._ctrl.run_single.connect(self._run_single)
         self._ctrl.run_batch.connect(self._run_batch)
         self._results.row_selected.connect(self._on_result_selected)
+        self._results.state_filter_changed.connect(self._on_state_filter_changed)
 
         self._btn_raw.clicked.connect(self._on_mode_raw)
         self._btn_mask.clicked.connect(self._on_mode_mask)
@@ -251,8 +254,9 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Load error: {exc}")
             return
         self._current_mask = None
+        self._current_profile_masks = []
         self._current_cuts = []
-        self._viewer.set_images(self._current_raw)
+        self._viewer.set_images(self._current_raw, profile_masks=self._current_profile_masks)
         self._viewer.fit_in_view()
         self._results.clear()
         self.statusBar().showMessage(str(path))
@@ -285,12 +289,13 @@ class MainWindow(QMainWindow):
         if self._current_raw is None:
             return
         try:
-            mask, _ = self._analyze_with_cards(self._current_raw, preview_only=True)
+            mask, _, profile_masks = self._analyze_with_cards(self._current_raw, preview_only=True)
         except Exception:
             return
         self._current_mask = mask
+        self._current_profile_masks = profile_masks
         annotated = self._make_annotated()
-        self._viewer.set_images(self._current_raw, mask, annotated)
+        self._viewer.set_images(self._current_raw, mask, annotated, profile_masks=self._current_profile_masks)
 
     def _get_overlay_opts(self) -> OverlayOptions:
         return OverlayOptions(
@@ -303,8 +308,9 @@ class MainWindow(QMainWindow):
 
     def _make_annotated(self):
         if self._current_mask is not None and self._current_cuts:
+            cuts = self._filtered_cuts_by_state(self._current_cuts, self._active_state_filter)
             return draw_overlays(self._current_raw, self._current_mask,
-                                 self._current_cuts, self._get_overlay_opts())
+                                 cuts, self._get_overlay_opts())
         return None
 
     def _refresh_annotated(self) -> None:
@@ -312,7 +318,7 @@ class MainWindow(QMainWindow):
         if self._current_raw is None or not self._current_cuts:
             return
         annotated = self._make_annotated()
-        self._viewer.set_images(self._current_raw, self._current_mask, annotated)
+        self._viewer.set_images(self._current_raw, self._current_mask, annotated, profile_masks=self._current_profile_masks)
 
     @pyqtSlot(int, int)
     def _on_result_selected(self, cmg_id: int, col_id: int) -> None:
@@ -320,6 +326,12 @@ class MainWindow(QMainWindow):
         self._btn_ann.setChecked(True)
         self._overlay_widget.setVisible(True)
         self._viewer.set_mode("annotated")
+        self._refresh_annotated()
+
+    @pyqtSlot(str)
+    def _on_state_filter_changed(self, state_name: str) -> None:
+        self._active_state_filter = state_name
+        self._viewer.set_mask_state_filter(state_name)
         self._refresh_annotated()
 
     @pyqtSlot()
@@ -331,17 +343,18 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No measurements", "Please add at least one measurement profile.")
             return
         try:
-            mask, cuts = self._analyze_with_cards(self._current_raw, preview_only=False)
+            mask, cuts, profile_masks = self._analyze_with_cards(self._current_raw, preview_only=False)
         except Exception as exc:
             QMessageBox.critical(self, "Processing error", str(exc))
             return
 
         self._current_mask = mask
+        self._current_profile_masks = profile_masks
         self._current_cuts = cuts
         self._focused_measurement = None
         annotated = (draw_overlays(self._current_raw, mask, cuts, self._get_overlay_opts())
                      if cuts else None)
-        self._viewer.set_images(self._current_raw, mask, annotated)
+        self._viewer.set_images(self._current_raw, mask, annotated, profile_masks=self._current_profile_masks)
 
         name = self._current_path.name if self._current_path else "image"
         if cuts:
@@ -531,16 +544,17 @@ class MainWindow(QMainWindow):
             except Exception:
                 continue
 
-    def _analyze_with_cards(self, raw: np.ndarray, preview_only: bool) -> tuple[np.ndarray, list]:
+    def _analyze_with_cards(self, raw: np.ndarray, preview_only: bool) -> tuple[np.ndarray, list, list]:
         cards = self._ctrl.get_measurement_cards()
         base_params = self._ctrl.get_preprocess_params()
         min_area = self._ctrl.get_min_area()
         nm_px = self._ctrl.get_nm_per_pixel()
         full_mask = np.zeros_like(raw, dtype=np.uint8)
         cuts_all = []
+        profile_masks = []
         cmg_offset = 0
         if not cards:
-            return full_mask, cuts_all
+            return full_mask, cuts_all, profile_masks
 
         for ci, card in enumerate(cards):
             axis = card.get("axis", "Y")
@@ -558,6 +572,8 @@ class MainWindow(QMainWindow):
             mask_local = preprocess(roi, params)
             mask_ori = mask_local if axis == "Y" else cv2.rotate(mask_local, cv2.ROTATE_90_COUNTERCLOCKWISE)
             full_mask = np.maximum(full_mask, mask_ori)
+            palette = [(255, 170, 70), (110, 180, 250), (120, 210, 160), (220, 130, 220), (120, 220, 230)]
+            profile_masks.append((mask_ori, palette[ci % len(palette)], card.get("name", f"S{ci+1}")))
             if preview_only:
                 continue
             blobs = detect_blobs(mask_local, min_area=card.get("min_area", min_area))
@@ -569,9 +585,23 @@ class MainWindow(QMainWindow):
                 for m in c.measurements:
                     m.cmg_id = c.cmg_id
                     m.col_id = ci * 1000 + m.col_id
+                    m.axis = axis
+                    m.state_name = card.get("name", f"Measure {ci+1}")
             cmg_offset += len(cuts)
             cuts_all.extend(cuts)
-        return full_mask, cuts_all
+        return full_mask, cuts_all, profile_masks
+
+    @staticmethod
+    def _filtered_cuts_by_state(cuts: list, state_name: str) -> list:
+        if not state_name:
+            return cuts
+        filtered = []
+        for cut in cuts:
+            keep = [m for m in cut.measurements if getattr(m, "state_name", "") == state_name]
+            if keep:
+                cut_new = type(cut)(cmg_id=cut.cmg_id, measurements=keep)
+                filtered.append(cut_new)
+        return filtered
 
     @staticmethod
     def _blob_rot_to_ori(b: Blob, orig_h: int) -> Blob:

@@ -25,6 +25,8 @@ class YCDMeasurement:
     y_cd_px: float
     y_cd_nm: float
     flag: str = ""   # "MIN", "MAX", or ""
+    axis: str = "Y"
+    state_name: str = ""
 
 
 @dataclass

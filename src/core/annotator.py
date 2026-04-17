@@ -75,11 +75,7 @@ def _draw_measurement(
     last_label_y: dict[int, int],
 ) -> None:
     ub, lb = m.upper_blob, m.lower_blob
-    y_top  = ub.y1
-    y_bot  = lb.y0
-    if y_bot <= y_top:
-        return
-    x_mid  = int((max(ub.x0, lb.x0) + min(ub.x1, lb.x1)) / 2)
+    axis = getattr(m, "axis", "Y")
 
     # ── bounding boxes ────────────────────────────────────────────────────────
     if opts.show_boxes:
@@ -90,19 +86,48 @@ def _draw_measurement(
     if opts.show_lines:
         line_w = _LINE_W + 1 if opts.focus == (m.cmg_id, m.col_id) else _LINE_W
         line_col = (40, 120, 240) if opts.focus == (m.cmg_id, m.col_id) else col
-        cv2.line(canvas, (x_mid, y_top), (x_mid, y_bot), line_col, line_w, cv2.LINE_AA)
-        cv2.line(canvas, (x_mid - _TICK_HALF, y_top),
-                 (x_mid + _TICK_HALF, y_top), line_col, line_w, cv2.LINE_AA)
-        cv2.line(canvas, (x_mid - _TICK_HALF, y_bot),
-                 (x_mid + _TICK_HALF, y_bot), line_col, line_w, cv2.LINE_AA)
+        if axis == "X":
+            left, right = (ub, lb) if ub.cx <= lb.cx else (lb, ub)
+            x_l = left.x1
+            x_r = right.x0
+            if x_r <= x_l:
+                return
+            y_mid = int((max(left.y0, right.y0) + min(left.y1, right.y1)) / 2)
+            cv2.line(canvas, (x_l, y_mid), (x_r, y_mid), line_col, line_w, cv2.LINE_AA)
+            cv2.line(canvas, (x_l, y_mid - _TICK_HALF),
+                     (x_l, y_mid + _TICK_HALF), line_col, line_w, cv2.LINE_AA)
+            cv2.line(canvas, (x_r, y_mid - _TICK_HALF),
+                     (x_r, y_mid + _TICK_HALF), line_col, line_w, cv2.LINE_AA)
+        else:
+            y_top = ub.y1
+            y_bot = lb.y0
+            if y_bot <= y_top:
+                return
+            x_mid = int((max(ub.x0, lb.x0) + min(ub.x1, lb.x1)) / 2)
+            cv2.line(canvas, (x_mid, y_top), (x_mid, y_bot), line_col, line_w, cv2.LINE_AA)
+            cv2.line(canvas, (x_mid - _TICK_HALF, y_top),
+                     (x_mid + _TICK_HALF, y_top), line_col, line_w, cv2.LINE_AA)
+            cv2.line(canvas, (x_mid - _TICK_HALF, y_bot),
+                     (x_mid + _TICK_HALF, y_bot), line_col, line_w, cv2.LINE_AA)
 
     # ── label: just the number, no unit, no tag, no background ───────────────
     if opts.show_labels:
         text   = f"{m.y_cd_nm:.1f}"
         font   = cv2.FONT_HERSHEY_SIMPLEX
         (tw, th_px), _ = cv2.getTextSize(text, font, fs, th)
-        x_lbl  = x_mid + _TICK_HALF + 4
-        y_lbl  = int((y_top + y_bot) / 2) + th_px // 2
+        if axis == "X":
+            left, right = (ub, lb) if ub.cx <= lb.cx else (lb, ub)
+            x_l = left.x1
+            x_r = right.x0
+            y_mid = int((max(left.y0, right.y0) + min(left.y1, right.y1)) / 2)
+            x_lbl = int((x_l + x_r) / 2) - tw // 2
+            y_lbl = y_mid - _TICK_HALF - 3
+        else:
+            y_top = ub.y1
+            y_bot = lb.y0
+            x_mid = int((max(ub.x0, lb.x0) + min(ub.x1, lb.x1)) / 2)
+            x_lbl = x_mid + _TICK_HALF + 4
+            y_lbl = int((y_top + y_bot) / 2) + th_px // 2
         H, W   = canvas.shape[:2]
         lane   = x_lbl // 24
         prev_y = last_label_y.get(lane)

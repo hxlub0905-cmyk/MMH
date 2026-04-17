@@ -57,6 +57,8 @@ def _process_one(args: tuple) -> dict:
                 for m in cut.measurements:
                     m.cmg_id = cut.cmg_id
                     m.col_id = i * 1000 + m.col_id
+                    m.axis = "X" if axis.startswith("X") else "Y"
+                    m.state_name = str(card.get("name", f"Measure {i+1}"))
             cmg_offset += len(c)
             cuts.extend(c)
 
@@ -84,6 +86,8 @@ def _serialise_cuts(cuts) -> list:
                 "y_cd_px": m.y_cd_px,
                 "y_cd_nm": m.y_cd_nm,
                 "flag": m.flag,
+                "axis": m.axis,
+                "state_name": m.state_name,
                 "upper_bbox": (m.upper_blob.x0, m.upper_blob.y0, m.upper_blob.x1, m.upper_blob.y1),
                 "lower_bbox": (m.lower_blob.x0, m.lower_blob.y0, m.lower_blob.x1, m.lower_blob.y1),
             })
