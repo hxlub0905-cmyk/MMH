@@ -5,6 +5,7 @@ import os
 import shutil
 from pathlib import Path
 from datetime import datetime
+import numpy as np
 
 from PyQt6.QtWidgets import (
     QMainWindow, QSplitter, QFileDialog, QMessageBox,
@@ -20,11 +21,12 @@ from .image_viewer import ImageViewer
 from .control_panel import ControlPanel
 from .results_panel import ResultsPanel
 from .batch_dialog import BatchDialog
+from .batch_review_dialog import BatchReviewDialog
 from .styles import STYLE
 
 from ..core.image_loader import load_grayscale, scan_folder
-from ..core.preprocessor import preprocess
-from ..core.mg_detector import detect_blobs
+from ..core.preprocessor import preprocess, PreprocessParams
+from ..core.mg_detector import detect_blobs, Blob
 from ..core.cmg_analyzer import analyze
 from ..core.annotator import draw_overlays, OverlayOptions
 
@@ -100,6 +102,11 @@ class MainWindow(QMainWindow):
         self._act_export = QAction("Export Results…  Ctrl+E", self)
         self._act_export.setShortcut("Ctrl+E")
         em.addAction(self._act_export)
+
+        vm = mb.addMenu("&View")
+        self._act_fullscreen = QAction("Toggle Full Screen  F11", self)
+        self._act_fullscreen.setShortcut("F11")
+        vm.addAction(self._act_fullscreen)
 
     def _make_left_panel(self) -> QFrame:
         panel = QFrame()
@@ -212,6 +219,7 @@ class MainWindow(QMainWindow):
         self._act_single.triggered.connect(self._run_single)
         self._act_batch.triggered.connect(self._run_batch)
         self._act_export.triggered.connect(self._export)
+        self._act_fullscreen.triggered.connect(self._toggle_fullscreen)
 
         self._file_tree.file_selected.connect(self._on_file_selected)
         self._ctrl.params_changed.connect(self._on_params_changed)
@@ -277,7 +285,7 @@ class MainWindow(QMainWindow):
         if self._current_raw is None:
             return
         try:
-            mask = preprocess(self._current_raw, self._ctrl.get_preprocess_params())
+            mask, _ = self._analyze_with_cards(self._current_raw, preview_only=True)
         except Exception:
             return
         self._current_mask = mask
@@ -319,13 +327,8 @@ class MainWindow(QMainWindow):
         if self._current_raw is None:
             QMessageBox.information(self, "No image", "Select an image first.")
             return
-        params   = self._ctrl.get_preprocess_params()
-        nm_px    = self._ctrl.get_nm_per_pixel()
-        min_area = self._ctrl.get_min_area()
         try:
-            mask  = preprocess(self._current_raw, params)
-            blobs = detect_blobs(mask, min_area=min_area)
-            cuts  = analyze(blobs, nm_px)
+            mask, cuts = self._analyze_with_cards(self._current_raw, preview_only=False)
         except Exception as exc:
             QMessageBox.critical(self, "Processing error", str(exc))
             return
@@ -371,6 +374,7 @@ class MainWindow(QMainWindow):
             "morph_close_k": params.morph_close_k,
             "use_clahe": params.use_clahe,
             "min_area": self._ctrl.get_min_area(),
+            "cards": self._ctrl.get_measurement_cards(),
         }
         workers = max(1, (os.cpu_count() or 2) - 1)
         dlg = BatchDialog(paths, batch_params, workers, parent=self)
@@ -390,13 +394,18 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Batch done  ·  {len(results)} images  ·  {n_meas} measurements  ·  {n_fail} failures"
         )
+        ann_out = None
         if self._ctrl.should_auto_export_annotated():
             base = self._last_batch_input or Path.cwd()
             out = base / f"annotated_batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             opts = OverlayOptions(**self._ctrl.get_export_overlay_opts())
             self._export_annotated_images(results, out, opts)
+            ann_out = out
             QMessageBox.information(self, "Batch Overlay Export",
                                     f"Annotated images saved to:\n{out}")
+        viewer = BatchReviewDialog(results, annotated_dir=ann_out, parent=self)
+        viewer.export_requested.connect(self._export)
+        viewer.exec()
 
     @pyqtSlot()
     def _export(self) -> None:
@@ -447,6 +456,14 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def _on_measure_updated(self, text: str) -> None:
         self.statusBar().showMessage(text)
+
+    @pyqtSlot()
+    def _toggle_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+        self._viewer.fit_in_view()
 
     def _do_export(self, results: list, out_path: Path, nm_px: float) -> None:
         import cv2
@@ -504,6 +521,66 @@ class MainWindow(QMainWindow):
                 cv2.imwrite(str(out_dir / f"{img_path.stem}_annotated.png"), ann)
             except Exception:
                 continue
+
+    def _analyze_with_cards(self, raw: np.ndarray, preview_only: bool) -> tuple[np.ndarray, list]:
+        cards = self._ctrl.get_measurement_cards()
+        base_params = self._ctrl.get_preprocess_params()
+        min_area = self._ctrl.get_min_area()
+        nm_px = self._ctrl.get_nm_per_pixel()
+        full_mask = None
+        cuts_all = []
+        cmg_offset = 0
+        h, w = raw.shape
+
+        for ci, card in enumerate(cards):
+            x = max(0, min(w - 1, card["roi_x"]))
+            y = max(0, min(h - 1, card["roi_y"]))
+            rw = card["roi_w"] if card["roi_w"] > 0 else w - x
+            rh = card["roi_h"] if card["roi_h"] > 0 else h - y
+            rw = max(1, min(rw, w - x))
+            rh = max(1, min(rh, h - y))
+            roi = raw[y:y + rh, x:x + rw]
+            params = PreprocessParams(
+                gl_min=card["gl_min"],
+                gl_max=card["gl_max"],
+                gauss_kernel=base_params.gauss_kernel,
+                morph_open_k=base_params.morph_open_k,
+                morph_close_k=base_params.morph_close_k,
+                use_clahe=base_params.use_clahe,
+                clahe_clip=base_params.clahe_clip,
+                clahe_grid=base_params.clahe_grid,
+            )
+            mask_roi = preprocess(roi, params)
+            if full_mask is None:
+                full_mask = np.zeros_like(raw, dtype=mask_roi.dtype)
+            full_mask[y:y + rh, x:x + rw] = np.maximum(full_mask[y:y + rh, x:x + rw], mask_roi)
+            if preview_only:
+                continue
+            blobs = detect_blobs(mask_roi, min_area=min_area)
+            if card["axis"] == "X":
+                blobs = [Blob(
+                    label=b.label,
+                    x0=b.y0 + y, y0=b.x0 + x,
+                    x1=b.y1 + y, y1=b.x1 + x,
+                    area=b.area, cx=b.cy + y, cy=b.cx + x
+                ) for b in blobs]
+            else:
+                blobs = [Blob(
+                    label=b.label, x0=b.x0 + x, y0=b.y0 + y,
+                    x1=b.x1 + x, y1=b.y1 + y, area=b.area,
+                    cx=b.cx + x, cy=b.cy + y
+                ) for b in blobs]
+            cuts = analyze(blobs, nm_px)
+            for c in cuts:
+                c.cmg_id += cmg_offset
+                for m in c.measurements:
+                    m.cmg_id = c.cmg_id
+                    m.col_id = ci * 1000 + m.col_id
+            cmg_offset += len(cuts)
+            cuts_all.extend(cuts)
+        if full_mask is None:
+            full_mask = preprocess(raw, base_params)
+        return full_mask, cuts_all
 
 
 # ── module-level helpers ──────────────────────────────────────────────────────

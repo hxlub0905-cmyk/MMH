@@ -4,7 +4,7 @@ from __future__ import annotations
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QDoubleSpinBox,
     QSlider, QSpinBox, QLabel, QCheckBox, QGroupBox,
-    QPushButton, QHBoxLayout, QScrollArea, QSizePolicy,
+    QPushButton, QHBoxLayout, QScrollArea, QSizePolicy, QComboBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from ..core.preprocessor import PreprocessParams
@@ -36,6 +36,7 @@ class ControlPanel(QWidget):
         self._build_scale()
         self._build_detection()
         self._build_preprocess()
+        self._build_measure_cards()
         self._build_actions()
         self._build_batch_output()
         self._layout.addStretch()
@@ -181,6 +182,56 @@ class ControlPanel(QWidget):
         btn_report.setMinimumHeight(34)
         self._layout.addWidget(btn_report)
 
+    def _build_measure_cards(self) -> None:
+        box = QGroupBox("Measurement Cards")
+        root = QVBoxLayout(box)
+        root.setContentsMargins(10, 6, 10, 8)
+        root.setSpacing(8)
+
+        self._cards: list[dict] = []
+        for i in range(3):
+            g = QGroupBox(f"Card {i + 1}")
+            f = QFormLayout(g)
+            enabled = QCheckBox("Enabled")
+            enabled.setChecked(i == 0)
+            axis = QComboBox()
+            axis.addItems(["Y-CD", "X-CD"])
+            gl_min = QSpinBox()
+            gl_min.setRange(0, 255)
+            gl_min.setValue(100)
+            gl_max = QSpinBox()
+            gl_max.setRange(0, 255)
+            gl_max.setValue(220)
+            roi_x = QSpinBox(); roi_x.setRange(0, 20000)
+            roi_y = QSpinBox(); roi_y.setRange(0, 20000)
+            roi_w = QSpinBox(); roi_w.setRange(0, 20000); roi_w.setValue(0)
+            roi_h = QSpinBox(); roi_h.setRange(0, 20000); roi_h.setValue(0)
+            for w in (enabled, axis, gl_min, gl_max, roi_x, roi_y, roi_w, roi_h):
+                if hasattr(w, "valueChanged"):
+                    w.valueChanged.connect(self._emit)
+            axis.currentIndexChanged.connect(self._emit)
+            enabled.stateChanged.connect(self._emit)
+            f.addRow("Enable", enabled)
+            f.addRow("Axis", axis)
+            f.addRow("GL Min", gl_min)
+            f.addRow("GL Max", gl_max)
+            f.addRow("ROI X", roi_x)
+            f.addRow("ROI Y", roi_y)
+            f.addRow("ROI W(0=full)", roi_w)
+            f.addRow("ROI H(0=full)", roi_h)
+            root.addWidget(g)
+            self._cards.append({
+                "enabled": enabled,
+                "axis": axis,
+                "gl_min": gl_min,
+                "gl_max": gl_max,
+                "roi_x": roi_x,
+                "roi_y": roi_y,
+                "roi_w": roi_w,
+                "roi_h": roi_h,
+            })
+        self._layout.addWidget(box)
+
     def _build_batch_output(self) -> None:
         box = QGroupBox("Batch Output")
         v = QVBoxLayout(box)
@@ -235,6 +286,31 @@ class ControlPanel(QWidget):
             "show_boxes": self._exp_boxes.isChecked(),
             "show_legend": self._exp_legend.isChecked(),
         }
+
+    def get_measurement_cards(self) -> list[dict]:
+        cards = []
+        for i, c in enumerate(self._cards):
+            if not c["enabled"].isChecked():
+                continue
+            cards.append({
+                "card_id": i,
+                "axis": "Y" if c["axis"].currentText().startswith("Y") else "X",
+                "gl_min": c["gl_min"].value(),
+                "gl_max": c["gl_max"].value(),
+                "roi_x": c["roi_x"].value(),
+                "roi_y": c["roi_y"].value(),
+                "roi_w": c["roi_w"].value(),
+                "roi_h": c["roi_h"].value(),
+            })
+        if not cards:
+            cards.append({
+                "card_id": 0,
+                "axis": "Y",
+                "gl_min": self._gl_min_slider.value(),
+                "gl_max": self._gl_max_slider.value(),
+                "roi_x": 0, "roi_y": 0, "roi_w": 0, "roi_h": 0,
+            })
+        return cards
 
 
 def _lbl(text: str) -> QLabel:

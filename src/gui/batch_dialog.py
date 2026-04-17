@@ -13,26 +13,61 @@ from PyQt6.QtCore import QThread, pyqtSignal, Qt
 
 def _process_one(args: tuple) -> dict:
     """Top-level worker function (must be picklable for multiprocessing)."""
-    image_path, nm_per_pixel, gl_min, gl_max, gauss_k, morph_open_k, morph_close_k, use_clahe, min_area = args
+    image_path, nm_per_pixel, gl_min, gl_max, gauss_k, morph_open_k, morph_close_k, use_clahe, min_area, cards = args
     from ..core.image_loader import load_grayscale
     from ..core.preprocessor import preprocess, PreprocessParams
-    from ..core.mg_detector import detect_blobs
+    from ..core.mg_detector import detect_blobs, Blob
     from ..core.cmg_analyzer import analyze
 
     result: dict = {"path": str(image_path), "status": "OK", "cuts": [], "error": ""}
     try:
         img = load_grayscale(image_path)
-        params = PreprocessParams(
-            gl_min=gl_min,
-            gl_max=gl_max,
-            gauss_kernel=gauss_k,
-            morph_open_k=morph_open_k,
-            morph_close_k=morph_close_k,
-            use_clahe=use_clahe,
-        )
-        mask = preprocess(img, params)
-        blobs = detect_blobs(mask, min_area=min_area)
-        cuts = analyze(blobs, nm_per_pixel)
+        cards = cards or [{
+            "card_id": 0, "axis": "Y", "gl_min": gl_min, "gl_max": gl_max,
+            "roi_x": 0, "roi_y": 0, "roi_w": 0, "roi_h": 0,
+        }]
+        import numpy as np
+        mask = np.zeros_like(img, dtype=np.uint8)
+        cuts = []
+        cmg_offset = 0
+        h, w = img.shape
+        for i, card in enumerate(cards):
+            x = max(0, min(w - 1, int(card.get("roi_x", 0))))
+            y = max(0, min(h - 1, int(card.get("roi_y", 0))))
+            rw = int(card.get("roi_w", 0)) or (w - x)
+            rh = int(card.get("roi_h", 0)) or (h - y)
+            rw = max(1, min(rw, w - x))
+            rh = max(1, min(rh, h - y))
+            roi = img[y:y + rh, x:x + rw]
+            params = PreprocessParams(
+                gl_min=int(card.get("gl_min", gl_min)),
+                gl_max=int(card.get("gl_max", gl_max)),
+                gauss_kernel=gauss_k,
+                morph_open_k=morph_open_k,
+                morph_close_k=morph_close_k,
+                use_clahe=use_clahe,
+            )
+            m_roi = preprocess(roi, params)
+            mask[y:y + rh, x:x + rw] = np.maximum(mask[y:y + rh, x:x + rw], m_roi)
+            blobs = detect_blobs(m_roi, min_area=min_area)
+            if str(card.get("axis", "Y")).upper().startswith("X"):
+                blobs = [Blob(
+                    label=b.label, x0=b.y0 + y, y0=b.x0 + x, x1=b.y1 + y, y1=b.x1 + x,
+                    area=b.area, cx=b.cy + y, cy=b.cx + x
+                ) for b in blobs]
+            else:
+                blobs = [Blob(
+                    label=b.label, x0=b.x0 + x, y0=b.y0 + y, x1=b.x1 + x, y1=b.y1 + y,
+                    area=b.area, cx=b.cx + x, cy=b.cy + y
+                ) for b in blobs]
+            c = analyze(blobs, nm_per_pixel)
+            for cut in c:
+                cut.cmg_id += cmg_offset
+                for m in cut.measurements:
+                    m.cmg_id = cut.cmg_id
+                    m.col_id = i * 1000 + m.col_id
+            cmg_offset += len(c)
+            cuts.extend(c)
 
         if not cuts:
             result["status"] = "FAIL"
@@ -92,6 +127,7 @@ class _BatchWorker(QThread):
                 p["morph_close_k"],
                 p["use_clahe"],
                 p["min_area"],
+                p.get("cards", []),
             )
             for path in self._paths
         ]

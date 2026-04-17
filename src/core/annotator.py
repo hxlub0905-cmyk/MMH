@@ -26,7 +26,7 @@ _COL = {
 _TICK_HALF = 5
 _LINE_W    = 1
 _BOX_W     = 1
-_LABEL_MIN_DY = 12
+_LABEL_MIN_DY = 8
 
 
 @dataclass
@@ -50,7 +50,7 @@ def draw_overlays(
 
     canvas = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
     h      = img_gray.shape[0]
-    fs     = max(0.24, h / 2200)
+    fs     = max(0.20, h / 2600)
     th     = max(1, round(fs))
     last_label_y: dict[int, int] = {}
 
