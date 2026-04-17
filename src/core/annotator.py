@@ -1,111 +1,101 @@
 """Draw CD measurement overlays on a SEM image.
 
-Annotated mode: measurement lines + tick marks + CD labels only.
-No mask overlay — that belongs to the separate "Mask" view mode.
+Overlay options (all toggleable):
+  show_lines  – vertical measurement line + tick marks
+  show_labels – numeric CD value (e.g. "12.5"), no unit, no prefix
+  show_boxes  – bounding rectangles around upper / lower MG blobs
 
-Colours:
-  MIN Y-CD  →  red   #e05555
-  MAX Y-CD  →  blue  #5588ee
-  Normal    →  cyan  #44aadd
+Colours (three only):
+  MIN Y-CD  →  #e05555  (red)
+  MAX Y-CD  →  #5588ee  (blue)
+  Normal    →  #44aadd  (cyan)
 """
 
 from __future__ import annotations
+from dataclasses import dataclass, field
 import cv2
 import numpy as np
 from .cmg_analyzer import CMGCut, YCDMeasurement
 
-_COLOUR = {
-    "MIN": (85, 85, 224),     # BGR red
-    "MAX": (238, 136, 85),    # BGR blue
-    "":   (221, 170, 68),     # BGR cyan
+# BGR colours
+_COL = {
+    "MIN": (85,  85, 224),    # red
+    "MAX": (238, 136, 85),    # blue
+    "":   (221, 170, 68),     # cyan
 }
-_TICK_HALF   = 6    # px half-width of tick mark
-_LINE_W      = 1
-_LABEL_PAD_X = 8    # gap between measurement line and label
-_LABEL_PAD_Y = 4    # vertical nudge for label text baseline
-_BG_ALPHA    = 0.65
+_TICK_HALF = 5
+_LINE_W    = 1
+_BOX_W     = 1
+
+
+@dataclass
+class OverlayOptions:
+    show_lines:  bool = True
+    show_labels: bool = True
+    show_boxes:  bool = True
 
 
 def draw_overlays(
     img_gray: np.ndarray,
-    _mask: np.ndarray,        # accepted for API compatibility, not used here
+    _mask: np.ndarray,
     cuts: list[CMGCut],
+    opts: OverlayOptions | None = None,
 ) -> np.ndarray:
-    """Return annotated BGR image (measurement lines + labels, no mask)."""
+    """Return annotated BGR image."""
+    if opts is None:
+        opts = OverlayOptions()
+
     canvas = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
-    h = img_gray.shape[0]
-    fs = _font_scale(h)
+    h      = img_gray.shape[0]
+    fs     = max(0.32, h / 1600)
+    th     = max(1, round(fs))
 
     for cut in cuts:
         for m in cut.measurements:
-            _draw_measurement(canvas, m, _COLOUR.get(m.flag, _COLOUR[""]), fs)
+            col = _COL.get(m.flag, _COL[""])
+            _draw_measurement(canvas, m, col, fs, th, opts)
 
     return canvas
-
-
-# ── drawing helpers ────────────────────────────────────────────────────────────
-
-def _font_scale(img_h: int) -> float:
-    return max(0.38, img_h / 1400)
 
 
 def _draw_measurement(
     canvas: np.ndarray,
     m: YCDMeasurement,
-    colour: tuple[int, int, int],
+    col: tuple,
     fs: float,
+    th: int,
+    opts: OverlayOptions,
 ) -> None:
     ub, lb = m.upper_blob, m.lower_blob
-
-    # x_mid: centre of the X-overlap between upper and lower blobs
-    x_mid = int((max(ub.x0, lb.x0) + min(ub.x1, lb.x1)) / 2)
-    y_top = ub.y1        # bottom edge of upper MG
-    y_bot = lb.y0        # top edge of lower MG
-
+    y_top  = ub.y1
+    y_bot  = lb.y0
     if y_bot <= y_top:
         return
+    x_mid  = int((max(ub.x0, lb.x0) + min(ub.x1, lb.x1)) / 2)
 
-    # ── vertical measurement line ─────────────────────────────────────────
-    cv2.line(canvas, (x_mid, y_top), (x_mid, y_bot), colour, _LINE_W, cv2.LINE_AA)
+    # ── bounding boxes ────────────────────────────────────────────────────────
+    if opts.show_boxes:
+        cv2.rectangle(canvas, (ub.x0, ub.y0), (ub.x1 - 1, ub.y1 - 1), col, _BOX_W)
+        cv2.rectangle(canvas, (lb.x0, lb.y0), (lb.x1 - 1, lb.y1 - 1), col, _BOX_W)
 
-    # ── tick marks ────────────────────────────────────────────────────────
-    cv2.line(canvas, (x_mid - _TICK_HALF, y_top),
-             (x_mid + _TICK_HALF, y_top), colour, _LINE_W, cv2.LINE_AA)
-    cv2.line(canvas, (x_mid - _TICK_HALF, y_bot),
-             (x_mid + _TICK_HALF, y_bot), colour, _LINE_W, cv2.LINE_AA)
+    # ── measurement line + ticks ──────────────────────────────────────────────
+    if opts.show_lines:
+        cv2.line(canvas, (x_mid, y_top), (x_mid, y_bot), col, _LINE_W, cv2.LINE_AA)
+        cv2.line(canvas, (x_mid - _TICK_HALF, y_top),
+                 (x_mid + _TICK_HALF, y_top), col, _LINE_W, cv2.LINE_AA)
+        cv2.line(canvas, (x_mid - _TICK_HALF, y_bot),
+                 (x_mid + _TICK_HALF, y_bot), col, _LINE_W, cv2.LINE_AA)
 
-    # ── label ─────────────────────────────────────────────────────────────
-    text = f"{m.y_cd_nm:.1f} nm"
-    if m.flag:
-        text = f"[{m.flag}] {text}"
-
-    font     = cv2.FONT_HERSHEY_SIMPLEX
-    th       = max(1, round(fs))
-    (tw, th_px), baseline = cv2.getTextSize(text, font, fs, th)
-
-    # position: right of the measurement line, vertically centred in gap
-    y_label  = int((y_top + y_bot) / 2) + th_px // 2
-    x_label  = x_mid + _TICK_HALF + _LABEL_PAD_X
-
-    # dark pill background for contrast
-    pad = 3
-    x1b, y1b = x_label - pad, y_label - th_px - pad
-    x2b, y2b = x_label + tw + pad, y_label + baseline + pad
-
-    # clamp to canvas bounds
-    H, W = canvas.shape[:2]
-    x1b, y1b = max(0, x1b), max(0, y1b)
-    x2b, y2b = min(W - 1, x2b), min(H - 1, y2b)
-
-    # blend dark background
-    roi = canvas[y1b:y2b, x1b:x2b]
-    if roi.size > 0:
-        dark = np.zeros_like(roi)
-        cv2.addWeighted(dark, _BG_ALPHA, roi, 1 - _BG_ALPHA, 0, roi)
-        canvas[y1b:y2b, x1b:x2b] = roi
-
-    # text
-    cv2.putText(canvas, text, (x_label, y_label),
-                font, fs, (0, 0, 0), th + 1, cv2.LINE_AA)
-    cv2.putText(canvas, text, (x_label, y_label),
-                font, fs, colour, th, cv2.LINE_AA)
+    # ── label: just the number, no unit, no tag, no background ───────────────
+    if opts.show_labels:
+        text   = f"{m.y_cd_nm:.1f}"
+        font   = cv2.FONT_HERSHEY_SIMPLEX
+        (tw, th_px), _ = cv2.getTextSize(text, font, fs, th)
+        x_lbl  = x_mid + _TICK_HALF + 4
+        y_lbl  = int((y_top + y_bot) / 2) + th_px // 2
+        H, W   = canvas.shape[:2]
+        if 0 <= x_lbl + tw < W and 0 <= y_lbl < H:
+            cv2.putText(canvas, text, (x_lbl, y_lbl),
+                        font, fs, (0, 0, 0), th + 1, cv2.LINE_AA)
+            cv2.putText(canvas, text, (x_lbl, y_lbl),
+                        font, fs, col, th, cv2.LINE_AA)

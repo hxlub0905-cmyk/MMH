@@ -13,7 +13,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, Qt
 
 def _process_one(args: tuple) -> dict:
     """Top-level worker function (must be picklable for multiprocessing)."""
-    image_path, nm_per_pixel, thr, gauss_k, morph_open_k, morph_close_k, use_clahe, min_area = args
+    image_path, nm_per_pixel, gl_min, gl_max, gauss_k, morph_open_k, morph_close_k, use_clahe, min_area = args
     from ..core.image_loader import load_grayscale
     from ..core.preprocessor import preprocess, PreprocessParams
     from ..core.mg_detector import detect_blobs
@@ -23,7 +23,8 @@ def _process_one(args: tuple) -> dict:
     try:
         img = load_grayscale(image_path)
         params = PreprocessParams(
-            threshold=thr,
+            gl_min=gl_min,
+            gl_max=gl_max,
             gauss_kernel=gauss_k,
             morph_open_k=morph_open_k,
             morph_close_k=morph_close_k,
@@ -84,7 +85,8 @@ class _BatchWorker(QThread):
             (
                 path,
                 p["nm_per_pixel"],
-                p["threshold"],
+                p["gl_min"],
+                p["gl_max"],
                 p["gauss_k"],
                 p["morph_open_k"],
                 p["morph_close_k"],

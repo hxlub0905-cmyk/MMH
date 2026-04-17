@@ -9,7 +9,7 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QMainWindow, QSplitter, QFileDialog, QMessageBox,
     QToolBar, QStatusBar, QWidget, QVBoxLayout, QHBoxLayout,
-    QFrame, QLabel, QPushButton, QButtonGroup, QApplication,
+    QFrame, QLabel, QPushButton, QButtonGroup, QCheckBox,
     QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QSize
@@ -26,7 +26,7 @@ from ..core.image_loader import load_grayscale, scan_folder
 from ..core.preprocessor import preprocess
 from ..core.mg_detector import detect_blobs
 from ..core.cmg_analyzer import analyze
-from ..core.annotator import draw_overlays
+from ..core.annotator import draw_overlays, OverlayOptions
 
 
 class MainWindow(QMainWindow):
@@ -165,6 +165,26 @@ class MainWindow(QMainWindow):
         hbox.addWidget(self._btn_raw)
         hbox.addWidget(self._btn_mask)
         hbox.addWidget(self._btn_ann)
+
+        # ── overlay options (visible only in Annotated mode) ──────────────────
+        sep = QLabel("  |  ")
+        sep.setStyleSheet("color: #2a2d50;")
+        hbox.addWidget(sep)
+
+        self._overlay_widget = QWidget()
+        self._overlay_widget.setVisible(False)
+        ov_hbox = QHBoxLayout(self._overlay_widget)
+        ov_hbox.setContentsMargins(0, 0, 0, 0)
+        ov_hbox.setSpacing(12)
+
+        self._chk_lines  = _ov_chk("Lines",   checked=True)
+        self._chk_labels = _ov_chk("Values",  checked=True)
+        self._chk_boxes  = _ov_chk("Boxes",   checked=False)
+        for chk in (self._chk_lines, self._chk_labels, self._chk_boxes):
+            chk.stateChanged.connect(self._refresh_annotated)
+            ov_hbox.addWidget(chk)
+
+        hbox.addWidget(self._overlay_widget)
         hbox.addStretch()
 
         self._zoom_label = QLabel("Double-click to fit")
@@ -209,9 +229,9 @@ class MainWindow(QMainWindow):
         self._ctrl.run_single.connect(self._run_single)
         self._ctrl.run_batch.connect(self._run_batch)
 
-        self._btn_raw.clicked.connect(lambda: self._viewer.set_mode("raw"))
-        self._btn_mask.clicked.connect(lambda: self._viewer.set_mode("mask"))
-        self._btn_ann.clicked.connect(lambda: self._viewer.set_mode("annotated"))
+        self._btn_raw.clicked.connect(self._on_mode_raw)
+        self._btn_mask.clicked.connect(self._on_mode_mask)
+        self._btn_ann.clicked.connect(self._on_mode_ann)
 
     # ── slots ─────────────────────────────────────────────────────────────────
 
@@ -238,6 +258,20 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(str(path))
         self._schedule_preview()
 
+    # ── mode switch helpers ───────────────────────────────────────────────────
+
+    def _on_mode_raw(self) -> None:
+        self._overlay_widget.setVisible(False)
+        self._viewer.set_mode("raw")
+
+    def _on_mode_mask(self) -> None:
+        self._overlay_widget.setVisible(False)
+        self._viewer.set_mode("mask")
+
+    def _on_mode_ann(self) -> None:
+        self._overlay_widget.setVisible(True)
+        self._viewer.set_mode("annotated")
+
     def _on_params_changed(self, _nm: float, _p) -> None:
         self._schedule_preview()
 
@@ -255,10 +289,25 @@ class MainWindow(QMainWindow):
         annotated = self._make_annotated()
         self._viewer.set_images(self._current_raw, mask, annotated)
 
+    def _get_overlay_opts(self) -> OverlayOptions:
+        return OverlayOptions(
+            show_lines=self._chk_lines.isChecked(),
+            show_labels=self._chk_labels.isChecked(),
+            show_boxes=self._chk_boxes.isChecked(),
+        )
+
     def _make_annotated(self):
         if self._current_mask is not None and self._current_cuts:
-            return draw_overlays(self._current_raw, self._current_mask, self._current_cuts)
+            return draw_overlays(self._current_raw, self._current_mask,
+                                 self._current_cuts, self._get_overlay_opts())
         return None
+
+    def _refresh_annotated(self) -> None:
+        """Re-render annotated layer when overlay checkboxes change."""
+        if self._current_raw is None or not self._current_cuts:
+            return
+        annotated = self._make_annotated()
+        self._viewer.set_images(self._current_raw, self._current_mask, annotated)
 
     @pyqtSlot()
     def _run_single(self) -> None:
@@ -278,7 +327,8 @@ class MainWindow(QMainWindow):
 
         self._current_mask = mask
         self._current_cuts = cuts
-        annotated = draw_overlays(self._current_raw, mask, cuts) if cuts else None
+        annotated = (draw_overlays(self._current_raw, mask, cuts, self._get_overlay_opts())
+                     if cuts else None)
         self._viewer.set_images(self._current_raw, mask, annotated)
 
         name = self._current_path.name if self._current_path else "image"
@@ -307,7 +357,8 @@ class MainWindow(QMainWindow):
         params = self._ctrl.get_preprocess_params()
         batch_params = {
             "nm_per_pixel": self._ctrl.get_nm_per_pixel(),
-            "threshold": params.threshold,
+            "gl_min": params.gl_min,
+            "gl_max": params.gl_max,
             "gauss_k": params.gauss_kernel,
             "morph_open_k": params.morph_open_k,
             "morph_close_k": params.morph_close_k,
@@ -392,3 +443,15 @@ class MainWindow(QMainWindow):
         export_excel(results, out_path / f"{ts}_measurements.xlsx", nm_px)
         export_json(results,  out_path / f"{ts}_measurements.json", nm_px)
         generate_report(results, out_path / f"{ts}_report.html",    nm_px)
+
+
+# ── module-level helpers ──────────────────────────────────────────────────────
+
+def _ov_chk(text: str, checked: bool = True) -> QCheckBox:
+    chk = QCheckBox(text)
+    chk.setChecked(checked)
+    chk.setStyleSheet(
+        "QCheckBox { color:#6677aa; font-size:11px; spacing:4px; }"
+        "QCheckBox::indicator { width:12px; height:12px; }"
+    )
+    return chk

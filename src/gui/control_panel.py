@@ -2,24 +2,23 @@
 
 from __future__ import annotations
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QFormLayout, QDoubleSpinBox, QSlider,
-    QSpinBox, QLabel, QCheckBox, QGroupBox, QPushButton, QHBoxLayout,
-    QScrollArea, QSizePolicy,
+    QWidget, QVBoxLayout, QFormLayout, QDoubleSpinBox,
+    QSlider, QSpinBox, QLabel, QCheckBox, QGroupBox,
+    QPushButton, QHBoxLayout, QScrollArea, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from ..core.preprocessor import PreprocessParams
 
 
 class ControlPanel(QWidget):
-    params_changed = pyqtSignal(float, PreprocessParams)
-    run_single     = pyqtSignal()
-    run_batch      = pyqtSignal()
+    params_changed  = pyqtSignal(float, PreprocessParams)
+    run_single      = pyqtSignal()
+    run_batch       = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
-        # Wrap content in a scroll area so nothing gets clipped on small screens
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -55,10 +54,8 @@ class ControlPanel(QWidget):
         self._nm_px.setValue(1.0)
         self._nm_px.setDecimals(4)
         self._nm_px.setSuffix(" nm/px")
-        self._nm_px.setToolTip("Physical scale: nanometres per pixel")
         self._nm_px.valueChanged.connect(self._emit)
         form.addRow(_lbl("nm / pixel"), self._nm_px)
-
         self._layout.addWidget(box)
 
     def _build_detection(self) -> None:
@@ -67,36 +64,63 @@ class ControlPanel(QWidget):
         vbox.setSpacing(10)
         vbox.setContentsMargins(10, 4, 10, 8)
 
-        # Threshold row
-        thr_header = QHBoxLayout()
-        thr_header.addWidget(_lbl("GL Threshold"))
-        thr_header.addStretch()
-        self._thr_label = QLabel("128")
-        self._thr_label.setObjectName("thresholdValue")
-        thr_header.addWidget(self._thr_label)
-        vbox.addLayout(thr_header)
+        # ── GL range ──────────────────────────────────────────────────────────
+        vbox.addWidget(_lbl("GL Range  (pixels within range = MG)"))
 
-        self._thr_slider = QSlider(Qt.Orientation.Horizontal)
-        self._thr_slider.setRange(0, 255)
-        self._thr_slider.setValue(128)
-        self._thr_slider.valueChanged.connect(
-            lambda v: (self._thr_label.setText(str(v)), self._emit())
-        )
-        vbox.addWidget(self._thr_slider)
+        # Min row
+        min_row = QHBoxLayout()
+        min_row.addWidget(_lbl("Min"))
+        self._gl_min_val = QLabel("100")
+        self._gl_min_val.setObjectName("thresholdValue")
+        self._gl_min_val.setFixedWidth(30)
+        self._gl_min_slider = QSlider(Qt.Orientation.Horizontal)
+        self._gl_min_slider.setRange(0, 255)
+        self._gl_min_slider.setValue(100)
+        self._gl_min_slider.valueChanged.connect(self._on_gl_min_changed)
+        min_row.addWidget(self._gl_min_slider)
+        min_row.addWidget(self._gl_min_val)
+        vbox.addLayout(min_row)
 
+        # Max row
+        max_row = QHBoxLayout()
+        max_row.addWidget(_lbl("Max"))
+        self._gl_max_val = QLabel("220")
+        self._gl_max_val.setObjectName("thresholdValue")
+        self._gl_max_val.setFixedWidth(30)
+        self._gl_max_slider = QSlider(Qt.Orientation.Horizontal)
+        self._gl_max_slider.setRange(0, 255)
+        self._gl_max_slider.setValue(220)
+        self._gl_max_slider.valueChanged.connect(self._on_gl_max_changed)
+        max_row.addWidget(self._gl_max_slider)
+        max_row.addWidget(self._gl_max_val)
+        vbox.addLayout(max_row)
+
+        # Min area
         form = QFormLayout()
         form.setSpacing(7)
-
         self._min_area = QSpinBox()
         self._min_area.setRange(1, 500_000)
         self._min_area.setValue(50)
         self._min_area.setSuffix(" px²")
-        self._min_area.setToolTip("Minimum blob area to keep (filters noise)")
         self._min_area.valueChanged.connect(self._emit)
         form.addRow(_lbl("Min blob area"), self._min_area)
-
         vbox.addLayout(form)
+
         self._layout.addWidget(box)
+
+    def _on_gl_min_changed(self, v: int) -> None:
+        self._gl_min_val.setText(str(v))
+        # prevent min from exceeding max
+        if v > self._gl_max_slider.value():
+            self._gl_max_slider.setValue(v)
+        self._emit()
+
+    def _on_gl_max_changed(self, v: int) -> None:
+        self._gl_max_val.setText(str(v))
+        # prevent max from going below min
+        if v < self._gl_min_slider.value():
+            self._gl_min_slider.setValue(v)
+        self._emit()
 
     def _build_preprocess(self) -> None:
         box = QGroupBox("Pre-processing")
@@ -109,7 +133,6 @@ class ControlPanel(QWidget):
         self._gauss_k.setSingleStep(2)
         self._gauss_k.setValue(3)
         self._gauss_k.setSuffix(" px")
-        self._gauss_k.setToolTip("Gaussian blur kernel size (must be odd)")
         self._gauss_k.valueChanged.connect(self._emit)
         form.addRow(_lbl("Gaussian"), self._gauss_k)
 
@@ -118,7 +141,6 @@ class ControlPanel(QWidget):
         self._morph_open_k.setSingleStep(2)
         self._morph_open_k.setValue(3)
         self._morph_open_k.setSuffix(" px")
-        self._morph_open_k.setToolTip("Morphological opening kernel (removes noise)")
         self._morph_open_k.valueChanged.connect(self._emit)
         form.addRow(_lbl("Morph open"), self._morph_open_k)
 
@@ -127,13 +149,11 @@ class ControlPanel(QWidget):
         self._morph_close_k.setSingleStep(2)
         self._morph_close_k.setValue(5)
         self._morph_close_k.setSuffix(" px")
-        self._morph_close_k.setToolTip("Morphological closing kernel (fills holes)")
         self._morph_close_k.valueChanged.connect(self._emit)
         form.addRow(_lbl("Morph close"), self._morph_close_k)
 
         self._use_clahe = QCheckBox("CLAHE normalisation")
         self._use_clahe.setChecked(True)
-        self._use_clahe.setToolTip("Contrast Limited Adaptive Histogram Equalization")
         self._use_clahe.stateChanged.connect(self._emit)
         form.addRow(self._use_clahe)
 
@@ -161,7 +181,8 @@ class ControlPanel(QWidget):
 
     def get_preprocess_params(self) -> PreprocessParams:
         return PreprocessParams(
-            threshold=self._thr_slider.value(),
+            gl_min=self._gl_min_slider.value(),
+            gl_max=self._gl_max_slider.value(),
             gauss_kernel=self._gauss_k.value(),
             morph_open_k=self._morph_open_k.value(),
             morph_close_k=self._morph_close_k.value(),
