@@ -12,12 +12,12 @@ from ..core.cmg_analyzer import CMGCut
 _COLUMNS = ["Image", "CMG", "Col", "Y-CD (px)", "Y-CD (nm)", "Flag", "Status"]
 
 _ROW_COLOURS = {
-    "MIN": QColor(80, 20, 20),
-    "MAX": QColor(20, 30, 80),
+    "MIN": QColor(255, 244, 232),
+    "MAX": QColor(236, 245, 252),
 }
 _FLAG_TEXT = {
-    "MIN": QColor(224, 100, 100),
-    "MAX": QColor(100, 150, 240),
+    "MIN": QColor(210, 122, 52),
+    "MAX": QColor(86, 138, 186),
 }
 
 
@@ -37,7 +37,7 @@ class ResultsPanel(QWidget):
         hbox.setContentsMargins(12, 0, 12, 0)
 
         self._status_label = QLabel("No results.")
-        self._status_label.setStyleSheet("color:#505878; font-size:11px;")
+        self._status_label.setStyleSheet("color:#8f7f6b; font-size:11px;")
         hbox.addWidget(self._status_label)
         hbox.addStretch()
 

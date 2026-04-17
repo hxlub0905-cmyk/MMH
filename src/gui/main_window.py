@@ -42,6 +42,8 @@ class MainWindow(QMainWindow):
         self._current_mask = None
         self._current_cuts: list = []
         self._batch_results: list = []
+        self._last_batch_input: Path | None = None
+        self._focused_measurement: tuple[int, int] | None = None
 
         self._preview_timer = QTimer()
         self._preview_timer.setSingleShot(True)
@@ -49,6 +51,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._connect_signals()
+        self._viewer.set_nm_per_pixel(self._ctrl.get_nm_per_pixel())
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -165,7 +168,8 @@ class MainWindow(QMainWindow):
         self._chk_lines  = _ov_chk("Lines",   checked=True)
         self._chk_labels = _ov_chk("Values",  checked=True)
         self._chk_boxes  = _ov_chk("Boxes",   checked=False)
-        for chk in (self._chk_lines, self._chk_labels, self._chk_boxes):
+        self._chk_legend = _ov_chk("Legend", checked=True)
+        for chk in (self._chk_lines, self._chk_labels, self._chk_boxes, self._chk_legend):
             chk.stateChanged.connect(self._refresh_annotated)
             ov_hbox.addWidget(chk)
 
@@ -213,10 +217,13 @@ class MainWindow(QMainWindow):
         self._ctrl.params_changed.connect(self._on_params_changed)
         self._ctrl.run_single.connect(self._run_single)
         self._ctrl.run_batch.connect(self._run_batch)
+        self._ctrl.quick_report.connect(self._quick_report)
+        self._results.row_selected.connect(self._on_result_selected)
 
         self._btn_raw.clicked.connect(self._on_mode_raw)
         self._btn_mask.clicked.connect(self._on_mode_mask)
         self._btn_ann.clicked.connect(self._on_mode_ann)
+        self._viewer.measure_updated.connect(self._on_measure_updated)
 
     # ── slots ─────────────────────────────────────────────────────────────────
 
@@ -247,10 +254,12 @@ class MainWindow(QMainWindow):
 
     def _on_mode_raw(self) -> None:
         self._overlay_widget.setVisible(False)
+        self._focused_measurement = None
         self._viewer.set_mode("raw")
 
     def _on_mode_mask(self) -> None:
         self._overlay_widget.setVisible(False)
+        self._focused_measurement = None
         self._viewer.set_mode("mask")
 
     def _on_mode_ann(self) -> None:
@@ -258,6 +267,7 @@ class MainWindow(QMainWindow):
         self._viewer.set_mode("annotated")
 
     def _on_params_changed(self, _nm: float, _p) -> None:
+        self._viewer.set_nm_per_pixel(self._ctrl.get_nm_per_pixel())
         self._schedule_preview()
 
     def _schedule_preview(self) -> None:
@@ -279,6 +289,8 @@ class MainWindow(QMainWindow):
             show_lines=self._chk_lines.isChecked(),
             show_labels=self._chk_labels.isChecked(),
             show_boxes=self._chk_boxes.isChecked(),
+            show_legend=self._chk_legend.isChecked(),
+            focus=self._focused_measurement,
         )
 
     def _make_annotated(self):
@@ -293,6 +305,14 @@ class MainWindow(QMainWindow):
             return
         annotated = self._make_annotated()
         self._viewer.set_images(self._current_raw, self._current_mask, annotated)
+
+    @pyqtSlot(int, int)
+    def _on_result_selected(self, cmg_id: int, col_id: int) -> None:
+        self._focused_measurement = (cmg_id, col_id)
+        self._btn_ann.setChecked(True)
+        self._overlay_widget.setVisible(True)
+        self._viewer.set_mode("annotated")
+        self._refresh_annotated()
 
     @pyqtSlot()
     def _run_single(self) -> None:
@@ -312,6 +332,7 @@ class MainWindow(QMainWindow):
 
         self._current_mask = mask
         self._current_cuts = cuts
+        self._focused_measurement = None
         annotated = (draw_overlays(self._current_raw, mask, cuts, self._get_overlay_opts())
                      if cuts else None)
         self._viewer.set_images(self._current_raw, mask, annotated)
@@ -335,6 +356,7 @@ class MainWindow(QMainWindow):
         if not folder:
             return
         paths = scan_folder(folder)
+        self._last_batch_input = Path(folder)
         if not paths:
             QMessageBox.information(self, "No images", "No supported images found.")
             return
@@ -368,6 +390,13 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Batch done  ·  {len(results)} images  ·  {n_meas} measurements  ·  {n_fail} failures"
         )
+        if self._ctrl.should_auto_export_annotated():
+            base = self._last_batch_input or Path.cwd()
+            out = base / f"annotated_batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            opts = OverlayOptions(**self._ctrl.get_export_overlay_opts())
+            self._export_annotated_images(results, out, opts)
+            QMessageBox.information(self, "Batch Overlay Export",
+                                    f"Annotated images saved to:\n{out}")
 
     @pyqtSlot()
     def _export(self) -> None:
@@ -391,6 +420,33 @@ class MainWindow(QMainWindow):
         self._do_export(data, Path(out_dir), nm_px)
         QMessageBox.information(self, "Export complete",
                                 f"Results saved to:\n{out_dir}")
+
+    @pyqtSlot()
+    def _quick_report(self) -> None:
+        if not self._batch_results and not self._current_cuts:
+            QMessageBox.information(self, "Nothing to report", "Run single or batch first.")
+            return
+        base = (self._current_path.parent if self._current_path else Path.cwd())
+        out_dir = base / f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        nm_px = self._ctrl.get_nm_per_pixel()
+        if self._batch_results:
+            data = self._batch_results
+        else:
+            from .batch_dialog import _serialise_cuts
+            data = [{
+                "path": str(self._current_path or ""),
+                "status": "OK" if self._current_cuts else "FAIL",
+                "cuts": _serialise_cuts(self._current_cuts),
+                "error": "",
+            }]
+        self._do_export(data, out_dir, nm_px)
+        QMessageBox.information(self, "One-click report complete",
+                                f"Report package saved to:\n{out_dir}")
+
+    @pyqtSlot(str)
+    def _on_measure_updated(self, text: str) -> None:
+        self.statusBar().showMessage(text)
 
     def _do_export(self, results: list, out_path: Path, nm_px: float) -> None:
         import cv2
@@ -428,6 +484,26 @@ class MainWindow(QMainWindow):
         export_excel(results, out_path / f"{ts}_measurements.xlsx", nm_px)
         export_json(results,  out_path / f"{ts}_measurements.json", nm_px)
         generate_report(results, out_path / f"{ts}_report.html",    nm_px)
+
+    def _export_annotated_images(self, results: list, out_dir: Path, opts: OverlayOptions) -> None:
+        import cv2
+        out_dir.mkdir(parents=True, exist_ok=True)
+        params = self._ctrl.get_preprocess_params()
+        min_area = self._ctrl.get_min_area()
+        nm_px = self._ctrl.get_nm_per_pixel()
+        for r in results:
+            if r.get("status") != "OK":
+                continue
+            img_path = Path(r["path"])
+            try:
+                raw = load_grayscale(img_path)
+                mask = preprocess(raw, params)
+                blobs = detect_blobs(mask, min_area=min_area)
+                cuts = analyze(blobs, nm_px)
+                ann = draw_overlays(raw, mask, cuts, opts)
+                cv2.imwrite(str(out_dir / f"{img_path.stem}_annotated.png"), ann)
+            except Exception:
+                continue
 
 
 # ── module-level helpers ──────────────────────────────────────────────────────

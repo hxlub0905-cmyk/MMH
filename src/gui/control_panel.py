@@ -14,6 +14,7 @@ class ControlPanel(QWidget):
     params_changed  = pyqtSignal(float, PreprocessParams)
     run_single      = pyqtSignal()
     run_batch       = pyqtSignal()
+    quick_report    = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -36,6 +37,7 @@ class ControlPanel(QWidget):
         self._build_detection()
         self._build_preprocess()
         self._build_actions()
+        self._build_batch_output()
         self._layout.addStretch()
 
         scroll.setWidget(inner)
@@ -174,6 +176,34 @@ class ControlPanel(QWidget):
         self._layout.addWidget(btn_single)
         self._layout.addWidget(btn_batch)
 
+        btn_report = QPushButton("📝  One-click Report")
+        btn_report.clicked.connect(self.quick_report)
+        btn_report.setMinimumHeight(34)
+        self._layout.addWidget(btn_report)
+
+    def _build_batch_output(self) -> None:
+        box = QGroupBox("Batch Output")
+        v = QVBoxLayout(box)
+        v.setSpacing(6)
+        v.setContentsMargins(10, 6, 10, 8)
+
+        self._auto_export_ann = QCheckBox("Batch後自動輸出Overlay圖")
+        self._auto_export_ann.setChecked(True)
+        v.addWidget(self._auto_export_ann)
+
+        self._exp_lines = QCheckBox("含 Lines")
+        self._exp_lines.setChecked(True)
+        self._exp_labels = QCheckBox("含 Values")
+        self._exp_labels.setChecked(True)
+        self._exp_boxes = QCheckBox("含 Boxes")
+        self._exp_boxes.setChecked(False)
+        self._exp_legend = QCheckBox("含 Legend")
+        self._exp_legend.setChecked(True)
+        for chk in (self._exp_lines, self._exp_labels, self._exp_boxes, self._exp_legend):
+            v.addWidget(chk)
+
+        self._layout.addWidget(box)
+
     # ── public API ────────────────────────────────────────────────────────────
 
     def get_nm_per_pixel(self) -> float:
@@ -195,8 +225,19 @@ class ControlPanel(QWidget):
     def _emit(self) -> None:
         self.params_changed.emit(self.get_nm_per_pixel(), self.get_preprocess_params())
 
+    def should_auto_export_annotated(self) -> bool:
+        return self._auto_export_ann.isChecked()
+
+    def get_export_overlay_opts(self) -> dict[str, bool]:
+        return {
+            "show_lines": self._exp_lines.isChecked(),
+            "show_labels": self._exp_labels.isChecked(),
+            "show_boxes": self._exp_boxes.isChecked(),
+            "show_legend": self._exp_legend.isChecked(),
+        }
+
 
 def _lbl(text: str) -> QLabel:
     lbl = QLabel(text)
-    lbl.setStyleSheet("color: #8892b0; font-size: 12px;")
+    lbl.setStyleSheet("color: #7c6d5b; font-size: 12px;")
     return lbl

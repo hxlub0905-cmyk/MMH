@@ -34,6 +34,8 @@ class OverlayOptions:
     show_lines:  bool = True
     show_labels: bool = True
     show_boxes:  bool = True
+    show_legend: bool = True
+    focus: tuple[int, int] | None = None
 
 
 def draw_overlays(
@@ -56,6 +58,9 @@ def draw_overlays(
         for m in cut.measurements:
             col = _COL.get(m.flag, _COL[""])
             _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
+
+    if opts.show_legend:
+        _draw_legend(canvas, fs)
 
     return canvas
 
@@ -83,11 +88,13 @@ def _draw_measurement(
 
     # ── measurement line + ticks ──────────────────────────────────────────────
     if opts.show_lines:
-        cv2.line(canvas, (x_mid, y_top), (x_mid, y_bot), col, _LINE_W, cv2.LINE_AA)
+        line_w = _LINE_W + 1 if opts.focus == (m.cmg_id, m.col_id) else _LINE_W
+        line_col = (40, 120, 240) if opts.focus == (m.cmg_id, m.col_id) else col
+        cv2.line(canvas, (x_mid, y_top), (x_mid, y_bot), line_col, line_w, cv2.LINE_AA)
         cv2.line(canvas, (x_mid - _TICK_HALF, y_top),
-                 (x_mid + _TICK_HALF, y_top), col, _LINE_W, cv2.LINE_AA)
+                 (x_mid + _TICK_HALF, y_top), line_col, line_w, cv2.LINE_AA)
         cv2.line(canvas, (x_mid - _TICK_HALF, y_bot),
-                 (x_mid + _TICK_HALF, y_bot), col, _LINE_W, cv2.LINE_AA)
+                 (x_mid + _TICK_HALF, y_bot), line_col, line_w, cv2.LINE_AA)
 
     # ── label: just the number, no unit, no tag, no background ───────────────
     if opts.show_labels:
@@ -107,3 +114,27 @@ def _draw_measurement(
             cv2.putText(canvas, text, (x_lbl, y_lbl),
                         font, fs, col, th, cv2.LINE_AA)
             last_label_y[lane] = y_lbl
+
+
+def _draw_legend(canvas: np.ndarray, fs: float) -> None:
+    H, W = canvas.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    items = [
+        ("MIN Y-CD", _COL["MIN"]),
+        ("MAX Y-CD", _COL["MAX"]),
+        ("NORMAL", _COL[""]),
+    ]
+    pad = 8
+    lh = 16
+    box_w = 130
+    box_h = pad * 2 + lh * len(items)
+    x0 = max(0, W - box_w - 10)
+    y0 = 10
+    overlay = canvas.copy()
+    cv2.rectangle(overlay, (x0, y0), (x0 + box_w, y0 + box_h), (255, 255, 255), -1)
+    cv2.addWeighted(overlay, 0.75, canvas, 0.25, 0, canvas)
+    cv2.rectangle(canvas, (x0, y0), (x0 + box_w, y0 + box_h), (210, 210, 210), 1)
+    for i, (label, col) in enumerate(items):
+        yy = y0 + pad + (i + 1) * lh - 4
+        cv2.circle(canvas, (x0 + 12, yy - 3), 4, col, -1)
+        cv2.putText(canvas, label, (x0 + 24, yy), font, max(0.32, fs), (60, 60, 60), 1, cv2.LINE_AA)
