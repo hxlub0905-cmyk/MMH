@@ -2,54 +2,42 @@
 
 from __future__ import annotations
 from pathlib import Path
-from PyQt6.QtWidgets import QTreeView, QFileSystemModel, QAbstractItemView
-from PyQt6.QtCore import Qt, QSortFilterProxyModel, QModelIndex, pyqtSignal
+from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QAbstractItemView
+from PyQt6.QtCore import Qt, pyqtSignal
 from ..core.image_loader import SUPPORTED_EXTENSIONS
 
 
-class _ImageFilter(QSortFilterProxyModel):
-    """Show only directories and supported image files."""
-
-    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
-        model = self.sourceModel()
-        idx = model.index(source_row, 0, source_parent)
-        if model.isDir(idx):
-            return True
-        name = model.fileName(idx)
-        return Path(name).suffix.lower() in SUPPORTED_EXTENSIONS
-
-
-class FileTreePanel(QTreeView):
-    file_selected = pyqtSignal(Path)   # emitted when user clicks an image file
+class FileTreePanel(QTreeWidget):
+    file_selected = pyqtSignal(Path)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._fs_model = QFileSystemModel()
-        self._fs_model.setRootPath("")
-
-        self._proxy = _ImageFilter(self)
-        self._proxy.setSourceModel(self._fs_model)
-
-        self.setModel(self._proxy)
+        self.setHeaderLabel("Files")
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.setAnimated(False)
-        self.setSortingEnabled(True)
-        self.sortByColumn(0, Qt.SortOrder.AscendingOrder)
-
-        # hide size / type / date columns
-        for col in (1, 2, 3):
-            self.setColumnHidden(col, True)
-
-        self.selectionModel().currentChanged.connect(self._on_selection)
+        self.setAnimated(True)
+        self.itemClicked.connect(self._on_click)
 
     def set_root(self, folder: str | Path) -> None:
-        src_idx = self._fs_model.setRootPath(str(folder))
-        proxy_idx = self._proxy.mapFromSource(src_idx)
-        self.setRootIndex(proxy_idx)
-        self.expand(proxy_idx)
+        self.clear()
+        root = Path(folder)
+        self._populate(self.invisibleRootItem(), root)
+        self.expandAll()
 
-    def _on_selection(self, proxy_idx: QModelIndex, _prev: QModelIndex) -> None:
-        src_idx = self._proxy.mapToSource(proxy_idx)
-        if not self._fs_model.isDir(src_idx):
-            path = Path(self._fs_model.filePath(src_idx))
+    def _populate(self, parent: QTreeWidgetItem, folder: Path) -> None:
+        try:
+            entries = sorted(folder.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        except PermissionError:
+            return
+        for entry in entries:
+            if entry.is_dir():
+                dir_item = QTreeWidgetItem(parent, [entry.name])
+                dir_item.setData(0, Qt.ItemDataRole.UserRole, entry)
+                self._populate(dir_item, entry)
+            elif entry.is_file() and entry.suffix.lower() in SUPPORTED_EXTENSIONS:
+                file_item = QTreeWidgetItem(parent, [entry.name])
+                file_item.setData(0, Qt.ItemDataRole.UserRole, entry)
+
+    def _on_click(self, item: QTreeWidgetItem, _col: int) -> None:
+        path: Path | None = item.data(0, Qt.ItemDataRole.UserRole)
+        if path and path.is_file():
             self.file_selected.emit(path)
