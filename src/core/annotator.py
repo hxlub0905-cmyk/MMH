@@ -6,9 +6,9 @@ Overlay options (all toggleable):
   show_boxes  – bounding rectangles around upper / lower MG blobs
 
 Colours (three only):
-  MIN Y-CD  →  #e05555  (red)
-  MAX Y-CD  →  #5588ee  (blue)
-  Normal    →  #44aadd  (cyan)
+  MIN Y-CD  →  #d8894f  (orange)
+  MAX Y-CD  →  #6ea8cf  (sky)
+  Normal    →  #8ccaa6  (mint)
 """
 
 from __future__ import annotations
@@ -19,13 +19,14 @@ from .cmg_analyzer import CMGCut, YCDMeasurement
 
 # BGR colours
 _COL = {
-    "MIN": (85,  85, 224),    # red
-    "MAX": (238, 136, 85),    # blue
-    "":   (221, 170, 68),     # cyan
+    "MIN": (79, 137, 216),    # orange
+    "MAX": (207, 168, 110),   # sky
+    "":   (166, 202, 140),    # mint
 }
 _TICK_HALF = 5
 _LINE_W    = 1
 _BOX_W     = 1
+_LABEL_MIN_DY = 12
 
 
 @dataclass
@@ -47,13 +48,14 @@ def draw_overlays(
 
     canvas = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
     h      = img_gray.shape[0]
-    fs     = max(0.32, h / 1600)
+    fs     = max(0.24, h / 2200)
     th     = max(1, round(fs))
+    last_label_y: dict[int, int] = {}
 
     for cut in cuts:
         for m in cut.measurements:
             col = _COL.get(m.flag, _COL[""])
-            _draw_measurement(canvas, m, col, fs, th, opts)
+            _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
 
     return canvas
 
@@ -65,6 +67,7 @@ def _draw_measurement(
     fs: float,
     th: int,
     opts: OverlayOptions,
+    last_label_y: dict[int, int],
 ) -> None:
     ub, lb = m.upper_blob, m.lower_blob
     y_top  = ub.y1
@@ -94,8 +97,13 @@ def _draw_measurement(
         x_lbl  = x_mid + _TICK_HALF + 4
         y_lbl  = int((y_top + y_bot) / 2) + th_px // 2
         H, W   = canvas.shape[:2]
+        lane   = x_lbl // 24
+        prev_y = last_label_y.get(lane)
+        if prev_y is not None and abs(y_lbl - prev_y) < _LABEL_MIN_DY:
+            y_lbl = min(H - 2, prev_y + _LABEL_MIN_DY)
         if 0 <= x_lbl + tw < W and 0 <= y_lbl < H:
             cv2.putText(canvas, text, (x_lbl, y_lbl),
                         font, fs, (0, 0, 0), th + 1, cv2.LINE_AA)
             cv2.putText(canvas, text, (x_lbl, y_lbl),
                         font, fs, col, th, cv2.LINE_AA)
+            last_label_y[lane] = y_lbl

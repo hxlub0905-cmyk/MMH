@@ -8,11 +8,11 @@ from datetime import datetime
 
 from PyQt6.QtWidgets import (
     QMainWindow, QSplitter, QFileDialog, QMessageBox,
-    QToolBar, QStatusBar, QWidget, QVBoxLayout, QHBoxLayout,
+    QStatusBar, QWidget, QVBoxLayout, QHBoxLayout,
     QFrame, QLabel, QPushButton, QButtonGroup, QCheckBox,
     QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QSize
+from PyQt6.QtCore import Qt, QTimer, pyqtSlot
 from PyQt6.QtGui import QAction, QFont
 
 from .file_tree_panel import FileTreePanel
@@ -54,7 +54,6 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         self._build_menubar()
-        self._build_toolbar()
 
         # ── Root splitter: Left | Center | Right ──────────────────────────────
         root_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -98,20 +97,6 @@ class MainWindow(QMainWindow):
         self._act_export = QAction("Export Results…  Ctrl+E", self)
         self._act_export.setShortcut("Ctrl+E")
         em.addAction(self._act_export)
-
-    def _build_toolbar(self) -> None:
-        tb = QToolBar("Main")
-        tb.setMovable(False)
-        tb.setIconSize(QSize(14, 14))
-        tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.addToolBar(tb)
-
-        tb.addAction(self._act_open)
-        tb.addSeparator()
-        tb.addAction(self._act_single)
-        tb.addAction(self._act_batch)
-        tb.addSeparator()
-        tb.addAction(self._act_export)
 
     def _make_left_panel(self) -> QFrame:
         panel = QFrame()
@@ -168,7 +153,7 @@ class MainWindow(QMainWindow):
 
         # ── overlay options (visible only in Annotated mode) ──────────────────
         sep = QLabel("  |  ")
-        sep.setStyleSheet("color: #2a2d50;")
+        sep.setStyleSheet("color: #d8cbb8;")
         hbox.addWidget(sep)
 
         self._overlay_widget = QWidget()
@@ -188,7 +173,7 @@ class MainWindow(QMainWindow):
         hbox.addStretch()
 
         self._zoom_label = QLabel("Double-click to fit")
-        self._zoom_label.setStyleSheet("color: #303458; font-size: 11px;")
+        self._zoom_label.setStyleSheet("color: #9f8f7b; font-size: 11px;")
         hbox.addWidget(self._zoom_label)
 
         vbox.addWidget(header)
@@ -451,7 +436,7 @@ def _ov_chk(text: str, checked: bool = True) -> QCheckBox:
     chk = QCheckBox(text)
     chk.setChecked(checked)
     chk.setStyleSheet(
-        "QCheckBox { color:#6677aa; font-size:11px; spacing:4px; }"
+        "QCheckBox { color:#8c7a66; font-size:11px; spacing:4px; }"
         "QCheckBox::indicator { width:12px; height:12px; }"
     )
     return chk
