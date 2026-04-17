@@ -9,9 +9,12 @@ Supports three display modes toggled via set_mode():
 from __future__ import annotations
 import numpy as np
 import cv2
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem
-from PyQt6.QtGui import QImage, QPixmap, QWheelEvent, QMouseEvent
-from PyQt6.QtCore import Qt, QPointF
+from PyQt6.QtWidgets import (
+    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
+    QGraphicsLineItem, QGraphicsSimpleTextItem,
+)
+from PyQt6.QtGui import QImage, QPixmap, QWheelEvent, QMouseEvent, QPen, QColor
+from PyQt6.QtCore import Qt, QPointF, pyqtSignal
 
 
 def _ndarray_to_pixmap(img: np.ndarray) -> QPixmap:
@@ -27,6 +30,8 @@ def _ndarray_to_pixmap(img: np.ndarray) -> QPixmap:
 
 
 class ImageViewer(QGraphicsView):
+    measure_updated = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._scene = QGraphicsScene(self)
@@ -43,7 +48,13 @@ class ImageViewer(QGraphicsView):
         self._raw: np.ndarray | None = None
         self._mask: np.ndarray | None = None
         self._annotated: np.ndarray | None = None
+        self._profile_masks: list[tuple[np.ndarray, tuple[int, int, int], str]] = []
+        self._mask_state_filter: str = ""
         self._mode: str = "raw"
+        self._nm_per_pixel: float = 1.0
+        self._measure_start: QPointF | None = None
+        self._measure_line: QGraphicsLineItem | None = None
+        self._measure_label: QGraphicsSimpleTextItem | None = None
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -52,10 +63,12 @@ class ImageViewer(QGraphicsView):
         raw: np.ndarray,
         mask: np.ndarray | None = None,
         annotated: np.ndarray | None = None,
+        profile_masks: list[tuple[np.ndarray, tuple[int, int, int], str]] | None = None,
     ) -> None:
         self._raw = raw
         self._mask = mask
         self._annotated = annotated
+        self._profile_masks = profile_masks or []
         self._refresh()
 
     def set_mode(self, mode: str) -> None:
@@ -66,11 +79,19 @@ class ImageViewer(QGraphicsView):
     def clear(self) -> None:
         self._raw = self._mask = self._annotated = None
         self._pixmap_item.setPixmap(QPixmap())
+        self._clear_measurement_overlay()
 
     def fit_in_view(self) -> None:
         if self._pixmap_item.pixmap().isNull():
             return
         self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+
+    def set_nm_per_pixel(self, nm_per_pixel: float) -> None:
+        self._nm_per_pixel = max(1e-9, nm_per_pixel)
+
+    def set_mask_state_filter(self, state_name: str) -> None:
+        self._mask_state_filter = state_name
+        self._refresh()
 
     # ── internal ──────────────────────────────────────────────────────────────
 
@@ -86,10 +107,15 @@ class ImageViewer(QGraphicsView):
         if self._mode == "annotated" and self._annotated is not None:
             return self._annotated
         if self._mode == "mask" and self._mask is not None:
-            # cyan overlay on grayscale
             bgr = cv2.cvtColor(self._raw, cv2.COLOR_GRAY2BGR)
             overlay = bgr.copy()
-            overlay[self._mask > 0] = (255, 255, 0)
+            if self._profile_masks:
+                for pmask, col, _name in self._profile_masks:
+                    if self._mask_state_filter and _name != self._mask_state_filter:
+                        continue
+                    overlay[pmask > 0] = col
+            else:
+                overlay[self._mask > 0] = (255, 255, 0)
             cv2.addWeighted(overlay, 0.35, bgr, 0.65, 0, bgr)
             return bgr
         return self._raw
@@ -103,3 +129,63 @@ class ImageViewer(QGraphicsView):
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         self.fit_in_view()
         super().mouseDoubleClickEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and (
+            event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+        ):
+            scene_pos = self.mapToScene(event.position().toPoint())
+            if self._measure_start is None:
+                self._measure_start = scene_pos
+                self._ensure_measure_items()
+                if self._measure_line:
+                    self._measure_line.setLine(scene_pos.x(), scene_pos.y(), scene_pos.x(), scene_pos.y())
+            else:
+                self._update_measurement(scene_pos, final=True)
+                self._measure_start = None
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._measure_start is not None:
+            scene_pos = self.mapToScene(event.position().toPoint())
+            self._update_measurement(scene_pos, final=False)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def _ensure_measure_items(self) -> None:
+        if self._measure_line is None:
+            pen = QPen(QColor("#f29f4b"))
+            pen.setWidth(2)
+            self._measure_line = self._scene.addLine(0, 0, 0, 0, pen)
+        if self._measure_label is None:
+            self._measure_label = self._scene.addSimpleText("")
+            self._measure_label.setBrush(QColor("#6b513a"))
+
+    def _update_measurement(self, end_pt: QPointF, final: bool) -> None:
+        if self._measure_start is None:
+            return
+        self._ensure_measure_items()
+        sp = self._measure_start
+        if self._measure_line:
+            self._measure_line.setLine(sp.x(), sp.y(), end_pt.x(), end_pt.y())
+        dx = end_pt.x() - sp.x()
+        dy = end_pt.y() - sp.y()
+        px_dist = float(np.hypot(dx, dy))
+        nm_dist = px_dist * self._nm_per_pixel
+        msg = f"Ruler: {px_dist:.3f} px  ({nm_dist:.3f} nm)"
+        if self._measure_label:
+            self._measure_label.setText(msg)
+            self._measure_label.setPos((sp.x() + end_pt.x()) / 2 + 6, (sp.y() + end_pt.y()) / 2 - 14)
+        self.measure_updated.emit(msg if not final else f"{msg}  ·  fixed (Shift+Click to remeasure)")
+
+    def _clear_measurement_overlay(self) -> None:
+        if self._measure_line is not None:
+            self._scene.removeItem(self._measure_line)
+            self._measure_line = None
+        if self._measure_label is not None:
+            self._scene.removeItem(self._measure_label)
+            self._measure_label = None
+        self._measure_start = None

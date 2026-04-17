@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+import cv2
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QProgressBar, QPushButton,
     QTextEdit, QHBoxLayout,
@@ -13,26 +14,53 @@ from PyQt6.QtCore import QThread, pyqtSignal, Qt
 
 def _process_one(args: tuple) -> dict:
     """Top-level worker function (must be picklable for multiprocessing)."""
-    image_path, nm_per_pixel, gl_min, gl_max, gauss_k, morph_open_k, morph_close_k, use_clahe, min_area = args
+    image_path, nm_per_pixel, gl_min, gl_max, gauss_k, morph_open_k, morph_close_k, use_clahe, min_area, cards = args
     from ..core.image_loader import load_grayscale
     from ..core.preprocessor import preprocess, PreprocessParams
-    from ..core.mg_detector import detect_blobs
+    from ..core.mg_detector import detect_blobs, Blob
     from ..core.cmg_analyzer import analyze
 
     result: dict = {"path": str(image_path), "status": "OK", "cuts": [], "error": ""}
     try:
         img = load_grayscale(image_path)
-        params = PreprocessParams(
-            gl_min=gl_min,
-            gl_max=gl_max,
-            gauss_kernel=gauss_k,
-            morph_open_k=morph_open_k,
-            morph_close_k=morph_close_k,
-            use_clahe=use_clahe,
-        )
-        mask = preprocess(img, params)
-        blobs = detect_blobs(mask, min_area=min_area)
-        cuts = analyze(blobs, nm_per_pixel)
+        cards = cards or []
+        import numpy as np
+        mask = np.zeros_like(img, dtype=np.uint8)
+        cuts = []
+        cmg_offset = 0
+        h, w = img.shape
+        for i, card in enumerate(cards):
+            axis = str(card.get("axis", "Y")).upper()
+            roi = img if axis.startswith("Y") else cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+            params = PreprocessParams(
+                gl_min=int(card.get("gl_min", gl_min)),
+                gl_max=int(card.get("gl_max", gl_max)),
+                gauss_kernel=gauss_k,
+                morph_open_k=morph_open_k,
+                morph_close_k=morph_close_k,
+                use_clahe=use_clahe,
+            )
+            m_roi = preprocess(roi, params)
+            m_ori = m_roi if axis.startswith("Y") else cv2.rotate(m_roi, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            mask = np.maximum(mask, m_ori)
+            blobs = detect_blobs(m_roi, min_area=int(card.get("min_area", min_area)))
+            if axis.startswith("X"):
+                blobs = [Blob(
+                    label=b.label,
+                    x0=b.y0, y0=(h - 1) - (b.x1 - 1),
+                    x1=b.y1, y1=(h - 1) - b.x0 + 1,
+                    area=b.area, cx=b.cy, cy=(h - 1) - b.cx
+                ) for b in blobs]
+            c = analyze(blobs, nm_per_pixel)
+            for cut in c:
+                cut.cmg_id += cmg_offset
+                for m in cut.measurements:
+                    m.cmg_id = cut.cmg_id
+                    m.col_id = i * 1000 + m.col_id
+                    m.axis = "X" if axis.startswith("X") else "Y"
+                    m.state_name = str(card.get("name", f"Measure {i+1}"))
+            cmg_offset += len(c)
+            cuts.extend(c)
 
         if not cuts:
             result["status"] = "FAIL"
@@ -58,6 +86,8 @@ def _serialise_cuts(cuts) -> list:
                 "y_cd_px": m.y_cd_px,
                 "y_cd_nm": m.y_cd_nm,
                 "flag": m.flag,
+                "axis": m.axis,
+                "state_name": m.state_name,
                 "upper_bbox": (m.upper_blob.x0, m.upper_blob.y0, m.upper_blob.x1, m.upper_blob.y1),
                 "lower_bbox": (m.lower_blob.x0, m.lower_blob.y0, m.lower_blob.x1, m.lower_blob.y1),
             })
@@ -92,6 +122,7 @@ class _BatchWorker(QThread):
                 p["morph_close_k"],
                 p["use_clahe"],
                 p["min_area"],
+                p.get("cards", []),
             )
             for path in self._paths
         ]

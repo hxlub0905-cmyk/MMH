@@ -25,6 +25,8 @@ class YCDMeasurement:
     y_cd_px: float
     y_cd_nm: float
     flag: str = ""   # "MIN", "MAX", or ""
+    axis: str = "Y"
+    state_name: str = ""
 
 
 @dataclass
@@ -110,10 +112,12 @@ def analyze(
         for k in range(len(sorted_blobs) - 1):
             upper = sorted_blobs[k]
             lower = sorted_blobs[k + 1]
-            y_cd_px = lower.y0 - upper.y1
+            upper_edge = upper.cy + (upper.height / 2.0)
+            lower_edge = lower.cy - (lower.height / 2.0)
+            y_cd_px = lower_edge - upper_edge
             if y_cd_px <= 0:
                 continue   # blobs overlap — skip
-            mid_y = (upper.y1 + lower.y0) / 2.0
+            mid_y = (upper_edge + lower_edge) / 2.0
             gaps.append(
                 Gap(
                     col_group=col_idx,
