@@ -1,20 +1,20 @@
-"""Right-side control panel: scale, detection params, pre-processing, actions."""
+"""Right-side control panel: scale, preprocess, and dynamic measurement profiles."""
 
 from __future__ import annotations
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QDoubleSpinBox,
     QSlider, QSpinBox, QLabel, QCheckBox, QGroupBox,
     QPushButton, QHBoxLayout, QScrollArea, QSizePolicy, QComboBox,
+    QToolButton, QInputDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from ..core.preprocessor import PreprocessParams
 
 
 class ControlPanel(QWidget):
-    params_changed  = pyqtSignal(float, PreprocessParams)
-    run_single      = pyqtSignal()
-    run_batch       = pyqtSignal()
-    quick_report    = pyqtSignal()
+    params_changed = pyqtSignal(float, PreprocessParams)
+    run_single = pyqtSignal()
+    run_batch = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -22,7 +22,6 @@ class ControlPanel(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -34,23 +33,19 @@ class ControlPanel(QWidget):
         self._layout.setSpacing(10)
 
         self._build_scale()
-        self._build_detection()
         self._build_preprocess()
-        self._build_measure_cards()
+        self._build_measurement_profiles()
         self._build_actions()
-        self._build_batch_output()
         self._layout.addStretch()
 
         scroll.setWidget(inner)
         outer.addWidget(scroll)
 
-    # ── section builders ──────────────────────────────────────────────────────
+        self._add_profile("MG")
 
     def _build_scale(self) -> None:
         box = QGroupBox("Scale")
         form = QFormLayout(box)
-        form.setSpacing(8)
-        form.setContentsMargins(10, 4, 10, 8)
 
         self._nm_px = QDoubleSpinBox()
         self._nm_px.setRange(0.0001, 10000.0)
@@ -61,106 +56,51 @@ class ControlPanel(QWidget):
         form.addRow(_lbl("nm / pixel"), self._nm_px)
         self._layout.addWidget(box)
 
-    def _build_detection(self) -> None:
-        box = QGroupBox("MG Detection")
-        vbox = QVBoxLayout(box)
-        vbox.setSpacing(10)
-        vbox.setContentsMargins(10, 4, 10, 8)
-
-        # ── GL range ──────────────────────────────────────────────────────────
-        vbox.addWidget(_lbl("GL Range  (pixels within range = MG)"))
-
-        # Min row
-        min_row = QHBoxLayout()
-        min_row.addWidget(_lbl("Min"))
-        self._gl_min_val = QLabel("100")
-        self._gl_min_val.setObjectName("thresholdValue")
-        self._gl_min_val.setFixedWidth(30)
-        self._gl_min_slider = QSlider(Qt.Orientation.Horizontal)
-        self._gl_min_slider.setRange(0, 255)
-        self._gl_min_slider.setValue(100)
-        self._gl_min_slider.valueChanged.connect(self._on_gl_min_changed)
-        min_row.addWidget(self._gl_min_slider)
-        min_row.addWidget(self._gl_min_val)
-        vbox.addLayout(min_row)
-
-        # Max row
-        max_row = QHBoxLayout()
-        max_row.addWidget(_lbl("Max"))
-        self._gl_max_val = QLabel("220")
-        self._gl_max_val.setObjectName("thresholdValue")
-        self._gl_max_val.setFixedWidth(30)
-        self._gl_max_slider = QSlider(Qt.Orientation.Horizontal)
-        self._gl_max_slider.setRange(0, 255)
-        self._gl_max_slider.setValue(220)
-        self._gl_max_slider.valueChanged.connect(self._on_gl_max_changed)
-        max_row.addWidget(self._gl_max_slider)
-        max_row.addWidget(self._gl_max_val)
-        vbox.addLayout(max_row)
-
-        # Min area
-        form = QFormLayout()
-        form.setSpacing(7)
-        self._min_area = QSpinBox()
-        self._min_area.setRange(1, 500_000)
-        self._min_area.setValue(50)
-        self._min_area.setSuffix(" px²")
-        self._min_area.valueChanged.connect(self._emit)
-        form.addRow(_lbl("Min blob area"), self._min_area)
-        vbox.addLayout(form)
-
-        self._layout.addWidget(box)
-
-    def _on_gl_min_changed(self, v: int) -> None:
-        self._gl_min_val.setText(str(v))
-        # prevent min from exceeding max
-        if v > self._gl_max_slider.value():
-            self._gl_max_slider.setValue(v)
-        self._emit()
-
-    def _on_gl_max_changed(self, v: int) -> None:
-        self._gl_max_val.setText(str(v))
-        # prevent max from going below min
-        if v < self._gl_min_slider.value():
-            self._gl_min_slider.setValue(v)
-        self._emit()
-
     def _build_preprocess(self) -> None:
         box = QGroupBox("Pre-processing")
         form = QFormLayout(box)
-        form.setSpacing(8)
-        form.setContentsMargins(10, 4, 10, 8)
 
-        self._gauss_k = QSpinBox()
-        self._gauss_k.setRange(1, 31)
-        self._gauss_k.setSingleStep(2)
-        self._gauss_k.setValue(3)
-        self._gauss_k.setSuffix(" px")
+        self._gauss_k = QSpinBox(); self._gauss_k.setRange(1, 31); self._gauss_k.setSingleStep(2); self._gauss_k.setValue(3)
+        self._morph_open_k = QSpinBox(); self._morph_open_k.setRange(1, 31); self._morph_open_k.setSingleStep(2); self._morph_open_k.setValue(3)
+        self._morph_close_k = QSpinBox(); self._morph_close_k.setRange(1, 31); self._morph_close_k.setSingleStep(2); self._morph_close_k.setValue(5)
+        self._use_clahe = QCheckBox("CLAHE normalisation"); self._use_clahe.setChecked(True)
+
         self._gauss_k.valueChanged.connect(self._emit)
-        form.addRow(_lbl("Gaussian"), self._gauss_k)
-
-        self._morph_open_k = QSpinBox()
-        self._morph_open_k.setRange(1, 31)
-        self._morph_open_k.setSingleStep(2)
-        self._morph_open_k.setValue(3)
-        self._morph_open_k.setSuffix(" px")
         self._morph_open_k.valueChanged.connect(self._emit)
-        form.addRow(_lbl("Morph open"), self._morph_open_k)
-
-        self._morph_close_k = QSpinBox()
-        self._morph_close_k.setRange(1, 31)
-        self._morph_close_k.setSingleStep(2)
-        self._morph_close_k.setValue(5)
-        self._morph_close_k.setSuffix(" px")
         self._morph_close_k.valueChanged.connect(self._emit)
-        form.addRow(_lbl("Morph close"), self._morph_close_k)
-
-        self._use_clahe = QCheckBox("CLAHE normalisation")
-        self._use_clahe.setChecked(True)
         self._use_clahe.stateChanged.connect(self._emit)
+
+        self._gauss_k.setSuffix(" px")
+        self._morph_open_k.setSuffix(" px")
+        self._morph_close_k.setSuffix(" px")
+
+        form.addRow(_lbl("Gaussian"), self._gauss_k)
+        form.addRow(_lbl("Morph open"), self._morph_open_k)
+        form.addRow(_lbl("Morph close"), self._morph_close_k)
         form.addRow(self._use_clahe)
 
         self._layout.addWidget(box)
+
+    def _build_measurement_profiles(self) -> None:
+        box = QGroupBox("Measurements")
+        root = QVBoxLayout(box)
+
+        header = QHBoxLayout()
+        header.addWidget(_lbl("Add reusable measurement profiles"))
+        header.addStretch()
+        self._btn_add = QToolButton()
+        self._btn_add.setText("＋")
+        self._btn_add.setToolTip("Add measurement profile")
+        self._btn_add.clicked.connect(self._on_add_profile)
+        header.addWidget(self._btn_add)
+        root.addLayout(header)
+
+        self._profiles_layout = QVBoxLayout()
+        self._profiles_layout.setSpacing(8)
+        root.addLayout(self._profiles_layout)
+        self._layout.addWidget(box)
+
+        self._profiles: list[dict] = []
 
     def _build_actions(self) -> None:
         btn_single = QPushButton("▶  Run Single Image")
@@ -173,87 +113,84 @@ class ControlPanel(QWidget):
         btn_batch.clicked.connect(self.run_batch)
         btn_batch.setMinimumHeight(38)
 
-        self._layout.addSpacing(4)
         self._layout.addWidget(btn_single)
         self._layout.addWidget(btn_batch)
 
-        btn_report = QPushButton("📝  One-click Report")
-        btn_report.clicked.connect(self.quick_report)
-        btn_report.setMinimumHeight(34)
-        self._layout.addWidget(btn_report)
+    def _on_add_profile(self) -> None:
+        name, ok = QInputDialog.getText(self, "Add Measurement", "Profile name:", text=f"Measure {len(self._profiles)+1}")
+        if not ok:
+            return
+        self._add_profile(name.strip() or f"Measure {len(self._profiles)+1}")
 
-    def _build_measure_cards(self) -> None:
-        box = QGroupBox("Measurement Cards")
-        root = QVBoxLayout(box)
-        root.setContentsMargins(10, 6, 10, 8)
-        root.setSpacing(8)
+    def _add_profile(self, name: str) -> None:
+        box = QGroupBox(name)
+        form = QFormLayout(box)
 
-        self._cards: list[dict] = []
-        for i in range(3):
-            g = QGroupBox(f"Card {i + 1}")
-            f = QFormLayout(g)
-            enabled = QCheckBox("Enabled")
-            enabled.setChecked(i == 0)
-            axis = QComboBox()
-            axis.addItems(["Y-CD", "X-CD"])
-            gl_min = QSpinBox()
-            gl_min.setRange(0, 255)
-            gl_min.setValue(100)
-            gl_max = QSpinBox()
-            gl_max.setRange(0, 255)
-            gl_max.setValue(220)
-            roi_x = QSpinBox(); roi_x.setRange(0, 20000)
-            roi_y = QSpinBox(); roi_y.setRange(0, 20000)
-            roi_w = QSpinBox(); roi_w.setRange(0, 20000); roi_w.setValue(0)
-            roi_h = QSpinBox(); roi_h.setRange(0, 20000); roi_h.setValue(0)
-            for w in (enabled, axis, gl_min, gl_max, roi_x, roi_y, roi_w, roi_h):
-                if hasattr(w, "valueChanged"):
-                    w.valueChanged.connect(self._emit)
-            axis.currentIndexChanged.connect(self._emit)
-            enabled.stateChanged.connect(self._emit)
-            f.addRow("Enable", enabled)
-            f.addRow("Axis", axis)
-            f.addRow("GL Min", gl_min)
-            f.addRow("GL Max", gl_max)
-            f.addRow("ROI X", roi_x)
-            f.addRow("ROI Y", roi_y)
-            f.addRow("ROI W(0=full)", roi_w)
-            f.addRow("ROI H(0=full)", roi_h)
-            root.addWidget(g)
-            self._cards.append({
-                "enabled": enabled,
-                "axis": axis,
-                "gl_min": gl_min,
-                "gl_max": gl_max,
-                "roi_x": roi_x,
-                "roi_y": roi_y,
-                "roi_w": roi_w,
-                "roi_h": roi_h,
-            })
-        self._layout.addWidget(box)
+        axis = QComboBox(); axis.addItems(["Y-CD", "X-CD"])
+        min_val = QLabel("100"); min_val.setObjectName("thresholdValue"); min_val.setFixedWidth(34)
+        max_val = QLabel("220"); max_val.setObjectName("thresholdValue"); max_val.setFixedWidth(34)
+        gl_min = QSlider(Qt.Orientation.Horizontal); gl_min.setRange(0, 255); gl_min.setValue(100)
+        gl_max = QSlider(Qt.Orientation.Horizontal); gl_max.setRange(0, 255); gl_max.setValue(220)
 
-    def _build_batch_output(self) -> None:
-        box = QGroupBox("Batch Output")
-        v = QVBoxLayout(box)
-        v.setSpacing(6)
-        v.setContentsMargins(10, 6, 10, 8)
+        min_row = QHBoxLayout(); min_row.addWidget(_lbl("Min")); min_row.addWidget(gl_min); min_row.addWidget(min_val)
+        max_row = QHBoxLayout(); max_row.addWidget(_lbl("Max")); max_row.addWidget(gl_max); max_row.addWidget(max_val)
+        min_wrap = QWidget(); min_wrap.setLayout(min_row)
+        max_wrap = QWidget(); max_wrap.setLayout(max_row)
 
-        self._auto_export_ann = QCheckBox("Batch後自動輸出Overlay圖")
-        self._auto_export_ann.setChecked(True)
-        v.addWidget(self._auto_export_ann)
+        min_area = QSpinBox(); min_area.setRange(1, 500_000); min_area.setValue(50); min_area.setSuffix(" px²")
+        roi_x = QSpinBox(); roi_x.setRange(0, 20000)
+        roi_y = QSpinBox(); roi_y.setRange(0, 20000)
+        roi_w = QSpinBox(); roi_w.setRange(0, 20000); roi_w.setValue(0)
+        roi_h = QSpinBox(); roi_h.setRange(0, 20000); roi_h.setValue(0)
 
-        self._exp_lines = QCheckBox("含 Lines")
-        self._exp_lines.setChecked(True)
-        self._exp_labels = QCheckBox("含 Values")
-        self._exp_labels.setChecked(True)
-        self._exp_boxes = QCheckBox("含 Boxes")
-        self._exp_boxes.setChecked(False)
-        self._exp_legend = QCheckBox("含 Legend")
-        self._exp_legend.setChecked(True)
-        for chk in (self._exp_lines, self._exp_labels, self._exp_boxes, self._exp_legend):
-            v.addWidget(chk)
+        enabled = QCheckBox("Enabled"); enabled.setChecked(True)
 
-        self._layout.addWidget(box)
+        def on_min(v: int) -> None:
+            if v > gl_max.value():
+                gl_max.setValue(v)
+            min_val.setText(str(v))
+            self._emit()
+
+        def on_max(v: int) -> None:
+            if v < gl_min.value():
+                gl_min.setValue(v)
+            max_val.setText(str(v))
+            self._emit()
+
+        gl_min.valueChanged.connect(on_min)
+        gl_max.valueChanged.connect(on_max)
+        axis.currentIndexChanged.connect(self._emit)
+        min_area.valueChanged.connect(self._emit)
+        roi_x.valueChanged.connect(self._emit)
+        roi_y.valueChanged.connect(self._emit)
+        roi_w.valueChanged.connect(self._emit)
+        roi_h.valueChanged.connect(self._emit)
+        enabled.stateChanged.connect(self._emit)
+
+        form.addRow("Enable", enabled)
+        form.addRow("Axis", axis)
+        form.addRow("GL Min", min_wrap)
+        form.addRow("GL Max", max_wrap)
+        form.addRow("Min blob area", min_area)
+        form.addRow("ROI X", roi_x)
+        form.addRow("ROI Y", roi_y)
+        form.addRow("ROI W (0=full)", roi_w)
+        form.addRow("ROI H (0=full)", roi_h)
+
+        self._profiles_layout.addWidget(box)
+        self._profiles.append({
+            "name": name,
+            "enabled": enabled,
+            "axis": axis,
+            "gl_min": gl_min,
+            "gl_max": gl_max,
+            "min_area": min_area,
+            "roi_x": roi_x,
+            "roi_y": roi_y,
+            "roi_w": roi_w,
+            "roi_h": roi_h,
+        })
+        self._emit()
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -261,56 +198,41 @@ class ControlPanel(QWidget):
         return self._nm_px.value()
 
     def get_preprocess_params(self) -> PreprocessParams:
+        # gl_min/gl_max are profile-specific now; defaults here are placeholders.
         return PreprocessParams(
-            gl_min=self._gl_min_slider.value(),
-            gl_max=self._gl_max_slider.value(),
+            gl_min=100,
+            gl_max=220,
             gauss_kernel=self._gauss_k.value(),
             morph_open_k=self._morph_open_k.value(),
             morph_close_k=self._morph_close_k.value(),
             use_clahe=self._use_clahe.isChecked(),
         )
 
+    def get_measurement_cards(self) -> list[dict]:
+        out = []
+        for i, p in enumerate(self._profiles):
+            if not p["enabled"].isChecked():
+                continue
+            out.append({
+                "card_id": i,
+                "name": p["name"],
+                "axis": "Y" if p["axis"].currentText().startswith("Y") else "X",
+                "gl_min": p["gl_min"].value(),
+                "gl_max": p["gl_max"].value(),
+                "min_area": p["min_area"].value(),
+                "roi_x": p["roi_x"].value(),
+                "roi_y": p["roi_y"].value(),
+                "roi_w": p["roi_w"].value(),
+                "roi_h": p["roi_h"].value(),
+            })
+        return out
+
     def get_min_area(self) -> int:
-        return self._min_area.value()
+        cards = self.get_measurement_cards()
+        return cards[0]["min_area"] if cards else 50
 
     def _emit(self) -> None:
         self.params_changed.emit(self.get_nm_per_pixel(), self.get_preprocess_params())
-
-    def should_auto_export_annotated(self) -> bool:
-        return self._auto_export_ann.isChecked()
-
-    def get_export_overlay_opts(self) -> dict[str, bool]:
-        return {
-            "show_lines": self._exp_lines.isChecked(),
-            "show_labels": self._exp_labels.isChecked(),
-            "show_boxes": self._exp_boxes.isChecked(),
-            "show_legend": self._exp_legend.isChecked(),
-        }
-
-    def get_measurement_cards(self) -> list[dict]:
-        cards = []
-        for i, c in enumerate(self._cards):
-            if not c["enabled"].isChecked():
-                continue
-            cards.append({
-                "card_id": i,
-                "axis": "Y" if c["axis"].currentText().startswith("Y") else "X",
-                "gl_min": c["gl_min"].value(),
-                "gl_max": c["gl_max"].value(),
-                "roi_x": c["roi_x"].value(),
-                "roi_y": c["roi_y"].value(),
-                "roi_w": c["roi_w"].value(),
-                "roi_h": c["roi_h"].value(),
-            })
-        if not cards:
-            cards.append({
-                "card_id": 0,
-                "axis": "Y",
-                "gl_min": self._gl_min_slider.value(),
-                "gl_max": self._gl_max_slider.value(),
-                "roi_x": 0, "roi_y": 0, "roi_w": 0, "roi_h": 0,
-            })
-        return cards
 
 
 def _lbl(text: str) -> QLabel:

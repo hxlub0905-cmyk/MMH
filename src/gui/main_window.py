@@ -225,7 +225,6 @@ class MainWindow(QMainWindow):
         self._ctrl.params_changed.connect(self._on_params_changed)
         self._ctrl.run_single.connect(self._run_single)
         self._ctrl.run_batch.connect(self._run_batch)
-        self._ctrl.quick_report.connect(self._quick_report)
         self._results.row_selected.connect(self._on_result_selected)
 
         self._btn_raw.clicked.connect(self._on_mode_raw)
@@ -395,16 +394,10 @@ class MainWindow(QMainWindow):
             f"Batch done  ·  {len(results)} images  ·  {n_meas} measurements  ·  {n_fail} failures"
         )
         ann_out = None
-        if self._ctrl.should_auto_export_annotated():
-            base = self._last_batch_input or Path.cwd()
-            out = base / f"annotated_batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            opts = OverlayOptions(**self._ctrl.get_export_overlay_opts())
-            self._export_annotated_images(results, out, opts)
-            ann_out = out
-            QMessageBox.information(self, "Batch Overlay Export",
-                                    f"Annotated images saved to:\n{out}")
         viewer = BatchReviewDialog(results, annotated_dir=ann_out, parent=self)
         viewer.export_requested.connect(self._export)
+        viewer.report_requested.connect(self._quick_report)
+        viewer.export_annotated_requested.connect(self._export_annotated_from_viewer)
         viewer.exec()
 
     @pyqtSlot()
@@ -452,6 +445,18 @@ class MainWindow(QMainWindow):
         self._do_export(data, out_dir, nm_px)
         QMessageBox.information(self, "One-click report complete",
                                 f"Report package saved to:\n{out_dir}")
+
+    @pyqtSlot(dict)
+    def _export_annotated_from_viewer(self, opts_dict: dict) -> None:
+        if not self._batch_results:
+            QMessageBox.information(self, "No batch results", "Run batch first.")
+            return
+        out_dir = QFileDialog.getExistingDirectory(self, "Select Annotated Output Folder")
+        if not out_dir:
+            return
+        opts = OverlayOptions(**opts_dict)
+        self._export_annotated_images(self._batch_results, Path(out_dir), opts)
+        QMessageBox.information(self, "Batch Output Exported", f"Saved to:\\n{out_dir}")
 
     @pyqtSlot(str)
     def _on_measure_updated(self, text: str) -> None:
@@ -556,7 +561,7 @@ class MainWindow(QMainWindow):
             full_mask[y:y + rh, x:x + rw] = np.maximum(full_mask[y:y + rh, x:x + rw], mask_roi)
             if preview_only:
                 continue
-            blobs = detect_blobs(mask_roi, min_area=min_area)
+            blobs = detect_blobs(mask_roi, min_area=card.get("min_area", min_area))
             if card["axis"] == "X":
                 blobs = [Blob(
                     label=b.label,

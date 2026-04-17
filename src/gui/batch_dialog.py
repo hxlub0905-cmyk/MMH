@@ -49,7 +49,7 @@ def _process_one(args: tuple) -> dict:
             )
             m_roi = preprocess(roi, params)
             mask[y:y + rh, x:x + rw] = np.maximum(mask[y:y + rh, x:x + rw], m_roi)
-            blobs = detect_blobs(m_roi, min_area=min_area)
+            blobs = detect_blobs(m_roi, min_area=int(card.get("min_area", min_area)))
             if str(card.get("axis", "Y")).upper().startswith("X"):
                 blobs = [Blob(
                     label=b.label, x0=b.y0 + y, y0=b.x0 + x, x1=b.y1 + y, y1=b.x1 + x,
