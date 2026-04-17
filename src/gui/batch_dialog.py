@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+import cv2
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QProgressBar, QPushButton,
     QTextEdit, QHBoxLayout,
@@ -22,23 +23,15 @@ def _process_one(args: tuple) -> dict:
     result: dict = {"path": str(image_path), "status": "OK", "cuts": [], "error": ""}
     try:
         img = load_grayscale(image_path)
-        cards = cards or [{
-            "card_id": 0, "axis": "Y", "gl_min": gl_min, "gl_max": gl_max,
-            "roi_x": 0, "roi_y": 0, "roi_w": 0, "roi_h": 0,
-        }]
+        cards = cards or []
         import numpy as np
         mask = np.zeros_like(img, dtype=np.uint8)
         cuts = []
         cmg_offset = 0
         h, w = img.shape
         for i, card in enumerate(cards):
-            x = max(0, min(w - 1, int(card.get("roi_x", 0))))
-            y = max(0, min(h - 1, int(card.get("roi_y", 0))))
-            rw = int(card.get("roi_w", 0)) or (w - x)
-            rh = int(card.get("roi_h", 0)) or (h - y)
-            rw = max(1, min(rw, w - x))
-            rh = max(1, min(rh, h - y))
-            roi = img[y:y + rh, x:x + rw]
+            axis = str(card.get("axis", "Y")).upper()
+            roi = img if axis.startswith("Y") else cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
             params = PreprocessParams(
                 gl_min=int(card.get("gl_min", gl_min)),
                 gl_max=int(card.get("gl_max", gl_max)),
@@ -48,17 +41,15 @@ def _process_one(args: tuple) -> dict:
                 use_clahe=use_clahe,
             )
             m_roi = preprocess(roi, params)
-            mask[y:y + rh, x:x + rw] = np.maximum(mask[y:y + rh, x:x + rw], m_roi)
+            m_ori = m_roi if axis.startswith("Y") else cv2.rotate(m_roi, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            mask = np.maximum(mask, m_ori)
             blobs = detect_blobs(m_roi, min_area=int(card.get("min_area", min_area)))
-            if str(card.get("axis", "Y")).upper().startswith("X"):
+            if axis.startswith("X"):
                 blobs = [Blob(
-                    label=b.label, x0=b.y0 + y, y0=b.x0 + x, x1=b.y1 + y, y1=b.x1 + x,
-                    area=b.area, cx=b.cy + y, cy=b.cx + x
-                ) for b in blobs]
-            else:
-                blobs = [Blob(
-                    label=b.label, x0=b.x0 + x, y0=b.y0 + y, x1=b.x1 + x, y1=b.y1 + y,
-                    area=b.area, cx=b.cx + x, cy=b.cy + y
+                    label=b.label,
+                    x0=b.y0, y0=(h - 1) - (b.x1 - 1),
+                    x1=b.y1, y1=(h - 1) - b.x0 + 1,
+                    area=b.area, cx=b.cy, cy=(h - 1) - b.cx
                 ) for b in blobs]
             c = analyze(blobs, nm_per_pixel)
             for cut in c:

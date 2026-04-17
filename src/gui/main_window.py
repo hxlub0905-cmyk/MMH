@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 import numpy as np
+import cv2
 
 from PyQt6.QtWidgets import (
     QMainWindow, QSplitter, QFileDialog, QMessageBox,
@@ -326,6 +327,9 @@ class MainWindow(QMainWindow):
         if self._current_raw is None:
             QMessageBox.information(self, "No image", "Select an image first.")
             return
+        if not self._ctrl.get_measurement_cards():
+            QMessageBox.information(self, "No measurements", "Please add at least one measurement profile.")
+            return
         try:
             mask, cuts = self._analyze_with_cards(self._current_raw, preview_only=False)
         except Exception as exc:
@@ -532,19 +536,15 @@ class MainWindow(QMainWindow):
         base_params = self._ctrl.get_preprocess_params()
         min_area = self._ctrl.get_min_area()
         nm_px = self._ctrl.get_nm_per_pixel()
-        full_mask = None
+        full_mask = np.zeros_like(raw, dtype=np.uint8)
         cuts_all = []
         cmg_offset = 0
-        h, w = raw.shape
+        if not cards:
+            return full_mask, cuts_all
 
         for ci, card in enumerate(cards):
-            x = max(0, min(w - 1, card["roi_x"]))
-            y = max(0, min(h - 1, card["roi_y"]))
-            rw = card["roi_w"] if card["roi_w"] > 0 else w - x
-            rh = card["roi_h"] if card["roi_h"] > 0 else h - y
-            rw = max(1, min(rw, w - x))
-            rh = max(1, min(rh, h - y))
-            roi = raw[y:y + rh, x:x + rw]
+            axis = card.get("axis", "Y")
+            roi = raw if axis == "Y" else cv2.rotate(raw, cv2.ROTATE_90_CLOCKWISE)
             params = PreprocessParams(
                 gl_min=card["gl_min"],
                 gl_max=card["gl_max"],
@@ -555,26 +555,14 @@ class MainWindow(QMainWindow):
                 clahe_clip=base_params.clahe_clip,
                 clahe_grid=base_params.clahe_grid,
             )
-            mask_roi = preprocess(roi, params)
-            if full_mask is None:
-                full_mask = np.zeros_like(raw, dtype=mask_roi.dtype)
-            full_mask[y:y + rh, x:x + rw] = np.maximum(full_mask[y:y + rh, x:x + rw], mask_roi)
+            mask_local = preprocess(roi, params)
+            mask_ori = mask_local if axis == "Y" else cv2.rotate(mask_local, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            full_mask = np.maximum(full_mask, mask_ori)
             if preview_only:
                 continue
-            blobs = detect_blobs(mask_roi, min_area=card.get("min_area", min_area))
-            if card["axis"] == "X":
-                blobs = [Blob(
-                    label=b.label,
-                    x0=b.y0 + y, y0=b.x0 + x,
-                    x1=b.y1 + y, y1=b.x1 + x,
-                    area=b.area, cx=b.cy + y, cy=b.cx + x
-                ) for b in blobs]
-            else:
-                blobs = [Blob(
-                    label=b.label, x0=b.x0 + x, y0=b.y0 + y,
-                    x1=b.x1 + x, y1=b.y1 + y, area=b.area,
-                    cx=b.cx + x, cy=b.cy + y
-                ) for b in blobs]
+            blobs = detect_blobs(mask_local, min_area=card.get("min_area", min_area))
+            if axis == "X":
+                blobs = [self._blob_rot_to_ori(b, raw.shape[0]) for b in blobs]
             cuts = analyze(blobs, nm_px)
             for c in cuts:
                 c.cmg_id += cmg_offset
@@ -583,9 +571,28 @@ class MainWindow(QMainWindow):
                     m.col_id = ci * 1000 + m.col_id
             cmg_offset += len(cuts)
             cuts_all.extend(cuts)
-        if full_mask is None:
-            full_mask = preprocess(raw, base_params)
         return full_mask, cuts_all
+
+    @staticmethod
+    def _blob_rot_to_ori(b: Blob, orig_h: int) -> Blob:
+        pts = [
+            (b.x0, b.y0),
+            (b.x1 - 1, b.y0),
+            (b.x0, b.y1 - 1),
+            (b.x1 - 1, b.y1 - 1),
+        ]
+        ox = [py for _, py in pts]
+        oy = [orig_h - 1 - px for px, _ in pts]
+        return Blob(
+            label=b.label,
+            x0=min(ox),
+            y0=min(oy),
+            x1=max(ox) + 1,
+            y1=max(oy) + 1,
+            area=b.area,
+            cx=b.cy,
+            cy=(orig_h - 1) - b.cx,
+        )
 
 
 # ── module-level helpers ──────────────────────────────────────────────────────

@@ -41,8 +41,6 @@ class ControlPanel(QWidget):
         scroll.setWidget(inner)
         outer.addWidget(scroll)
 
-        self._add_profile("MG")
-
     def _build_scale(self) -> None:
         box = QGroupBox("Scale")
         form = QFormLayout(box)
@@ -138,10 +136,6 @@ class ControlPanel(QWidget):
         max_wrap = QWidget(); max_wrap.setLayout(max_row)
 
         min_area = QSpinBox(); min_area.setRange(1, 500_000); min_area.setValue(50); min_area.setSuffix(" px²")
-        roi_x = QSpinBox(); roi_x.setRange(0, 20000)
-        roi_y = QSpinBox(); roi_y.setRange(0, 20000)
-        roi_w = QSpinBox(); roi_w.setRange(0, 20000); roi_w.setValue(0)
-        roi_h = QSpinBox(); roi_h.setRange(0, 20000); roi_h.setValue(0)
 
         enabled = QCheckBox("Enabled"); enabled.setChecked(True)
 
@@ -161,10 +155,6 @@ class ControlPanel(QWidget):
         gl_max.valueChanged.connect(on_max)
         axis.currentIndexChanged.connect(self._emit)
         min_area.valueChanged.connect(self._emit)
-        roi_x.valueChanged.connect(self._emit)
-        roi_y.valueChanged.connect(self._emit)
-        roi_w.valueChanged.connect(self._emit)
-        roi_h.valueChanged.connect(self._emit)
         enabled.stateChanged.connect(self._emit)
 
         form.addRow("Enable", enabled)
@@ -172,10 +162,6 @@ class ControlPanel(QWidget):
         form.addRow("GL Min", min_wrap)
         form.addRow("GL Max", max_wrap)
         form.addRow("Min blob area", min_area)
-        form.addRow("ROI X", roi_x)
-        form.addRow("ROI Y", roi_y)
-        form.addRow("ROI W (0=full)", roi_w)
-        form.addRow("ROI H (0=full)", roi_h)
 
         self._profiles_layout.addWidget(box)
         self._profiles.append({
@@ -185,10 +171,6 @@ class ControlPanel(QWidget):
             "gl_min": gl_min,
             "gl_max": gl_max,
             "min_area": min_area,
-            "roi_x": roi_x,
-            "roi_y": roi_y,
-            "roi_w": roi_w,
-            "roi_h": roi_h,
         })
         self._emit()
 
@@ -220,10 +202,6 @@ class ControlPanel(QWidget):
                 "gl_min": p["gl_min"].value(),
                 "gl_max": p["gl_max"].value(),
                 "min_area": p["min_area"].value(),
-                "roi_x": p["roi_x"].value(),
-                "roi_y": p["roi_y"].value(),
-                "roi_w": p["roi_w"].value(),
-                "roi_h": p["roi_h"].value(),
             })
         return out
 
