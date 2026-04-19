@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 from pathlib import Path
+from typing import TYPE_CHECKING
 import pandas as pd
+
+if TYPE_CHECKING:
+    from ..core.models import ImageRecord, MeasurementRecord
 
 
 def results_to_dataframe(results: list[dict], nm_per_pixel: float) -> pd.DataFrame:
@@ -40,4 +44,35 @@ def results_to_dataframe(results: list[dict], nm_per_pixel: float) -> pd.DataFra
                     "status": "OK",
                     "error": "",
                 })
+    return pd.DataFrame(rows)
+
+
+def records_to_dataframe(
+    records: list["MeasurementRecord"],
+    image_records: list["ImageRecord"] | None = None,
+) -> pd.DataFrame:
+    """Convert MeasurementRecord list → DataFrame with the same schema as results_to_dataframe.
+
+    Enables new-style code paths to use the same exporters without conversion.
+    """
+    img_map = {ir.image_id: ir for ir in (image_records or [])}
+    rows = []
+    for r in records:
+        ir = img_map.get(r.image_id)
+        rows.append({
+            "image_file": Path(ir.file_path).name if ir else r.image_id,
+            "nm_per_pixel": float(ir.pixel_size_nm) if ir else 1.0,
+            "cmg_id": r.cmg_id,
+            "col_id": r.col_id,
+            "y_cd_px": round(float(r.raw_px), 3),
+            "y_cd_nm": round(float(r.calibrated_nm), 3),
+            "flag": r.flag,
+            "upper_bbox": str(r.extra_metrics.get("upper_bbox", "")),
+            "lower_bbox": str(r.extra_metrics.get("lower_bbox", "")),
+            "status": "OK",
+            "error": "",
+            "recipe_id": r.recipe_id,
+            "recipe_name": r.state_name,
+            "axis": r.axis,
+        })
     return pd.DataFrame(rows)

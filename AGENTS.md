@@ -2,6 +2,9 @@
 
 本文件供 AI Agent 或開發者快速掌握 SEM MM 專案的架構、慣例與開發方式。
 
+> **Phase A (vNext) 完成**：架構已從單一 CMG 量測工具升級為 Recipe-driven SEM Metrology Platform。
+> 現有 CMG 邏輯完整保留，作為第一個 Recipe 實作。
+
 ---
 
 ## 快速導覽
@@ -9,44 +12,70 @@
 | 目的 | 對應檔案 |
 |------|---------|
 | 啟動應用程式 | `main.py` |
-| 修改主視窗佈局 / 功能 | `src/gui/main_window.py` |
-| 修改批次處理邏輯 | `src/gui/batch_dialog.py` |
-| 修改批次審閱視窗 | `src/gui/batch_review_dialog.py` |
+| 修改主視窗佈局 | `src/gui/main_window.py` (精簡殼層，~70 行) |
+| 新增 / 修改 Workspace | `src/gui/workspaces/` 目錄 |
 | 修改影像前處理 | `src/core/preprocessor.py` |
 | 修改 CMG 偵測演算法 | `src/core/cmg_analyzer.py` |
-| 修改影像標注樣式 | `src/core/annotator.py` |
-| 修改匯出格式 | `src/output/` 目錄下對應模組 |
-| 新增 / 修改測試 | `tests/test_cmg_analyzer.py` |
+| CMG Recipe 包裝層 | `src/core/recipes/cmg_recipe.py` |
+| 新增 Recipe 類型 | 繼承 `src/core/recipe_base.BaseRecipe`，在 `src/core/recipes/` 下建立 |
+| 管理已儲存 Recipe | `src/core/recipe_registry.py` (JSON 在 ~/.mmh/recipes/) |
+| 統一資料模型 | `src/core/models.py` (ImageRecord, MeasurementRecord, BatchRunRecord) |
+| Calibration 管理 | `src/core/calibration.py` |
+| Batch 執行引擎 | `src/core/measurement_engine.py` |
+| 相容層 (legacy format) | `src/_compat.py` |
+| 影像標注樣式 | `src/core/annotator.py` |
+| 匯出格式 | `src/output/` 目錄 (_from_records 版本為新路徑) |
+| 新增 / 修改測試 | `tests/` 目錄 |
 | 修改 UI 主題 | `src/gui/styles.py` |
 
 ---
 
-## 架構概覽
+## 架構概覽 (Phase A)
 
 ```
 main.py
-  └─ MainWindow (main_window.py)
-       ├─ FileTreePanel     左側：檔案樹
-       ├─ ImageViewer       中央：影像檢視（QGraphicsView）
-       ├─ ResultsPanel      中央下方：量測結果表格
-       └─ ControlPanel      右側：GL 滑桿 + 量測設定檔管理
+  └─ MainWindow (main_window.py)  ~70 行
+       └─ WorkspaceHost (QTabWidget)
+            ├─ BrowseWorkspace   ← FileTreePanel + ImageViewer + Calibration
+            ├─ RecipeWorkspace   ← Recipe CRUD 編輯器
+            ├─ MeasureWorkspace  ← ImageViewer + ResultsPanel + ControlPanel + Recipe 選擇器
+            ├─ ReviewWorkspace   ← 單張影像 Review (Phase A 基礎版)
+            ├─ BatchWorkspace    ← Batch 執行 + 進度 (QThread + ProcessPoolExecutor)
+            └─ ReportWorkspace   ← 統計 + 匯出按鈕
 
-       BatchDialog ──────── 批次處理對話框（QThread + ProcessPoolExecutor）
-       BatchReviewDialog ── 批次完成後的審閱視窗
+核心服務 (由 WorkspaceHost 持有):
+  RecipeRegistry     ← ~/.mmh/recipes/*.json
+  CalibrationManager ← ~/.mmh/calibrations/*.json
+  MeasurementEngine  ← 執行 BaseRecipe.run_pipeline()
 ```
+
+### Recipe Pipeline（6 個 Stage）
+
+```
+BaseRecipe.run_pipeline(ImageRecord)
+  Stage 1: load_image()        → raw ndarray
+  Stage 2: preprocess()        → mask ndarray
+  Stage 3: detect_features()   → blobs list
+  Stage 4: locate_edges()      → blobs (座標轉換，X 軸)
+  Stage 5: compute_metrics()   → list[MeasurementRecord]
+  Stage 6: render_annotations()→ annotated BGR ndarray
+  → PipelineResult(records, raw, mask, annotated, context)
+```
+
+CMGRecipe 在每個 Stage 委派給對應的現有模組，不重寫演算法。
 
 ### 信號流（Batch Processing）
 
 ```
-_run_batch()
-  → BatchDialog.exec()          # 開啟批次對話框（非阻塞 review 流程）
-      → _BatchWorker.run()      # QThread，使用 ProcessPoolExecutor
-          → _process_one()      # picklable 頂層函式，跑在子行程中
-          → progress.emit()     # 更新進度條（跨執行緒，queued connection）
-          → finished.emit()     # 批次完成（跨執行緒，queued connection）
-      → _on_finished()          # 更新 UI，emit batch_done，self.accept()
-  → _on_batch_done()            # 儲存結果，排程 QTimer.singleShot
-  → _open_batch_review()        # 開啟 BatchReviewDialog（在 dlg.exec() 返回後）
+BatchWorkspace._run_batch()
+  → _BatchWorker.run()           # QThread
+      → MeasurementEngine.run_batch()
+          → ProcessPoolExecutor → _worker_run_image(args_dict)  # 子行程
+              → CMGRecipe.run_pipeline()
+          → on_progress()        # 更新進度條
+      → BatchRunRecord           # 包含 measurements (新) + cuts (舊相容)
+  → batch_completed signal
+  → ReportWorkspace.load_batch_run()
 ```
 
 **重要**：`_on_batch_done` 使用 `QTimer.singleShot(0, self._open_batch_review)` 延遲開啟 ReviewDialog，確保不產生巢狀 event loop。

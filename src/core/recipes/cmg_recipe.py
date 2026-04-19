@@ -1,0 +1,228 @@
+"""CMG Y-CD / X-CD recipe — wraps existing CMG pipeline without modifying it.
+
+Delegations:
+  Stage 2 → preprocessor.preprocess()
+  Stage 3 → mg_detector.detect_blobs()
+  Stage 4 → coordinate back-rotation for X-axis images
+  Stage 5 → cmg_analyzer.analyze()  → MeasurementRecord list
+  Stage 6 → annotator.draw_overlays()
+"""
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+import cv2
+import numpy as np
+
+from ..models import ImageRecord, MeasurementRecord
+from ..recipe_base import BaseRecipe, MeasurementRecipe, RecipeConfig
+
+
+class CMGRecipe(BaseRecipe):
+    """Wraps the existing CMG pipeline as a BaseRecipe implementation."""
+
+    def __init__(
+        self,
+        descriptor: MeasurementRecipe | None = None,
+        legacy_card: dict | None = None,
+    ):
+        if descriptor is not None:
+            self._descriptor = descriptor
+        elif legacy_card is not None:
+            self._descriptor = CMGRecipe._card_to_descriptor(legacy_card)
+        else:
+            raise ValueError("Provide either descriptor or legacy_card")
+
+    # ── Identity ──────────────────────────────────────────────────────────────
+
+    @property
+    def recipe_id(self) -> str:
+        return self._descriptor.recipe_id
+
+    @property
+    def recipe_descriptor(self) -> MeasurementRecipe:
+        return self._descriptor
+
+    # ── Stage 2: preprocess ───────────────────────────────────────────────────
+
+    def preprocess(self, raw: np.ndarray, context: dict) -> np.ndarray:
+        from ..preprocessor import preprocess, PreprocessParams
+        pc = self._descriptor.preprocess_config
+        axis = self._descriptor.axis_mode.upper()
+
+        roi = (
+            cv2.rotate(raw, cv2.ROTATE_90_CLOCKWISE)
+            if axis == "X"
+            else raw
+        )
+
+        params = PreprocessParams(
+            gl_min=pc.get("gl_min", 100),
+            gl_max=pc.get("gl_max", 220),
+            gauss_kernel=pc.get("gauss_kernel", 3),
+            morph_open_k=pc.get("morph_open_k", 3),
+            morph_close_k=pc.get("morph_close_k", 5),
+            use_clahe=pc.get("use_clahe", True),
+            clahe_clip=pc.get("clahe_clip", 2.0),
+            clahe_grid=pc.get("clahe_grid", 8),
+        )
+        mask_roi = preprocess(roi, params)
+
+        if axis == "X":
+            mask_ori = cv2.rotate(mask_roi, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        else:
+            mask_ori = mask_roi
+
+        context["roi"] = roi
+        context["mask_roi"] = mask_roi
+        context["mask"] = mask_ori
+        return mask_ori
+
+    # ── Stage 3: detect_features ──────────────────────────────────────────────
+
+    def detect_features(self, mask: np.ndarray, context: dict) -> list:
+        from ..mg_detector import detect_blobs
+        dc = self._descriptor.detector_config
+        min_area = dc.get("min_area", None)
+        mask_roi = context.get("mask_roi", mask)
+        blobs = detect_blobs(mask_roi, min_area=min_area)
+        context["blobs_roi"] = blobs
+        return blobs
+
+    # ── Stage 4: locate_edges ─────────────────────────────────────────────────
+
+    def locate_edges(self, features: list, context: dict) -> list:
+        axis = self._descriptor.axis_mode.upper()
+        if axis == "X":
+            raw = context.get("raw")
+            if raw is not None:
+                orig_h = raw.shape[0]
+                features = [_rot_blob_to_ori(b, orig_h) for b in features]
+        context["blobs_ori"] = features
+        return features
+
+    # ── Stage 5: compute_metrics ──────────────────────────────────────────────
+
+    def compute_metrics(
+        self,
+        edge_features: list,
+        image_record: ImageRecord,
+        context: dict,
+    ) -> list[MeasurementRecord]:
+        from ..cmg_analyzer import analyze
+        nm_per_pixel = image_record.pixel_size_nm
+        axis = self._descriptor.axis_mode.upper()
+
+        ec = self._descriptor.edge_locator_config
+        cuts = analyze(
+            edge_features,
+            nm_per_pixel,
+            x_overlap_ratio=ec.get("x_overlap_ratio", 0.5),
+            y_cluster_tol=ec.get("y_cluster_tol", 10),
+        )
+        context["cmg_cuts"] = cuts
+
+        _STATUS = {"MIN": "min", "MAX": "max", "": "normal"}
+        records: list[MeasurementRecord] = []
+
+        for cut in cuts:
+            for m in cut.measurements:
+                m.axis = axis
+                m.state_name = self._descriptor.recipe_name
+
+                ub, lb = m.upper_blob, m.lower_blob
+                bbox: tuple[int, int, int, int] = (
+                    int(min(ub.x0, lb.x0)),
+                    int(ub.y1),
+                    int(max(ub.x1, lb.x1)),
+                    int(lb.y0),
+                )
+
+                rec = MeasurementRecord(
+                    measurement_id=str(uuid.uuid4()),
+                    image_id=image_record.image_id,
+                    recipe_id=self.recipe_id,
+                    feature_type="CMG_GAP",
+                    feature_id=f"cmg{m.cmg_id}_col{m.col_id}",
+                    bbox=bbox,
+                    center_x=float((bbox[0] + bbox[2]) / 2),
+                    center_y=float((bbox[1] + bbox[3]) / 2),
+                    axis=axis,
+                    raw_px=float(m.y_cd_px),
+                    calibrated_nm=float(m.y_cd_nm),
+                    status=_STATUS.get(m.flag, "normal"),
+                    cmg_id=int(m.cmg_id),
+                    col_id=int(m.col_id),
+                    flag=m.flag,
+                    state_name=m.state_name,
+                    extra_metrics={
+                        "upper_bbox": (int(ub.x0), int(ub.y0), int(ub.x1), int(ub.y1)),
+                        "lower_bbox": (int(lb.x0), int(lb.y0), int(lb.x1), int(lb.y1)),
+                    },
+                )
+                records.append(rec)
+
+        return records
+
+    # ── Stage 6: render_annotations ──────────────────────────────────────────
+
+    def render_annotations(
+        self,
+        raw: np.ndarray,
+        mask: np.ndarray,
+        records: list[MeasurementRecord],
+        context: dict,
+        opts: Any = None,
+    ) -> np.ndarray:
+        from ..annotator import draw_overlays
+        cuts = context.get("cmg_cuts", [])
+        if not cuts:
+            return cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
+        return draw_overlays(raw, mask, cuts, opts)
+
+    # ── Legacy helpers ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _card_to_descriptor(card: dict) -> MeasurementRecipe:
+        """Convert a legacy ControlPanel card dict → MeasurementRecipe."""
+        axis = str(card.get("axis", "Y")).upper()
+        axis_mode = "X" if axis.startswith("X") else "Y"
+        recipe_type = "CMG_XCD" if axis_mode == "X" else "CMG_YCD"
+        return MeasurementRecipe(
+            recipe_id=str(uuid.uuid4()),
+            recipe_name=str(card.get("name", "Unnamed")),
+            recipe_type=recipe_type,
+            axis_mode=axis_mode,
+            preprocess_config=RecipeConfig(data={
+                "gl_min": int(card.get("gl_min", 100)),
+                "gl_max": int(card.get("gl_max", 220)),
+                "gauss_kernel": int(card.get("gauss_kernel", 3)),
+                "morph_open_k": int(card.get("morph_open_k", 3)),
+                "morph_close_k": int(card.get("morph_close_k", 5)),
+                "use_clahe": bool(card.get("use_clahe", True)),
+                "clahe_clip": float(card.get("clahe_clip", 2.0)),
+                "clahe_grid": int(card.get("clahe_grid", 8)),
+            }),
+            detector_config=RecipeConfig(data={
+                "min_area": card.get("min_area"),
+            }),
+        )
+
+
+# ── Coordinate helpers ────────────────────────────────────────────────────────
+
+def _rot_blob_to_ori(b: Any, orig_h: int) -> Any:
+    """Convert a blob from 90°-CW-rotated space back to original image space."""
+    from ..mg_detector import Blob
+    ox0 = int(b.y0)
+    oy0 = int(orig_h - b.x1)
+    ox1 = int(b.y1)
+    oy1 = int(orig_h - b.x0)
+    return Blob(
+        label=b.label,
+        x0=ox0, y0=oy0, x1=ox1, y1=oy1,
+        area=b.area,
+        cx=float(b.cy),
+        cy=float(orig_h - b.cx),
+    )
