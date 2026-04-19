@@ -67,6 +67,50 @@ def _histogram_b64(values) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def generate_report_from_records(
+    records: list,
+    out_path: Path,
+    image_records: list | None = None,
+    batch_run=None,
+) -> None:
+    """Generate HTML report from MeasurementRecord list."""
+    from ._common import records_to_dataframe
+    df = records_to_dataframe(records, image_records)
+    ok = df[df["status"] == "OK"]["y_cd_nm"].dropna()
+
+    n_ok = len(ok)
+    n_total = batch_run.total_images if batch_run else len(image_records or []) or 1
+    n_fail = batch_run.fail_count if batch_run else 0
+
+    nm_per_pixel = float(image_records[0].pixel_size_nm) if image_records else 1.0
+
+    stats = {
+        "Count": len(ok),
+        "Mean (nm)": f"{ok.mean():.3f}" if len(ok) else "N/A",
+        "Median (nm)": f"{ok.median():.3f}" if len(ok) else "N/A",
+        "Std Dev (nm)": f"{ok.std():.3f}" if len(ok) else "N/A",
+        "3-Sigma (nm)": f"{ok.std()*3:.3f}" if len(ok) else "N/A",
+        "Min (nm)": f"{ok.min():.3f}" if len(ok) else "N/A",
+        "Max (nm)": f"{ok.max():.3f}" if len(ok) else "N/A",
+    }
+    hist_b64 = _histogram_b64(ok) if len(ok) > 0 else ""
+    fail_list = []
+    if batch_run:
+        fail_list = [entry.get("image_path", "") for entry in batch_run.error_log]
+
+    html = _render_html(
+        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        n_total=n_total,
+        n_ok=n_ok,
+        n_fail=n_fail,
+        nm_per_pixel=nm_per_pixel,
+        stats=stats,
+        hist_b64=hist_b64,
+        fail_list=[Path(p).name for p in fail_list if p],
+    )
+    out_path.write_text(html, encoding="utf-8")
+
+
 def _render_html(
     timestamp: str,
     n_total: int,
