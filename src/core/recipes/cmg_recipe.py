@@ -192,6 +192,53 @@ class CMGRecipe(BaseRecipe):
             y_cluster_tol=ec.get("y_cluster_tol", 10),
         )
 
+        # ── Subpixel Y-edge refinement (Y-CD only) ───────────────────────────
+        # Replaces pixel-level bbox edges with gradient-based subpixel edges
+        # from the raw grayscale image.  X-CD is completely untouched.
+        if axis == "Y":
+            raw_img = context.get("raw")
+            if raw_img is not None:
+                _sp = ec  # reuse edge_locator_config for optional overrides
+                _half_col    = int(_sp.get("subpixel_half_col",    3))
+                _search_half = int(_sp.get("subpixel_search_half", 10))
+                _smooth_k    = int(_sp.get("subpixel_smooth_k",    5))
+                _min_grad    = float(_sp.get("subpixel_min_grad",  5.0))
+
+                for cut in cuts:
+                    for m in cut.measurements:
+                        ub, lb = m.upper_blob, m.lower_blob
+                        x_ctr = (ub.cx + lb.cx) / 2.0
+                        # Reuse same initial-guess formula as cmg_analyzer.analyze()
+                        y_up = ub.cy + (ub.height / 2.0)
+                        y_lo = lb.cy - (lb.height / 2.0)
+
+                        up_ref = _refine_yedge_subpixel(
+                            raw_img, x_ctr, y_up,
+                            half_col=_half_col, search_half=_search_half,
+                            smooth_k=_smooth_k, min_grad=_min_grad,
+                        )
+                        lo_ref = _refine_yedge_subpixel(
+                            raw_img, x_ctr, y_lo,
+                            half_col=_half_col, search_half=_search_half,
+                            smooth_k=_smooth_k, min_grad=_min_grad,
+                        )
+
+                        cd_ref = lo_ref - up_ref
+                        if cd_ref > 0.0:   # sanity: gap must remain positive
+                            m.cd_px = cd_ref
+                            m.cd_nm = cd_ref * nm_per_pixel
+
+                # Re-flag MIN/MAX per cut based on refined values
+                for cut in cuts:
+                    if len(cut.measurements) >= 2:
+                        vals = [m.cd_px for m in cut.measurements]
+                        mn, mx = min(vals), max(vals)
+                        for m in cut.measurements:
+                            m.flag = (
+                                "MIN" if m.cd_px == mn else
+                                "MAX" if m.cd_px == mx else ""
+                            )
+
         # For X-CD: blobs were analyzed in rotated space; back-rotate blob
         # coordinates now so annotations are drawn in original image space.
         if axis == "X":
@@ -353,6 +400,81 @@ class CMGRecipe(BaseRecipe):
 
 
 # ── Coordinate helpers ────────────────────────────────────────────────────────
+
+def _refine_yedge_subpixel(
+    image: np.ndarray,
+    x_center: float,
+    y_guess: float,
+    half_col: int = 3,
+    search_half: int = 10,
+    smooth_k: int = 5,
+    min_grad: float = 5.0,
+) -> float:
+    """Refine a Y-edge position to subpixel precision using gradient-based detection.
+
+    Extracts a narrow column profile from the raw grayscale image around
+    (x_center, y_guess), computes absolute gradient, finds the peak, and
+    applies quadratic subpixel interpolation.
+
+    Returns a float refined Y position, or y_guess on any failure/fallback.
+    """
+    if image is None or image.ndim < 2:
+        return y_guess
+
+    # Handle 3-channel images
+    img = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    h, w = img.shape
+
+    # Step 1: narrow column ROI around x_center
+    x0 = max(0, int(x_center) - half_col)
+    x1 = min(w, int(x_center) + half_col + 1)
+    if x1 - x0 < 1:
+        return y_guess
+
+    # Step 2: Y search window clamped to image bounds
+    y_lo = max(0, int(round(y_guess)) - search_half)
+    y_hi = min(h, int(round(y_guess)) + search_half + 1)
+    n = y_hi - y_lo
+    if n < 3:
+        return y_guess
+
+    # Step 3: 1D profile — mean intensity over X strip
+    profile = img[y_lo:y_hi, x0:x1].astype(np.float64).mean(axis=1)
+
+    # Step 4: moving-average smoothing
+    k = smooth_k | 1  # ensure odd
+    if n >= k:
+        kernel = np.ones(k, dtype=np.float64) / k
+        profile = np.convolve(profile, kernel, mode='same')
+
+    # Step 5: absolute gradient
+    abs_grad = np.abs(np.gradient(profile))
+
+    # Step 6: find argmax (avoid convolution edge artefacts)
+    margin = max(1, k // 2)
+    lo_m = margin
+    hi_m = max(lo_m + 1, n - margin)
+    peak_local = int(np.argmax(abs_grad[lo_m:hi_m])) + lo_m
+
+    # Step 7: fallback if gradient too weak
+    if abs_grad[peak_local] < min_grad:
+        return y_guess
+
+    # Step 8: quadratic subpixel interpolation on gradient peak
+    if 0 < peak_local < n - 1:
+        a = abs_grad[peak_local - 1]
+        b = abs_grad[peak_local]
+        c = abs_grad[peak_local + 1]
+        denom = a - 2.0 * b + c
+        delta = 0.5 * (a - c) / denom if abs(denom) > 1e-12 else 0.0
+        peak_sub = float(peak_local) + delta
+    else:
+        peak_sub = float(peak_local)
+
+    # Clamp to window then return absolute Y
+    peak_sub = max(0.0, min(float(n - 1), peak_sub))
+    return float(y_lo) + peak_sub
+
 
 def _rot_blob_to_ori(b: Any, orig_h: int) -> Any:
     """Convert a blob from 90°-CW-rotated space back to original image space."""
