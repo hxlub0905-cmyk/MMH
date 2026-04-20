@@ -43,12 +43,22 @@ def _process_one(args: tuple) -> dict:
                 vert_erode_iter=int(card.get("vert_erode_iter", 1)),
             )
             m_roi = preprocess(roi, params)
-            # Column strip masking (Strategy 1)
+            # Column strip masking (Strategy 1) with optional auto xproj centers (F1c)
             if card.get("col_mask_enabled", False):
                 start_x = int(card.get("col_mask_start_x", 0))
                 pitch = int(card.get("col_mask_pitch_px", 44))
                 cw = m_roi.shape[1]
-                col_centers = list(range(start_x, cw, pitch)) if pitch > 0 and start_x < cw else []
+                col_centers: list[int] = []
+                if card.get("col_mask_auto_centers", False):
+                    from ..core.mg_detector import detect_mg_column_centers
+                    col_centers = detect_mg_column_centers(
+                        m_roi,
+                        smooth_k=int(card.get("xproj_smooth_k", 5)),
+                        min_pitch_px=int(card.get("xproj_min_pitch_px", 30)),
+                        min_height_frac=float(card.get("xproj_peak_min_frac", 0.3)),
+                    )
+                if not col_centers:  # fallback to manual start_x + pitch
+                    col_centers = list(range(start_x, cw, pitch)) if pitch > 0 and start_x < cw else []
                 half_w = int(card.get("col_mask_width_px", 22)) // 2
                 margin = int(card.get("col_mask_margin_px", 4))
                 m_roi = apply_column_strip_mask(m_roi, col_centers, half_w, margin)
@@ -80,6 +90,12 @@ def _process_one(args: tuple) -> dict:
                     area=b.area, cx=b.cy, cy=(h - 1) - b.cx
                 ) for b in blobs]
             c = analyze(blobs, nm_per_pixel)
+            if card.get("range_enabled", False):
+                c = _filter_by_range(
+                    c,
+                    float(card.get("min_line_px", 0)),
+                    float(card.get("max_line_px", 0)),
+                )
             for cut in c:
                 cut.cmg_id += cmg_offset
                 for m in cut.measurements:
@@ -101,6 +117,27 @@ def _process_one(args: tuple) -> dict:
         result["status"] = "FAIL"
         result["error"] = str(exc)
     return result
+
+
+def _filter_by_range(cuts, min_px: float, max_px: float) -> list:
+    """Keep only measurements whose cd_px falls within [min_px, max_px] (0 = disabled)."""
+    from ..core.cmg_analyzer import CMGCut
+    filtered = []
+    for cut in cuts:
+        kept = [
+            m for m in cut.measurements
+            if (min_px <= 0 or m.cd_px >= min_px)
+            and (max_px <= 0 or m.cd_px <= max_px)
+        ]
+        if kept:
+            filtered.append(CMGCut(cmg_id=cut.cmg_id, measurements=kept))
+    all_m = [m for c in filtered for m in c.measurements]
+    if len(all_m) >= 2:
+        mn = min(m.cd_px for m in all_m)
+        mx = max(m.cd_px for m in all_m)
+        for m in all_m:
+            m.flag = "MIN" if m.cd_px == mn else ("MAX" if m.cd_px == mx else "")
+    return filtered
 
 
 def _serialise_cuts(cuts) -> list:

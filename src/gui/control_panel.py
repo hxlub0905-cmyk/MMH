@@ -140,12 +140,26 @@ class ControlPanel(QWidget):
         vert_erode_k    = QSpinBox(); vert_erode_k.setRange(0, 99); vert_erode_k.setValue(0); vert_erode_k.setSuffix(" px"); vert_erode_k.setSpecialValueText("off")
         vert_erode_iter = QSpinBox(); vert_erode_iter.setRange(1, 10); vert_erode_iter.setValue(1)
 
-        # Column strip masking (Strategy 1): sever EPI lateral bridge
+        # Column strip masking + auto X-projection (Strategy 1+2a)
         strip_enabled  = QCheckBox("Enable strip mask"); strip_enabled.setChecked(False)
-        strip_start_x  = QSpinBox(); strip_start_x.setRange(0, 9999); strip_start_x.setValue(0); strip_start_x.setSuffix(" px"); strip_start_x.setSpecialValueText("0")
+        strip_auto     = QCheckBox("Auto-detect centers (X-proj)"); strip_auto.setChecked(False)
+        xproj_smooth   = QSpinBox(); xproj_smooth.setRange(1, 51); xproj_smooth.setValue(5); xproj_smooth.setSuffix(" px")
+        xproj_pitch    = QSpinBox(); xproj_pitch.setRange(1, 9999); xproj_pitch.setValue(30); xproj_pitch.setSuffix(" px")
+        xproj_frac     = QDoubleSpinBox(); xproj_frac.setRange(0.01, 1.0); xproj_frac.setValue(0.3); xproj_frac.setSingleStep(0.05)
+        strip_start_x  = QSpinBox(); strip_start_x.setRange(0, 9999); strip_start_x.setValue(0); strip_start_x.setSuffix(" px")
         strip_pitch    = QSpinBox(); strip_pitch.setRange(1, 9999); strip_pitch.setValue(44); strip_pitch.setSuffix(" px")
         strip_width    = QSpinBox(); strip_width.setRange(1, 9999); strip_width.setValue(22); strip_width.setSuffix(" px")
         strip_margin   = QSpinBox(); strip_margin.setRange(0, 999);  strip_margin.setValue(4);  strip_margin.setSuffix(" px")
+
+        def _on_strip_auto(checked: int) -> None:
+            strip_start_x.setEnabled(not bool(checked))
+            self._emit()
+        strip_auto.stateChanged.connect(_on_strip_auto)
+
+        # Range filter (G1)
+        range_enabled  = QCheckBox("Enable range filter"); range_enabled.setChecked(False)
+        min_line_px    = QDoubleSpinBox(); min_line_px.setRange(0, 9999); min_line_px.setValue(0); min_line_px.setSuffix(" px"); min_line_px.setSpecialValueText("off")
+        max_line_px    = QDoubleSpinBox(); max_line_px.setRange(0, 9999); max_line_px.setValue(0); max_line_px.setSuffix(" px"); max_line_px.setSpecialValueText("off")
 
         enabled = QCheckBox("Enabled"); enabled.setChecked(True)
 
@@ -165,9 +179,13 @@ class ControlPanel(QWidget):
         gl_max.valueChanged.connect(on_max)
         axis.currentIndexChanged.connect(self._emit)
         min_area.valueChanged.connect(self._emit)
-        for w in (min_ar, max_ar, min_w, max_w, min_h, vert_erode_k, vert_erode_iter, strip_start_x, strip_pitch, strip_width, strip_margin):
+        for w in (min_ar, max_ar, min_w, max_w, min_h, vert_erode_k, vert_erode_iter,
+                  xproj_smooth, xproj_pitch, xproj_frac,
+                  strip_start_x, strip_pitch, strip_width, strip_margin,
+                  min_line_px, max_line_px):
             w.valueChanged.connect(self._emit)
         strip_enabled.stateChanged.connect(self._emit)
+        range_enabled.stateChanged.connect(self._emit)
         enabled.stateChanged.connect(self._emit)
 
         form.addRow("Enable", enabled)
@@ -189,10 +207,20 @@ class ControlPanel(QWidget):
         form.addRow("Vert erode", vert_erode_k)
         form.addRow("Vert erode iter", vert_erode_iter)
         form.addRow(strip_enabled)
+        form.addRow(strip_auto)
+        form.addRow("X-proj smooth", xproj_smooth)
+        form.addRow("X-proj min pitch", xproj_pitch)
+        form.addRow("X-proj min frac", xproj_frac)
         form.addRow("Strip start X", strip_start_x)
         form.addRow("Strip pitch", strip_pitch)
         form.addRow("Strip width", strip_width)
         form.addRow("Strip margin ±", strip_margin)
+
+        sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine); sep3.setStyleSheet("color:#d0c8bc")
+        form.addRow(sep3)
+        form.addRow(range_enabled)
+        form.addRow("Min line (px)", min_line_px)
+        form.addRow("Max line (px)", max_line_px)
 
         self._profiles_layout.addWidget(box)
         self._profiles.append({
@@ -210,10 +238,17 @@ class ControlPanel(QWidget):
             "vert_erode_k": vert_erode_k,
             "vert_erode_iter": vert_erode_iter,
             "col_mask_enabled": strip_enabled,
+            "col_mask_auto_centers": strip_auto,
+            "xproj_smooth_k": xproj_smooth,
+            "xproj_min_pitch_px": xproj_pitch,
+            "xproj_peak_min_frac": xproj_frac,
             "col_mask_start_x": strip_start_x,
             "col_mask_pitch_px": strip_pitch,
             "col_mask_width_px": strip_width,
             "col_mask_margin_px": strip_margin,
+            "range_enabled": range_enabled,
+            "min_line_px": min_line_px,
+            "max_line_px": max_line_px,
         })
         self._emit()
 
@@ -253,10 +288,17 @@ class ControlPanel(QWidget):
                 "vert_erode_k": p["vert_erode_k"].value(),
                 "vert_erode_iter": p["vert_erode_iter"].value(),
                 "col_mask_enabled": p["col_mask_enabled"].isChecked(),
+                "col_mask_auto_centers": p["col_mask_auto_centers"].isChecked(),
+                "xproj_smooth_k": p["xproj_smooth_k"].value(),
+                "xproj_min_pitch_px": p["xproj_min_pitch_px"].value(),
+                "xproj_peak_min_frac": p["xproj_peak_min_frac"].value(),
                 "col_mask_start_x": p["col_mask_start_x"].value(),
                 "col_mask_pitch_px": p["col_mask_pitch_px"].value(),
                 "col_mask_width_px": p["col_mask_width_px"].value(),
                 "col_mask_margin_px": p["col_mask_margin_px"].value(),
+                "range_enabled": p["range_enabled"].isChecked(),
+                "min_line_px": p["min_line_px"].value(),
+                "max_line_px": p["max_line_px"].value(),
             })
         return out
 

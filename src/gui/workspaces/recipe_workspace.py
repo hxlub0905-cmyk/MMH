@@ -157,11 +157,14 @@ class RecipeWorkspace(QWidget):
         strip_box = QGroupBox("Column Strip Masking")
         sf = QFormLayout(strip_box)
         self._strip_enabled = QCheckBox("Enable strip mask"); self._strip_enabled.setChecked(False)
-        self._strip_start_x = QSpinBox(); self._strip_start_x.setRange(0, 9999); self._strip_start_x.setValue(0); self._strip_start_x.setSuffix(" px"); self._strip_start_x.setSpecialValueText("auto")
+        self._strip_auto    = QCheckBox("Auto-detect centers (X-proj)"); self._strip_auto.setChecked(False)
+        self._strip_start_x = QSpinBox(); self._strip_start_x.setRange(0, 9999); self._strip_start_x.setValue(0); self._strip_start_x.setSuffix(" px")
         self._strip_pitch   = QSpinBox(); self._strip_pitch.setRange(1, 9999); self._strip_pitch.setValue(44); self._strip_pitch.setSuffix(" px")
         self._strip_width   = QSpinBox(); self._strip_width.setRange(1, 9999); self._strip_width.setValue(22); self._strip_width.setSuffix(" px")
         self._strip_margin  = QSpinBox(); self._strip_margin.setRange(0, 9999); self._strip_margin.setValue(4); self._strip_margin.setSuffix(" px")
+        self._strip_auto.toggled.connect(lambda on: self._strip_start_x.setEnabled(not on))
         sf.addRow(self._strip_enabled)
+        sf.addRow(self._strip_auto)
         sf.addRow("Start X (manual):", self._strip_start_x)
         sf.addRow("Pitch:", self._strip_pitch)
         sf.addRow("Strip width:", self._strip_width)
@@ -175,11 +178,22 @@ class RecipeWorkspace(QWidget):
         ef.addRow("X overlap ratio:", self._overlap)
         ef.addRow("Cluster tol (px):", self._cluster_tol)
 
+        # Range Filter (G1): ignore measurements outside [min_px, max_px]
+        range_box = QGroupBox("Range Filter")
+        rf = QFormLayout(range_box)
+        self._range_enabled = QCheckBox("Enable range filter"); self._range_enabled.setChecked(False)
+        self._min_line_px = QDoubleSpinBox(); self._min_line_px.setRange(0, 9999); self._min_line_px.setValue(0); self._min_line_px.setSuffix(" px"); self._min_line_px.setSpecialValueText("off")
+        self._max_line_px = QDoubleSpinBox(); self._max_line_px.setRange(0, 9999); self._max_line_px.setValue(0); self._max_line_px.setSuffix(" px"); self._max_line_px.setSpecialValueText("off")
+        rf.addRow(self._range_enabled)
+        rf.addRow("Min CD (px):", self._min_line_px)
+        rf.addRow("Max CD (px):", self._max_line_px)
+
         form.addRow(pre_box)
         form.addRow(det_box)
         form.addRow(xproj_box)
         form.addRow(strip_box)
         form.addRow(edge_box)
+        form.addRow(range_box)
 
         return box
 
@@ -236,6 +250,9 @@ class RecipeWorkspace(QWidget):
         self._xproj_pitch.setValue(int(dc.get("xproj_min_pitch_px", 30)))
         self._xproj_min_frac.setValue(float(dc.get("xproj_peak_min_frac", 0.3)))
         self._strip_enabled.setChecked(bool(dc.get("col_mask_enabled", False)))
+        auto_on = bool(dc.get("col_mask_auto_centers", False))
+        self._strip_auto.setChecked(auto_on)
+        self._strip_start_x.setEnabled(not auto_on)
         self._strip_start_x.setValue(int(dc.get("col_mask_start_x", 0)))
         self._strip_pitch.setValue(int(dc.get("col_mask_pitch_px", 44)))
         self._strip_width.setValue(int(dc.get("col_mask_width_px", 22)))
@@ -244,6 +261,10 @@ class RecipeWorkspace(QWidget):
         ec = desc.edge_locator_config
         self._overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
         self._cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
+
+        self._range_enabled.setChecked(bool(dc.get("range_enabled", False)))
+        self._min_line_px.setValue(float(dc.get("min_line_px", 0)))
+        self._max_line_px.setValue(float(dc.get("max_line_px", 0)))
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
 
@@ -363,10 +384,14 @@ class RecipeWorkspace(QWidget):
                 "xproj_min_pitch_px": self._xproj_pitch.value(),
                 "xproj_peak_min_frac": self._xproj_min_frac.value(),
                 "col_mask_enabled": self._strip_enabled.isChecked(),
+                "col_mask_auto_centers": self._strip_auto.isChecked(),
                 "col_mask_start_x": self._strip_start_x.value(),
                 "col_mask_pitch_px": self._strip_pitch.value(),
                 "col_mask_width_px": self._strip_width.value(),
                 "col_mask_margin_px": self._strip_margin.value(),
+                "range_enabled": self._range_enabled.isChecked(),
+                "min_line_px": self._min_line_px.value(),
+                "max_line_px": self._max_line_px.value(),
             }),
             edge_locator_config=RecipeConfig(data={
                 "x_overlap_ratio": self._overlap.value(),

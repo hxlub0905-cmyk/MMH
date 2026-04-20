@@ -146,6 +146,13 @@ class MeasureWorkspace(QWidget):
         hbox.addWidget(self._btn_mask)
         hbox.addWidget(self._btn_ann)
 
+        self._btn_ruler = QPushButton("📏 Ruler")
+        self._btn_ruler.setCheckable(True)
+        self._btn_ruler.setFixedHeight(26)
+        self._btn_ruler.setToolTip("Toggle ruler (or Shift+Click on image)")
+        self._btn_ruler.toggled.connect(lambda on: self._viewer.set_ruler_mode(on))
+        hbox.addWidget(self._btn_ruler)
+
         sep = QLabel("  |  ")
         sep.setStyleSheet("color:#d8cbb8;")
         hbox.addWidget(sep)
@@ -400,14 +407,22 @@ class MeasureWorkspace(QWidget):
             )
             mask_local = preprocess(roi, params)
 
-            # Strategy 1: column strip masking (severs EPI lateral bridge)
+            # Strategy 1+2a: column strip masking (severs EPI lateral bridge)
             if card.get("col_mask_enabled", False):
                 col_centers: list[int] = []
-                start_x = int(card.get("col_mask_start_x", 0))
-                pitch = int(card.get("col_mask_pitch_px", 44))
-                cw = mask_local.shape[1]
-                if pitch > 0 and start_x < cw:
-                    col_centers = list(range(start_x, cw, pitch))
+                if card.get("col_mask_auto_centers", False):
+                    col_centers = detect_mg_column_centers(
+                        mask_local,
+                        smooth_k=int(card.get("xproj_smooth_k", 5)),
+                        min_pitch_px=int(card.get("xproj_min_pitch_px", 30)),
+                        min_height_frac=float(card.get("xproj_peak_min_frac", 0.3)),
+                    )
+                if not col_centers:  # fallback to manual
+                    start_x = int(card.get("col_mask_start_x", 0))
+                    pitch = int(card.get("col_mask_pitch_px", 44))
+                    cw = mask_local.shape[1]
+                    if pitch > 0 and start_x < cw:
+                        col_centers = list(range(start_x, cw, pitch))
                 half_w = int(card.get("col_mask_width_px", 22)) // 2
                 margin = int(card.get("col_mask_margin_px", 4))
                 mask_local = apply_column_strip_mask(mask_local, col_centers, half_w, margin)
@@ -446,6 +461,15 @@ class MeasureWorkspace(QWidget):
                     for m in c.measurements:
                         m.upper_blob = _rot_blob_to_ori(m.upper_blob, orig_h)
                         m.lower_blob = _rot_blob_to_ori(m.lower_blob, orig_h)
+
+            # Range filter: discard measurements outside [min_line_px, max_line_px]
+            if card.get("range_enabled", False):
+                cuts = _filter_by_range(
+                    cuts,
+                    float(card.get("min_line_px", 0)),
+                    float(card.get("max_line_px", 0)),
+                )
+
             for c in cuts:
                 c.cmg_id += cmg_offset
                 for m in c.measurements:
@@ -520,6 +544,26 @@ class MeasureWorkspace(QWidget):
                 from ...core.cmg_analyzer import CMGCut
                 result.append(CMGCut(cmg_id=cut.cmg_id, measurements=keep))
         return result
+
+
+def _filter_by_range(cuts: list, min_px: float, max_px: float) -> list:
+    """Remove measurements outside [min_px, max_px] and re-flag MIN/MAX."""
+    from ...core.cmg_analyzer import CMGCut
+    filtered = []
+    for cut in cuts:
+        kept = [m for m in cut.measurements
+                if (min_px <= 0 or m.cd_px >= min_px)
+                and (max_px <= 0 or m.cd_px <= max_px)]
+        if kept:
+            filtered.append(CMGCut(cmg_id=cut.cmg_id, measurements=kept))
+    # Re-compute MIN/MAX flags on remaining measurements
+    all_m = [m for c in filtered for m in c.measurements]
+    if len(all_m) >= 2:
+        mn = min(m.cd_px for m in all_m)
+        mx = max(m.cd_px for m in all_m)
+        for m in all_m:
+            m.flag = "MIN" if m.cd_px == mn else ("MAX" if m.cd_px == mx else "")
+    return filtered
 
 
 def _ov_chk(text: str, checked: bool = True) -> QCheckBox:

@@ -48,8 +48,8 @@ def draw_overlays(
     """Return annotated BGR image.
 
     Args:
-        color_override: When set, use this BGR color for all measurements
-                        instead of the default MIN/MAX/normal palette.
+        color_override: When set, use this BGR color for *normal* measurements.
+                        MIN and MAX measurements always use their designated colors.
     """
     if opts is None:
         opts = OverlayOptions()
@@ -62,10 +62,10 @@ def draw_overlays(
 
     for cut in cuts:
         for m in cut.measurements:
-            col = color_override if color_override is not None else _COL.get(m.flag, _COL[""])
+            col = _COL.get(m.flag) if m.flag else (color_override if color_override is not None else _COL[""])
             _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
 
-    if opts.show_legend and color_override is None:
+    if opts.show_legend:
         _draw_legend(canvas, fs)
 
     return canvas
@@ -80,6 +80,8 @@ def draw_overlays_multi(
 
     Args:
         layers: list of (cuts, color_bgr) tuples — one per recipe/config.
+                Normal measurements use the layer color; MIN/MAX always use
+                their designated orange/sky colors for consistent highlighting.
     """
     if opts is None:
         opts = OverlayOptions()
@@ -93,7 +95,11 @@ def draw_overlays_multi(
     for cuts, color in layers:
         for cut in cuts:
             for m in cut.measurements:
-                _draw_measurement(canvas, m, color, fs, th, opts, last_label_y)
+                col = _COL.get(m.flag) if m.flag else color
+                _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
+
+    if opts.show_legend:
+        _draw_legend(canvas, fs)
 
     return canvas
 
