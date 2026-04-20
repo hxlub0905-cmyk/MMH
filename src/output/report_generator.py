@@ -3,31 +3,22 @@
 from __future__ import annotations
 import base64
 import io
+import statistics as _stats
 from datetime import datetime
 from pathlib import Path
 
-from ._common import results_to_dataframe
-
 
 def generate_report(results: list[dict], out_path: Path, nm_per_pixel: float) -> None:
+    from ._common import results_to_dataframe   # lazy — needs pandas
     df = results_to_dataframe(results, nm_per_pixel)
-    ok = df[df["status"] == "OK"]["y_cd_nm"].dropna()
+    ok = df[df["status"] == "OK"]["y_cd_nm"].dropna().tolist()
 
     n_total = len(results)
     n_fail = sum(1 for r in results if r.get("status") != "OK")
     n_ok = n_total - n_fail
 
-    stats = {
-        "Count": len(ok),
-        "Mean (nm)": f"{ok.mean():.3f}" if len(ok) else "N/A",
-        "Median (nm)": f"{ok.median():.3f}" if len(ok) else "N/A",
-        "Std Dev (nm)": f"{ok.std():.3f}" if len(ok) else "N/A",
-        "3-Sigma (nm)": f"{ok.std()*3:.3f}" if len(ok) else "N/A",
-        "Min (nm)": f"{ok.min():.3f}" if len(ok) else "N/A",
-        "Max (nm)": f"{ok.max():.3f}" if len(ok) else "N/A",
-    }
-
-    hist_b64 = _histogram_b64(ok) if len(ok) > 0 else ""
+    stats = _compute_stats(ok)
+    hist_b64 = _histogram_b64(ok) if ok else ""
     fail_list = [Path(r["path"]).name for r in results if r.get("status") != "OK"]
 
     html = _render_html(
@@ -43,17 +34,41 @@ def generate_report(results: list[dict], out_path: Path, nm_per_pixel: float) ->
     out_path.write_text(html, encoding="utf-8")
 
 
-def _histogram_b64(values) -> str:
+def _compute_stats(ok: list[float]) -> dict:
+    """Return CD statistics dict from a plain float list. No pandas required."""
+    if not ok:
+        return {k: "N/A" for k in
+                ["Count", "Mean (nm)", "Median (nm)", "Std Dev (nm)",
+                 "3-Sigma (nm)", "Min (nm)", "Max (nm)"]}
+    n = len(ok)
+    mean_v   = _stats.mean(ok)
+    median_v = _stats.median(ok)
+    std_v    = _stats.stdev(ok) if n > 1 else 0.0
+    return {
+        "Count":       n,
+        "Mean (nm)":   f"{mean_v:.3f}",
+        "Median (nm)": f"{median_v:.3f}",
+        "Std Dev (nm)":f"{std_v:.3f}",
+        "3-Sigma (nm)":f"{std_v * 3:.3f}",
+        "Min (nm)":    f"{min(ok):.3f}",
+        "Max (nm)":    f"{max(ok):.3f}",
+    }
+
+
+def _histogram_b64(values: list[float]) -> str:
+    """Render a CD-distribution histogram; requires matplotlib (optional)."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        import numpy as np
     except ImportError:
         return ""
+    arr = np.asarray(values, dtype=float)
+    mean_v = float(arr.mean())
+    std_v  = float(arr.std())
     fig, ax = plt.subplots(figsize=(7, 3.5), dpi=100)
-    ax.hist(values, bins="auto", color="#4a90d9", edgecolor="white", linewidth=0.5)
-    mean_v = values.mean()
-    std_v = values.std()
+    ax.hist(arr, bins="auto", color="#4a90d9", edgecolor="white", linewidth=0.5)
     ax.axvline(mean_v, color="red", linestyle="--", linewidth=1.5, label=f"Mean={mean_v:.2f}")
     ax.axvline(mean_v - 3 * std_v, color="orange", linestyle=":", linewidth=1, label="-3σ")
     ax.axvline(mean_v + 3 * std_v, color="orange", linestyle=":", linewidth=1, label="+3σ")
@@ -74,28 +89,22 @@ def generate_report_from_records(
     image_records: list | None = None,
     batch_run=None,
 ) -> None:
-    """Generate HTML report from MeasurementRecord list."""
-    from ._common import records_to_dataframe
-    df = records_to_dataframe(records, image_records)
-    ok = df[df["status"] == "OK"]["y_cd_nm"].dropna()
+    """Generate HTML report from MeasurementRecord list — no pandas required."""
+    ok = [
+        float(r.calibrated_nm)
+        for r in records
+        if getattr(r, "status", "normal") not in ("rejected",)
+    ]
 
-    n_ok = len(ok)
+    n_ok    = len(ok)
     n_total = batch_run.total_images if batch_run else len(image_records or []) or 1
-    n_fail = batch_run.fail_count if batch_run else 0
-
+    n_fail  = batch_run.fail_count   if batch_run else 0
     nm_per_pixel = float(image_records[0].pixel_size_nm) if image_records else 1.0
 
-    stats = {
-        "Count": len(ok),
-        "Mean (nm)": f"{ok.mean():.3f}" if len(ok) else "N/A",
-        "Median (nm)": f"{ok.median():.3f}" if len(ok) else "N/A",
-        "Std Dev (nm)": f"{ok.std():.3f}" if len(ok) else "N/A",
-        "3-Sigma (nm)": f"{ok.std()*3:.3f}" if len(ok) else "N/A",
-        "Min (nm)": f"{ok.min():.3f}" if len(ok) else "N/A",
-        "Max (nm)": f"{ok.max():.3f}" if len(ok) else "N/A",
-    }
-    hist_b64 = _histogram_b64(ok) if len(ok) > 0 else ""
-    fail_list = []
+    stats    = _compute_stats(ok)
+    hist_b64 = _histogram_b64(ok) if ok else ""
+
+    fail_list: list[str] = []
     if batch_run:
         fail_list = [entry.get("image_path", "") for entry in batch_run.error_log]
 

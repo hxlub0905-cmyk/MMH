@@ -3,13 +3,13 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
-import pandas as pd
 
 if TYPE_CHECKING:
     from ..core.models import ImageRecord, MeasurementRecord
 
 
-def results_to_dataframe(results: list[dict], nm_per_pixel: float) -> pd.DataFrame:
+def results_to_dataframe(results: list[dict], nm_per_pixel: float):
+    import pandas as pd
     rows = []
     for r in results:
         img_name = Path(r["path"]).name
@@ -50,11 +50,12 @@ def results_to_dataframe(results: list[dict], nm_per_pixel: float) -> pd.DataFra
 def records_to_dataframe(
     records: list["MeasurementRecord"],
     image_records: list["ImageRecord"] | None = None,
-) -> pd.DataFrame:
+):
     """Convert MeasurementRecord list → DataFrame with the same schema as results_to_dataframe.
 
     Enables new-style code paths to use the same exporters without conversion.
     """
+    import pandas as pd
     img_map = {ir.image_id: ir for ir in (image_records or [])}
     rows = []
     for r in records:
