@@ -167,9 +167,6 @@ class RecipeWorkspace(QWidget):
         sf.addRow("Strip width:", self._strip_width)
         sf.addRow("Margin ±:", self._strip_margin)
 
-        df.addRow(xproj_box)
-        df.addRow(strip_box)
-
         # Edge locator
         edge_box = QGroupBox("Edge Locator")
         ef = QFormLayout(edge_box)
@@ -180,6 +177,8 @@ class RecipeWorkspace(QWidget):
 
         form.addRow(pre_box)
         form.addRow(det_box)
+        form.addRow(xproj_box)
+        form.addRow(strip_box)
         form.addRow(edge_box)
 
         return box

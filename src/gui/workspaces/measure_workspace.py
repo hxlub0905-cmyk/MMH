@@ -365,8 +365,8 @@ class MeasureWorkspace(QWidget):
         self.status_message.emit(f"{name}  ·  {len(cuts)} cut(s)  ·  {n_meas} measurement(s)")
 
     def _analyze_with_cards(self, raw: np.ndarray, preview_only: bool) -> tuple:
-        from ...core.preprocessor import preprocess, PreprocessParams
-        from ...core.mg_detector import detect_blobs
+        from ...core.preprocessor import preprocess, PreprocessParams, apply_column_strip_mask
+        from ...core.mg_detector import detect_blobs, detect_mg_column_centers
         from ...core.cmg_analyzer import analyze
         from ...core.recipes.cmg_recipe import _rot_blob_to_ori
 
@@ -384,6 +384,8 @@ class MeasureWorkspace(QWidget):
         for ci, card in enumerate(cards):
             axis = card.get("axis", "Y")
             roi = raw if axis == "Y" else cv2.rotate(raw, cv2.ROTATE_90_CLOCKWISE)
+
+            # Strategy 2b: vertical erosion
             params = PreprocessParams(
                 gl_min=card["gl_min"],
                 gl_max=card["gl_max"],
@@ -393,8 +395,23 @@ class MeasureWorkspace(QWidget):
                 use_clahe=base_params.use_clahe,
                 clahe_clip=base_params.clahe_clip,
                 clahe_grid=base_params.clahe_grid,
+                vert_erode_k=int(card.get("vert_erode_k", 0)),
+                vert_erode_iter=int(card.get("vert_erode_iter", 1)),
             )
             mask_local = preprocess(roi, params)
+
+            # Strategy 1: column strip masking (severs EPI lateral bridge)
+            if card.get("col_mask_enabled", False):
+                col_centers: list[int] = []
+                start_x = int(card.get("col_mask_start_x", 0))
+                pitch = int(card.get("col_mask_pitch_px", 44))
+                cw = mask_local.shape[1]
+                if pitch > 0 and start_x < cw:
+                    col_centers = list(range(start_x, cw, pitch))
+                half_w = int(card.get("col_mask_width_px", 22)) // 2
+                margin = int(card.get("col_mask_margin_px", 4))
+                mask_local = apply_column_strip_mask(mask_local, col_centers, half_w, margin)
+
             mask_ori = mask_local if axis == "Y" else cv2.rotate(mask_local, cv2.ROTATE_90_COUNTERCLOCKWISE)
             full_mask = np.maximum(full_mask, mask_ori)
             profile_masks.append((mask_ori, palette[ci % len(palette)], card.get("name", f"S{ci+1}")))
@@ -402,6 +419,25 @@ class MeasureWorkspace(QWidget):
                 continue
 
             blobs = detect_blobs(mask_local, min_area=card.get("min_area", min_area_default))
+
+            # Geometric filters (0 = disabled)
+            _min_ar = float(card.get("min_aspect_ratio", 0.0))
+            _max_ar = float(card.get("max_aspect_ratio", 0.0))
+            _min_w  = int(card.get("min_width", 0))
+            _max_w  = int(card.get("max_width", 0))
+            _min_h  = int(card.get("min_height", 0))
+            if any([_min_ar, _max_ar, _min_w, _max_w, _min_h]):
+                filtered = []
+                for b in blobs:
+                    ar = b.height / max(b.width, 1)
+                    if _min_ar and ar < _min_ar: continue
+                    if _max_ar and ar > _max_ar: continue
+                    if _min_w and b.width < _min_w: continue
+                    if _max_w and b.width > _max_w: continue
+                    if _min_h and b.height < _min_h: continue
+                    filtered.append(b)
+                blobs = filtered
+
             # Analyze in rotated space; back-rotate blob coords after (same fix as CMGRecipe)
             cuts = analyze(blobs, nm_px)
             if axis == "X":

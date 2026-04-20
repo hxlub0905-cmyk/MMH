@@ -141,10 +141,11 @@ class ControlPanel(QWidget):
         vert_erode_iter = QSpinBox(); vert_erode_iter.setRange(1, 10); vert_erode_iter.setValue(1)
 
         # Column strip masking (Strategy 1): sever EPI lateral bridge
-        strip_enabled = QCheckBox("Enable strip mask"); strip_enabled.setChecked(False)
-        strip_pitch   = QSpinBox(); strip_pitch.setRange(1, 9999); strip_pitch.setValue(44); strip_pitch.setSuffix(" px")
-        strip_width   = QSpinBox(); strip_width.setRange(1, 9999); strip_width.setValue(22); strip_width.setSuffix(" px")
-        strip_margin  = QSpinBox(); strip_margin.setRange(0, 999);  strip_margin.setValue(4);  strip_margin.setSuffix(" px")
+        strip_enabled  = QCheckBox("Enable strip mask"); strip_enabled.setChecked(False)
+        strip_start_x  = QSpinBox(); strip_start_x.setRange(0, 9999); strip_start_x.setValue(0); strip_start_x.setSuffix(" px"); strip_start_x.setSpecialValueText("0")
+        strip_pitch    = QSpinBox(); strip_pitch.setRange(1, 9999); strip_pitch.setValue(44); strip_pitch.setSuffix(" px")
+        strip_width    = QSpinBox(); strip_width.setRange(1, 9999); strip_width.setValue(22); strip_width.setSuffix(" px")
+        strip_margin   = QSpinBox(); strip_margin.setRange(0, 999);  strip_margin.setValue(4);  strip_margin.setSuffix(" px")
 
         enabled = QCheckBox("Enabled"); enabled.setChecked(True)
 
@@ -164,7 +165,7 @@ class ControlPanel(QWidget):
         gl_max.valueChanged.connect(on_max)
         axis.currentIndexChanged.connect(self._emit)
         min_area.valueChanged.connect(self._emit)
-        for w in (min_ar, max_ar, min_w, max_w, min_h, vert_erode_k, vert_erode_iter, strip_pitch, strip_width, strip_margin):
+        for w in (min_ar, max_ar, min_w, max_w, min_h, vert_erode_k, vert_erode_iter, strip_start_x, strip_pitch, strip_width, strip_margin):
             w.valueChanged.connect(self._emit)
         strip_enabled.stateChanged.connect(self._emit)
         enabled.stateChanged.connect(self._emit)
@@ -188,6 +189,7 @@ class ControlPanel(QWidget):
         form.addRow("Vert erode", vert_erode_k)
         form.addRow("Vert erode iter", vert_erode_iter)
         form.addRow(strip_enabled)
+        form.addRow("Strip start X", strip_start_x)
         form.addRow("Strip pitch", strip_pitch)
         form.addRow("Strip width", strip_width)
         form.addRow("Strip margin ±", strip_margin)
@@ -208,6 +210,7 @@ class ControlPanel(QWidget):
             "vert_erode_k": vert_erode_k,
             "vert_erode_iter": vert_erode_iter,
             "col_mask_enabled": strip_enabled,
+            "col_mask_start_x": strip_start_x,
             "col_mask_pitch_px": strip_pitch,
             "col_mask_width_px": strip_width,
             "col_mask_margin_px": strip_margin,
@@ -250,6 +253,7 @@ class ControlPanel(QWidget):
                 "vert_erode_k": p["vert_erode_k"].value(),
                 "vert_erode_iter": p["vert_erode_iter"].value(),
                 "col_mask_enabled": p["col_mask_enabled"].isChecked(),
+                "col_mask_start_x": p["col_mask_start_x"].value(),
                 "col_mask_pitch_px": p["col_mask_pitch_px"].value(),
                 "col_mask_width_px": p["col_mask_width_px"].value(),
                 "col_mask_margin_px": p["col_mask_margin_px"].value(),
