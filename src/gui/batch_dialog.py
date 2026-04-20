@@ -53,15 +53,13 @@ def _process_one(args: tuple) -> dict:
                 pitch = int(card.get("col_mask_pitch_px", 44))
                 cw = m_roi.shape[1]
                 if card.get("col_mask_auto_centers", False):
-                    from ..core.mg_detector import detect_mg_column_centers_twopass
-                    col_centers = detect_mg_column_centers_twopass(
+                    from ..core.mg_detector import detect_mg_column_centers_pitch_phase
+                    col_centers = detect_mg_column_centers_pitch_phase(
                         m_roi,
+                        pitch_px=int(card.get("col_mask_pitch_px", 44)),
                         smooth_k=int(card.get("xproj_smooth_k", 5)),
-                        min_pitch_px=int(card.get("xproj_min_pitch_px", 30)),
                         min_height_frac=float(card.get("xproj_peak_min_frac", 0.3)),
                         edge_margin_px=edge_margin,
-                        half_width=half_w,
-                        margin=margin,
                     )
                 if not col_centers:  # fallback to manual start_x + pitch
                     col_centers = list(range(start_x, cw, pitch)) if pitch > 0 and start_x < cw else []

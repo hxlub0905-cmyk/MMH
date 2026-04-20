@@ -43,41 +43,44 @@ def detect_mg_column_centers(
     return _xproj_peaks(mask, smooth_k, min_pitch_px, min_height_frac, edge_margin_px)
 
 
-def detect_mg_column_centers_twopass(
+def detect_mg_column_centers_pitch_phase(
     mask: np.ndarray,
+    pitch_px: int,
     smooth_k: int = 5,
-    min_pitch_px: int = 30,
     min_height_frac: float = 0.3,
     edge_margin_px: int = 0,
-    half_width: int = 11,
-    margin: int = 4,
 ) -> list[int]:
-    """Two-pass X-proj: eliminates PEPI-induced peak bias.
+    """Pitch-anchored phase detection of MG column centers.
 
-    Pass 1: X-proj on full mask  → rough centers (may be off by 1-3 px due to PEPI)
-    Pass 2: Strip mask with 2× margin → X-proj on clean MG-only mask → accurate centers
+    Exploits the physical constraint that MG columns have a fixed, known pitch.
+    Finds the phase offset φ ∈ [0, pitch_px) that maximises the mean X-projection
+    energy at positions φ, φ+pitch, φ+2·pitch, … then returns a regular grid.
 
-    Falls back to Pass-1 result if Pass 2 returns no peaks.
+    All returned centers are guaranteed to be exactly pitch_px apart.
+    Falls back to empty list only if the mask is blank or pitch_px ≤ 0.
     """
-    rough = _xproj_peaks(mask, smooth_k, min_pitch_px, min_height_frac, edge_margin_px)
-    if not rough:
+    if pitch_px <= 0:
         return []
-    # Build a strip mask to isolate MG pixels (remove PEPI lateral bridges)
-    strip = np.zeros_like(mask)
-    hw = half_width + margin * 2          # extra-wide window for pass 1
-    W = mask.shape[1]
-    lft = max(edge_margin_px, 0)
-    rgt = max(edge_margin_px, 0)
-    for xc in rough:
-        x0 = max(lft, xc - hw)
-        x1 = min(W - rgt, xc + hw + 1)
-        if x1 > x0:
-            strip[:, x0:x1] = 255
-    clean = cv2.bitwise_and(mask, strip)
-    # Pass 2: no smoothing needed — PEPI already removed
-    refined = _xproj_peaks(clean, smooth_k=1, min_pitch_px=min_pitch_px,
-                            min_height_frac=min_height_frac, edge_margin_px=edge_margin_px)
-    return refined if refined else rough
+    x_proj = mask.sum(axis=0).astype(float)
+    if smooth_k > 1:
+        pad = smooth_k // 2
+        x_padded = np.pad(x_proj, pad, mode="edge")
+        x_proj = np.convolve(x_padded, np.ones(smooth_k) / smooth_k, mode="valid")
+    if x_proj.max() == 0:
+        return []
+    W = len(x_proj)
+    # Vectorised phase search: reshape into (N, pitch_px), take mean per phase column
+    pad_len = (-W) % pitch_px
+    x_padded2 = np.pad(x_proj, (0, pad_len), mode="constant", constant_values=0.0)
+    phase_means = x_padded2.reshape(-1, pitch_px).mean(axis=0)
+    best_offset = int(np.argmax(phase_means))
+    # Generate perfectly regular grid from best phase
+    centers = list(range(best_offset, W, pitch_px))
+    threshold = float(x_proj.max()) * min_height_frac
+    centers = [c for c in centers if x_proj[c] >= threshold]
+    if edge_margin_px > 0:
+        centers = [c for c in centers if edge_margin_px <= c < W - edge_margin_px]
+    return centers
 
 
 def _xproj_peaks(
