@@ -66,6 +66,8 @@ class CMGRecipe(BaseRecipe):
             use_clahe=pc.get("use_clahe", True),
             clahe_clip=pc.get("clahe_clip", 2.0),
             clahe_grid=pc.get("clahe_grid", 8),
+            vert_erode_k=int(pc.get("vert_erode_k", 0)),
+            vert_erode_iter=int(pc.get("vert_erode_iter", 1)),
         )
         mask_roi = preprocess(roi, params)
 
@@ -82,18 +84,45 @@ class CMGRecipe(BaseRecipe):
     # ── Stage 3: detect_features ──────────────────────────────────────────────
 
     def detect_features(self, mask: np.ndarray, context: dict) -> list:
-        from ..mg_detector import detect_blobs
+        from ..mg_detector import detect_blobs, detect_mg_column_centers
+        from ..preprocessor import apply_column_strip_mask
         dc = self._descriptor.detector_config
         min_area = dc.get("min_area", None)
         mask_roi = context.get("mask_roi", mask)
+
+        # Strategy 2a: X-projection peak detection → auto-detect MG column centers
+        if dc.get("xproj_enabled", False):
+            col_centers = detect_mg_column_centers(
+                mask_roi,
+                smooth_k=int(dc.get("xproj_smooth_k", 5)),
+                min_pitch_px=int(dc.get("xproj_min_pitch_px", 30)),
+                min_height_frac=float(dc.get("xproj_peak_min_frac", 0.3)),
+            )
+            context["mg_col_centers"] = col_centers
+
+        # Strategy 1: X-Column Strip Masking → sever EPI lateral bridge
+        if dc.get("col_mask_enabled", False):
+            col_centers = context.get("mg_col_centers", [])
+            if not col_centers:
+                start_x = int(dc.get("col_mask_start_x", 0))
+                pitch = int(dc.get("col_mask_pitch_px", 44))
+                w = mask_roi.shape[1]
+                if pitch > 0 and start_x < w:
+                    col_centers = list(range(start_x, w, pitch))
+            half_w = int(dc.get("col_mask_width_px", 22)) // 2
+            margin = int(dc.get("col_mask_margin_px", 4))
+            mask_roi = apply_column_strip_mask(mask_roi, col_centers, half_w, margin)
+            context["mask_roi_stripped"] = mask_roi
+
         blobs = detect_blobs(mask_roi, min_area=min_area)
 
         # Geometric filters (0 = disabled)
         min_ar = float(dc.get("min_aspect_ratio", 0.0))
         max_ar = float(dc.get("max_aspect_ratio", 0.0))
         min_w  = int(dc.get("min_width", 0))
+        max_w  = int(dc.get("max_width", 0))
         min_h  = int(dc.get("min_height", 0))
-        if any([min_ar, max_ar, min_w, min_h]):
+        if any([min_ar, max_ar, min_w, max_w, min_h]):
             filtered = []
             for b in blobs:
                 ar = b.height / max(b.width, 1)
@@ -102,6 +131,8 @@ class CMGRecipe(BaseRecipe):
                 if max_ar and ar > max_ar:
                     continue
                 if min_w and b.width < min_w:
+                    continue
+                if max_w and b.width > max_w:
                     continue
                 if min_h and b.height < min_h:
                     continue
@@ -246,12 +277,15 @@ class CMGRecipe(BaseRecipe):
                 "use_clahe": bool(card.get("use_clahe", True)),
                 "clahe_clip": float(card.get("clahe_clip", 2.0)),
                 "clahe_grid": int(card.get("clahe_grid", 8)),
+                "vert_erode_k": int(card.get("vert_erode_k", 0)),
+                "vert_erode_iter": int(card.get("vert_erode_iter", 1)),
             }),
             detector_config=RecipeConfig(data={
                 "min_area": card.get("min_area"),
                 "min_aspect_ratio": float(card.get("min_aspect_ratio", 0.0)),
                 "max_aspect_ratio": float(card.get("max_aspect_ratio", 0.0)),
                 "min_width": int(card.get("min_width", 0)),
+                "max_width": int(card.get("max_width", 0)),
                 "min_height": int(card.get("min_height", 0)),
             }),
         )

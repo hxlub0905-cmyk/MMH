@@ -16,7 +16,7 @@ def _process_one(args: tuple) -> dict:
     """Top-level worker function (must be picklable for multiprocessing)."""
     image_path, nm_per_pixel, gl_min, gl_max, gauss_k, morph_open_k, morph_close_k, use_clahe, min_area, cards = args
     from ..core.image_loader import load_grayscale
-    from ..core.preprocessor import preprocess, PreprocessParams
+    from ..core.preprocessor import preprocess, PreprocessParams, apply_column_strip_mask
     from ..core.mg_detector import detect_blobs, Blob
     from ..core.cmg_analyzer import analyze
 
@@ -39,11 +39,39 @@ def _process_one(args: tuple) -> dict:
                 morph_open_k=morph_open_k,
                 morph_close_k=morph_close_k,
                 use_clahe=use_clahe,
+                vert_erode_k=int(card.get("vert_erode_k", 0)),
+                vert_erode_iter=int(card.get("vert_erode_iter", 1)),
             )
             m_roi = preprocess(roi, params)
+            # Column strip masking (Strategy 1)
+            if card.get("col_mask_enabled", False):
+                start_x = int(card.get("col_mask_start_x", 0))
+                pitch = int(card.get("col_mask_pitch_px", 44))
+                cw = m_roi.shape[1]
+                col_centers = list(range(start_x, cw, pitch)) if pitch > 0 and start_x < cw else []
+                half_w = int(card.get("col_mask_width_px", 22)) // 2
+                margin = int(card.get("col_mask_margin_px", 4))
+                m_roi = apply_column_strip_mask(m_roi, col_centers, half_w, margin)
             m_ori = m_roi if axis.startswith("Y") else cv2.rotate(m_roi, cv2.ROTATE_90_COUNTERCLOCKWISE)
             mask = np.maximum(mask, m_ori)
             blobs = detect_blobs(m_roi, min_area=int(card.get("min_area", min_area)))
+            # Geometric filters (0 = disabled)
+            _min_ar = float(card.get("min_aspect_ratio", 0.0))
+            _max_ar = float(card.get("max_aspect_ratio", 0.0))
+            _min_w  = int(card.get("min_width", 0))
+            _max_w  = int(card.get("max_width", 0))
+            _min_h  = int(card.get("min_height", 0))
+            if any([_min_ar, _max_ar, _min_w, _max_w, _min_h]):
+                filtered = []
+                for b in blobs:
+                    ar = b.height / max(b.width, 1)
+                    if _min_ar and ar < _min_ar: continue
+                    if _max_ar and ar > _max_ar: continue
+                    if _min_w and b.width < _min_w: continue
+                    if _max_w and b.width > _max_w: continue
+                    if _min_h and b.height < _min_h: continue
+                    filtered.append(b)
+                blobs = filtered
             if axis.startswith("X"):
                 blobs = [Blob(
                     label=b.label,

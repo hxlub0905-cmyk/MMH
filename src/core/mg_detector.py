@@ -26,6 +26,48 @@ class Blob:
         return self.y1 - self.y0
 
 
+def detect_mg_column_centers(
+    mask: np.ndarray,
+    smooth_k: int = 5,
+    min_pitch_px: int = 30,
+    min_height_frac: float = 0.3,
+) -> list[int]:
+    """Detect MG column center X positions from X-axis projection of the mask.
+
+    Returns a list of X pixel positions sorted left-to-right.
+    Uses simple local-maxima detection after smoothing; peaks closer than
+    *min_pitch_px* are suppressed (only the tallest kept in each window).
+    """
+    x_proj = mask.sum(axis=0).astype(float)
+    if smooth_k > 1:
+        kernel = np.ones(smooth_k) / smooth_k
+        x_proj = np.convolve(x_proj, kernel, mode="same")
+    if x_proj.max() == 0:
+        return []
+    threshold = float(x_proj.max()) * min_height_frac
+    # collect raw local maxima above threshold
+    candidates: list[int] = []
+    for i in range(1, len(x_proj) - 1):
+        if x_proj[i] >= threshold and x_proj[i] >= x_proj[i - 1] and x_proj[i] >= x_proj[i + 1]:
+            candidates.append(i)
+    if not candidates:
+        return []
+    # suppress peaks closer than min_pitch_px — keep the tallest in each cluster
+    centers: list[int] = []
+    group_start = candidates[0]
+    group_peak = candidates[0]
+    for c in candidates[1:]:
+        if c - group_peak < min_pitch_px:
+            if x_proj[c] > x_proj[group_peak]:
+                group_peak = c
+        else:
+            centers.append(group_peak)
+            group_peak = c
+        group_start = c
+    centers.append(group_peak)
+    return centers
+
+
 def detect_blobs(mask: np.ndarray, min_area: int | None = None) -> list[Blob]:
     """Return list of MG blobs extracted from *mask*.
 

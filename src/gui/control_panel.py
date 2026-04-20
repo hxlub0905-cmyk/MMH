@@ -133,7 +133,18 @@ class ControlPanel(QWidget):
         min_ar  = QDoubleSpinBox(); min_ar.setRange(0.0, 100.0);  min_ar.setValue(0.0);  min_ar.setSingleStep(0.1);  min_ar.setSpecialValueText("off")
         max_ar  = QDoubleSpinBox(); max_ar.setRange(0.0, 100.0);  max_ar.setValue(0.0);  max_ar.setSingleStep(0.1);  max_ar.setSpecialValueText("off")
         min_w   = QSpinBox();        min_w.setRange(0, 9999);      min_w.setValue(0);     min_w.setSuffix(" px");     min_w.setSpecialValueText("off")
+        max_w   = QSpinBox();        max_w.setRange(0, 9999);      max_w.setValue(0);     max_w.setSuffix(" px");     max_w.setSpecialValueText("off")
         min_h   = QSpinBox();        min_h.setRange(0, 9999);      min_h.setValue(0);     min_h.setSuffix(" px");     min_h.setSpecialValueText("off")
+
+        # Vertical erosion (Strategy 2b): trims MG tips at EPI boundary
+        vert_erode_k    = QSpinBox(); vert_erode_k.setRange(0, 99); vert_erode_k.setValue(0); vert_erode_k.setSuffix(" px"); vert_erode_k.setSpecialValueText("off")
+        vert_erode_iter = QSpinBox(); vert_erode_iter.setRange(1, 10); vert_erode_iter.setValue(1)
+
+        # Column strip masking (Strategy 1): sever EPI lateral bridge
+        strip_enabled = QCheckBox("Enable strip mask"); strip_enabled.setChecked(False)
+        strip_pitch   = QSpinBox(); strip_pitch.setRange(1, 9999); strip_pitch.setValue(44); strip_pitch.setSuffix(" px")
+        strip_width   = QSpinBox(); strip_width.setRange(1, 9999); strip_width.setValue(22); strip_width.setSuffix(" px")
+        strip_margin  = QSpinBox(); strip_margin.setRange(0, 999);  strip_margin.setValue(4);  strip_margin.setSuffix(" px")
 
         enabled = QCheckBox("Enabled"); enabled.setChecked(True)
 
@@ -153,8 +164,9 @@ class ControlPanel(QWidget):
         gl_max.valueChanged.connect(on_max)
         axis.currentIndexChanged.connect(self._emit)
         min_area.valueChanged.connect(self._emit)
-        for w in (min_ar, max_ar, min_w, min_h):
+        for w in (min_ar, max_ar, min_w, max_w, min_h, vert_erode_k, vert_erode_iter, strip_pitch, strip_width, strip_margin):
             w.valueChanged.connect(self._emit)
+        strip_enabled.stateChanged.connect(self._emit)
         enabled.stateChanged.connect(self._emit)
 
         form.addRow("Enable", enabled)
@@ -168,7 +180,17 @@ class ControlPanel(QWidget):
         form.addRow("Min aspect (h/w)", min_ar)
         form.addRow("Max aspect (h/w)", max_ar)
         form.addRow("Min width", min_w)
+        form.addRow("Max width", max_w)
         form.addRow("Min height", min_h)
+
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine); sep2.setStyleSheet("color:#d0c8bc")
+        form.addRow(sep2)
+        form.addRow("Vert erode", vert_erode_k)
+        form.addRow("Vert erode iter", vert_erode_iter)
+        form.addRow(strip_enabled)
+        form.addRow("Strip pitch", strip_pitch)
+        form.addRow("Strip width", strip_width)
+        form.addRow("Strip margin ±", strip_margin)
 
         self._profiles_layout.addWidget(box)
         self._profiles.append({
@@ -181,7 +203,14 @@ class ControlPanel(QWidget):
             "min_aspect_ratio": min_ar,
             "max_aspect_ratio": max_ar,
             "min_width": min_w,
+            "max_width": max_w,
             "min_height": min_h,
+            "vert_erode_k": vert_erode_k,
+            "vert_erode_iter": vert_erode_iter,
+            "col_mask_enabled": strip_enabled,
+            "col_mask_pitch_px": strip_pitch,
+            "col_mask_width_px": strip_width,
+            "col_mask_margin_px": strip_margin,
         })
         self._emit()
 
@@ -216,7 +245,14 @@ class ControlPanel(QWidget):
                 "min_aspect_ratio": p["min_aspect_ratio"].value(),
                 "max_aspect_ratio": p["max_aspect_ratio"].value(),
                 "min_width": p["min_width"].value(),
+                "max_width": p["max_width"].value(),
                 "min_height": p["min_height"].value(),
+                "vert_erode_k": p["vert_erode_k"].value(),
+                "vert_erode_iter": p["vert_erode_iter"].value(),
+                "col_mask_enabled": p["col_mask_enabled"].isChecked(),
+                "col_mask_pitch_px": p["col_mask_pitch_px"].value(),
+                "col_mask_width_px": p["col_mask_width_px"].value(),
+                "col_mask_margin_px": p["col_mask_margin_px"].value(),
             })
         return out
 
