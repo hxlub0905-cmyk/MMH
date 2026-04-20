@@ -26,7 +26,7 @@ _COL = {
 _TICK_HALF = 5
 _LINE_W    = 1
 _BOX_W     = 1
-_LABEL_MIN_DY = 8
+_LABEL_MIN_DY = 6
 
 
 @dataclass
@@ -56,7 +56,7 @@ def draw_overlays(
 
     canvas = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
     h      = img_gray.shape[0]
-    fs     = max(0.20, h / 2600)
+    fs     = max(0.18, h / 3200)
     th     = max(1, round(fs))
     last_label_y: dict[int, int] = {}
 
@@ -88,7 +88,7 @@ def draw_overlays_multi(
 
     canvas = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
     h      = img_gray.shape[0]
-    fs     = max(0.20, h / 2600)
+    fs     = max(0.18, h / 3200)
     th     = max(1, round(fs))
     last_label_y: dict[int, int] = {}
 
@@ -165,10 +165,10 @@ def _draw_measurement(
             y_top = ub.y1
             y_bot = lb.y0
             x_mid = int((max(ub.x0, lb.x0) + min(ub.x1, lb.x1)) / 2)
-            x_lbl = x_mid + _TICK_HALF + 4
+            x_lbl = x_mid + _TICK_HALF + 2
             y_lbl = int((y_top + y_bot) / 2) + th_px // 2
         H, W   = canvas.shape[:2]
-        lane   = x_lbl // 24
+        lane   = x_lbl // 30
         prev_y = last_label_y.get(lane)
         if prev_y is not None and abs(y_lbl - prev_y) < _LABEL_MIN_DY:
             y_lbl = min(H - 2, prev_y + _LABEL_MIN_DY)

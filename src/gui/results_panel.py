@@ -10,6 +10,15 @@ from PyQt6.QtCore import pyqtSignal, Qt
 from ..core.cmg_analyzer import CMGCut
 
 _COLUMNS = ["State", "Image", "Structure", "Feature ID", "CD (px)", "CD (nm)", "Axis", "Flag", "Status"]
+_NUMERIC_COLS = {4, 5}   # CD (px), CD (nm) — sort numerically
+
+
+class _NumericItem(QTableWidgetItem):
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        try:
+            return float(self.text()) < float(other.text())
+        except (ValueError, TypeError):
+            return super().__lt__(other)
 
 _ROW_COLOURS = {
     "MIN": QColor(255, 244, 232),
@@ -59,6 +68,8 @@ class ResultsPanel(QWidget):
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
         self._table.setAlternatingRowColors(True)
+        self._table.setSortingEnabled(True)
+        self._table.horizontalHeader().setSectionsClickable(True)
         self._table.itemSelectionChanged.connect(self._on_selection)
         layout.addWidget(self._table)
         self._rows: list[dict] = []
@@ -145,6 +156,7 @@ class ResultsPanel(QWidget):
     def _render_table(self) -> None:
         sel = self._state_filter.currentText()
         rows = self._rows if sel == "All states" else [r for r in self._rows if r["state_name"] == sel]
+        self._table.setSortingEnabled(False)
         self._table.setRowCount(0)
         for r in rows:
             row = self._table.rowCount()
@@ -155,13 +167,14 @@ class ResultsPanel(QWidget):
             ]
             bg = _ROW_COLOURS.get(r["flag"])
             for col, val in enumerate(values):
-                item = QTableWidgetItem(val)
+                item = _NumericItem(val) if col in _NUMERIC_COLS else QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if bg:
                     item.setBackground(bg)
                 if col == 7 and r["flag"] in _FLAG_TEXT:
                     item.setForeground(_FLAG_TEXT[r["flag"]])
                 self._table.setItem(row, col, item)
+        self._table.setSortingEnabled(True)
 
     def _on_state_filter_changed(self) -> None:
         self._render_table()

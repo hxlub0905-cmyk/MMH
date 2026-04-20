@@ -184,6 +184,8 @@ class _BatchWorker(QThread):
         total = len(self._paths)
         p = self._params
 
+        self.progress.emit(0, total, f"Preparing {total} job(s)…")
+
         args_list = [
             (
                 path,
@@ -202,6 +204,7 @@ class _BatchWorker(QThread):
 
         with ProcessPoolExecutor(max_workers=self._max_workers) as pool:
             future_map = {pool.submit(_process_one, args): args[0] for args in args_list}
+            self.progress.emit(0, total, f"Submitted {total} job(s), waiting for results…")
             done = 0
             for future in as_completed(future_map):
                 if self.cancelled:
@@ -227,7 +230,7 @@ class BatchDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        self._lbl_current = QLabel("Starting…")
+        self._lbl_current = QLabel("Initializing…")
         layout.addWidget(self._lbl_current)
 
         self._progress = QProgressBar()

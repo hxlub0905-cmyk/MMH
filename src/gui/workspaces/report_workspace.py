@@ -7,9 +7,9 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QFormLayout,
     QLabel, QPushButton, QFileDialog, QMessageBox, QSizePolicy,
-    QScrollArea,
+    QScrollArea, QProgressDialog, QApplication,
 )
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, Qt
 
 from ...core.models import BatchRunRecord, ImageRecord, MeasurementRecord
 
@@ -223,9 +223,19 @@ class ReportWorkspace(QWidget):
             from ..._compat import records_to_legacy_cuts
 
             results = self._batch_run.output_manifest.get("results", [])
-            exported = 0
-            errors = 0
-            for entry in results:
+            total = len(results)
+
+            progress = QProgressDialog("Exporting images…", "Cancel", 0, total, self)
+            progress.setWindowTitle("Export Images")
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setMinimumDuration(0)
+
+            exported = errors = 0
+            for i, entry in enumerate(results):
+                progress.setValue(i)
+                QApplication.processEvents()
+                if progress.wasCancelled():
+                    break
                 image_path = entry.get("image_path", "")
                 if not image_path or not Path(image_path).exists():
                     errors += 1
@@ -233,10 +243,7 @@ class ReportWorkspace(QWidget):
                 stem = Path(image_path).stem
                 try:
                     raw = load_grayscale(image_path)
-                    # Save raw as PNG
                     cv2.imwrite(str(out_path / f"{stem}_raw.png"), raw)
-
-                    # Build annotated image
                     records_dicts = entry.get("measurements", [])
                     records = []
                     for m_dict in records_dicts:
@@ -254,6 +261,7 @@ class ReportWorkspace(QWidget):
                 except Exception:
                     errors += 1
 
+            progress.setValue(total)
             msg = f"Exported {exported} image pair(s) to {out_path.name}"
             if errors:
                 msg += f"  ({errors} skipped)"

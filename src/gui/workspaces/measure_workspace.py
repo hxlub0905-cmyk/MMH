@@ -191,7 +191,15 @@ class MeasureWorkspace(QWidget):
         run_btn = QPushButton("Run Single (F5)")
         run_btn.setShortcut("F5")
         run_btn.clicked.connect(self._run_single)
-        form.addRow(run_btn)
+
+        save_btn = QPushButton("Save Cards as Recipe…")
+        save_btn.setToolTip("Convert current ControlPanel profiles to Recipe(s) and save")
+        save_btn.clicked.connect(self._save_cards_as_recipe)
+
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(run_btn)
+        btn_row.addWidget(save_btn)
+        form.addRow(btn_row)
 
         self._refresh_recipe_selector_internal()
         return box
@@ -261,6 +269,24 @@ class MeasureWorkspace(QWidget):
         self._profile_masks = profile_masks
         self._viewer.set_images(self._current_raw, self._current_mask, self._current_annotated,
                                 profile_masks=profile_masks)
+
+    # ── Save cards as recipe ──────────────────────────────────────────────────
+
+    def _save_cards_as_recipe(self) -> None:
+        cards = self._ctrl.get_measurement_cards()
+        if not cards:
+            QMessageBox.information(self, "No profiles", "Add at least one measurement profile first.")
+            return
+        saved = []
+        for card in cards:
+            try:
+                desc = self._registry.import_from_card(card)
+                saved.append(desc.recipe_name)
+            except Exception as exc:
+                QMessageBox.warning(self, "Save failed", f"Card '{card.get('name','')}': {exc}")
+        if saved:
+            self._refresh_recipe_selector_internal()
+            self.status_message.emit(f"Saved recipe(s): {', '.join(saved)}")
 
     # ── Run logic ─────────────────────────────────────────────────────────────
 

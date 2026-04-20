@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QGroupBox, QFormLayout,
     QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox,
     QCheckBox, QPushButton, QLabel, QMessageBox, QSizePolicy,
+    QTabWidget, QScrollArea,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -80,9 +81,17 @@ class RecipeWorkspace(QWidget):
 
         root.addWidget(splitter)
 
-    def _build_editor(self) -> QGroupBox:
-        box = QGroupBox("Recipe Editor")
-        form = QFormLayout(box)
+    def _build_editor(self) -> QWidget:
+        outer = QWidget()
+        ov = QVBoxLayout(outer)
+        ov.setContentsMargins(0, 0, 0, 0)
+        ov.setSpacing(6)
+
+        # ── Identity (always visible) ─────────────────────────────────────────
+        id_box = QGroupBox("Recipe Identity")
+        id_form = QFormLayout(id_box)
+        id_form.setSpacing(8)
+        id_form.setContentsMargins(10, 14, 10, 10)
 
         self._name_edit   = QLineEdit()
         self._layer_edit  = QLineEdit()
@@ -90,20 +99,28 @@ class RecipeWorkspace(QWidget):
         self._struct_edit.setPlaceholderText("e.g. CMG, PEPI, MG")
         self._axis_combo  = QComboBox()
         self._axis_combo.addItems(["Y", "X"])
+        self._axis_combo.setFixedWidth(60)
 
         # Auto-update name when struct/axis changes (until user edits it manually)
         self._struct_edit.textChanged.connect(self._on_struct_axis_changed)
         self._axis_combo.currentIndexChanged.connect(self._on_struct_axis_changed)
         self._name_edit.textEdited.connect(self._on_name_manually_edited)
 
-        form.addRow("Name:", self._name_edit)
-        form.addRow("Target layer:", self._layer_edit)
-        form.addRow("Structure name:", self._struct_edit)
-        form.addRow("Axis mode:", self._axis_combo)
+        struct_row = QHBoxLayout()
+        struct_row.addWidget(self._struct_edit)
+        struct_row.addWidget(QLabel("Axis:"))
+        struct_row.addWidget(self._axis_combo)
 
-        # Preprocess
-        pre_box = QGroupBox("Preprocessing")
-        pf = QFormLayout(pre_box)
+        id_form.addRow("Name:", self._name_edit)
+        id_form.addRow("Target layer:", self._layer_edit)
+        id_form.addRow("Structure:", struct_row)
+        ov.addWidget(id_box)
+
+        # ── Tabbed parameter sections ─────────────────────────────────────────
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+
+        # ── Tab 1: Preprocessing ──────────────────────────────────────────────
         self._gl_min = QSpinBox(); self._gl_min.setRange(0, 255); self._gl_min.setValue(100)
         self._gl_max = QSpinBox(); self._gl_max.setRange(0, 255); self._gl_max.setValue(220)
         self._gauss  = QSpinBox(); self._gauss.setRange(1, 31);   self._gauss.setSingleStep(2); self._gauss.setValue(3)
@@ -114,6 +131,10 @@ class RecipeWorkspace(QWidget):
         self._clahe_grid = QSpinBox(); self._clahe_grid.setRange(2, 32); self._clahe_grid.setValue(8)
         self._vert_erode_k    = QSpinBox(); self._vert_erode_k.setRange(0, 99); self._vert_erode_k.setValue(0); self._vert_erode_k.setSuffix(" px"); self._vert_erode_k.setSpecialValueText("off")
         self._vert_erode_iter = QSpinBox(); self._vert_erode_iter.setRange(1, 10); self._vert_erode_iter.setValue(1)
+
+        pre_tab = QWidget()
+        pf = QFormLayout(pre_tab)
+        pf.setSpacing(8); pf.setContentsMargins(12, 10, 12, 10)
         pf.addRow("GL min:", self._gl_min)
         pf.addRow("GL max:", self._gl_max)
         pf.addRow("Gaussian (px):", self._gauss)
@@ -124,26 +145,28 @@ class RecipeWorkspace(QWidget):
         pf.addRow("CLAHE grid:", self._clahe_grid)
         pf.addRow("Vert erode (px):", self._vert_erode_k)
         pf.addRow("Vert erode iter:", self._vert_erode_iter)
+        tabs.addTab(pre_tab, "Preprocessing")
 
-        # Detector
-        det_box = QGroupBox("Detector")
-        df = QFormLayout(det_box)
+        # ── Tab 2: Detection ──────────────────────────────────────────────────
         self._min_area   = QSpinBox();        self._min_area.setRange(0, 500_000);  self._min_area.setValue(0);    self._min_area.setSuffix(" px²");   self._min_area.setSpecialValueText("auto")
         self._min_ar     = QDoubleSpinBox();  self._min_ar.setRange(0.0, 100.0);   self._min_ar.setValue(0.0);    self._min_ar.setSingleStep(0.1);    self._min_ar.setSpecialValueText("off")
         self._max_ar     = QDoubleSpinBox();  self._max_ar.setRange(0.0, 100.0);   self._max_ar.setValue(0.0);    self._max_ar.setSingleStep(0.1);    self._max_ar.setSpecialValueText("off")
         self._min_width  = QSpinBox();        self._min_width.setRange(0, 9999);    self._min_width.setValue(0);   self._min_width.setSuffix(" px");    self._min_width.setSpecialValueText("off")
         self._max_width  = QSpinBox();        self._max_width.setRange(0, 9999);    self._max_width.setValue(0);   self._max_width.setSuffix(" px");    self._max_width.setSpecialValueText("off")
         self._min_height = QSpinBox();        self._min_height.setRange(0, 9999);   self._min_height.setValue(0);  self._min_height.setSuffix(" px");   self._min_height.setSpecialValueText("off")
+
+        det_tab = QWidget()
+        df = QFormLayout(det_tab)
+        df.setSpacing(8); df.setContentsMargins(12, 10, 12, 10)
         df.addRow("Min area:", self._min_area)
         df.addRow("Min aspect (h/w):", self._min_ar)
         df.addRow("Max aspect (h/w):", self._max_ar)
         df.addRow("Min width:", self._min_width)
         df.addRow("Max width:", self._max_width)
         df.addRow("Min height:", self._min_height)
+        tabs.addTab(det_tab, "Detection")
 
-        # Column Strip Masking — includes X-proj auto-detect (consolidated)
-        strip_box = QGroupBox("Column Strip Masking")
-        sf = QFormLayout(strip_box)
+        # ── Tab 3: Strip Mask ─────────────────────────────────────────────────
         self._strip_enabled     = QCheckBox("Enable strip mask");             self._strip_enabled.setChecked(False)
         self._strip_auto        = QCheckBox("Auto-detect centers (X-proj)");  self._strip_auto.setChecked(False)
         self._xproj_smooth      = QSpinBox();       self._xproj_smooth.setRange(1, 51);    self._xproj_smooth.setValue(5);   self._xproj_smooth.setSuffix(" px")
@@ -158,6 +181,10 @@ class RecipeWorkspace(QWidget):
         self._strip_pitch_tol   = QSpinBox();       self._strip_pitch_tol.setRange(1, 99);  self._strip_pitch_tol.setValue(5); self._strip_pitch_tol.setSuffix(" px")
         self._strip_normalize_x = QCheckBox("Normalize X bounds");            self._strip_normalize_x.setChecked(True)
         self._strip_auto.toggled.connect(lambda on: self._strip_start_x.setEnabled(not on))
+
+        strip_tab = QWidget()
+        sf = QFormLayout(strip_tab)
+        sf.setSpacing(8); sf.setContentsMargins(12, 10, 12, 10)
         sf.addRow(self._strip_enabled)
         sf.addRow(self._strip_auto)
         sf.addRow("  X-proj smooth:", self._xproj_smooth)
@@ -171,32 +198,33 @@ class RecipeWorkspace(QWidget):
         sf.addRow(self._strip_regularize)
         sf.addRow("  Pitch tolerance:", self._strip_pitch_tol)
         sf.addRow(self._strip_normalize_x)
+        tabs.addTab(strip_tab, "Strip Mask")
 
-        # Edge locator
-        edge_box = QGroupBox("Edge Locator")
-        ef = QFormLayout(edge_box)
-        self._overlap = QDoubleSpinBox(); self._overlap.setRange(0.0, 1.0); self._overlap.setValue(0.5); self._overlap.setSingleStep(0.05)
-        self._cluster_tol = QSpinBox(); self._cluster_tol.setRange(1, 100); self._cluster_tol.setValue(10)
-        ef.addRow("X overlap ratio:", self._overlap)
-        ef.addRow("Cluster tol (px):", self._cluster_tol)
-
-        # Range Filter (G1): ignore measurements outside [min_px, max_px]
-        range_box = QGroupBox("Range Filter")
-        rf = QFormLayout(range_box)
+        # ── Tab 4: Analysis ───────────────────────────────────────────────────
+        self._overlap     = QDoubleSpinBox(); self._overlap.setRange(0.0, 1.0);    self._overlap.setValue(0.5);   self._overlap.setSingleStep(0.05)
+        self._cluster_tol = QSpinBox();       self._cluster_tol.setRange(1, 100);  self._cluster_tol.setValue(10)
         self._range_enabled = QCheckBox("Enable range filter"); self._range_enabled.setChecked(False)
         self._min_line_px = QDoubleSpinBox(); self._min_line_px.setRange(0, 9999); self._min_line_px.setValue(0); self._min_line_px.setSuffix(" px"); self._min_line_px.setSpecialValueText("off")
         self._max_line_px = QDoubleSpinBox(); self._max_line_px.setRange(0, 9999); self._max_line_px.setValue(0); self._max_line_px.setSuffix(" px"); self._max_line_px.setSpecialValueText("off")
-        rf.addRow(self._range_enabled)
-        rf.addRow("Min CD (px):", self._min_line_px)
-        rf.addRow("Max CD (px):", self._max_line_px)
 
-        form.addRow(pre_box)
-        form.addRow(det_box)
-        form.addRow(strip_box)
-        form.addRow(edge_box)
-        form.addRow(range_box)
+        ana_tab = QWidget()
+        af = QFormLayout(ana_tab)
+        af.setSpacing(8); af.setContentsMargins(12, 10, 12, 10)
+        edge_lbl = QLabel("─── Edge Locator ───")
+        edge_lbl.setStyleSheet("color:#666; font-size:11px;")
+        af.addRow(edge_lbl)
+        af.addRow("X overlap ratio:", self._overlap)
+        af.addRow("Cluster tol (px):", self._cluster_tol)
+        range_lbl = QLabel("─── Range Filter ───")
+        range_lbl.setStyleSheet("color:#666; font-size:11px;")
+        af.addRow(range_lbl)
+        af.addRow(self._range_enabled)
+        af.addRow("Min CD (px):", self._min_line_px)
+        af.addRow("Max CD (px):", self._max_line_px)
+        tabs.addTab(ana_tab, "Analysis")
 
-        return box
+        ov.addWidget(tabs, stretch=1)
+        return outer
 
     # ── List management ───────────────────────────────────────────────────────
 
