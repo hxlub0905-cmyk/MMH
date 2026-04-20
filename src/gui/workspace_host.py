@@ -65,10 +65,11 @@ class WorkspaceHost(QTabWidget):
             lambda _: self.setCurrentIndex(self.TAB_REVIEW)
         )
 
-        # Batch → Report
+        # Batch → Review (browse) + Report (stats/export); navigate to Review first
+        self._batch.batch_completed.connect(self._review.load_batch_run)
         self._batch.batch_completed.connect(self._report.load_batch_run)
         self._batch.batch_completed.connect(
-            lambda _: self.setCurrentIndex(self.TAB_REPORT)
+            lambda _: self.setCurrentIndex(self.TAB_REVIEW)
         )
 
         # Recipe changes → refresh selectors

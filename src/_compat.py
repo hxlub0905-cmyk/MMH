@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from .core.models import MeasurementRecord
+from .core.models import MeasurementRecord  # noqa: F401
 
 
 def serialise_cuts_from_records(records: list[MeasurementRecord]) -> list[dict]:
@@ -88,6 +88,7 @@ def records_to_legacy_cuts(records: list[MeasurementRecord]) -> list:
             flag=r.flag,
             axis=r.axis,
             state_name=r.state_name,
+            structure_name=getattr(r, "structure_name", ""),
         )
         cut_map[r.cmg_id].append(m)
 

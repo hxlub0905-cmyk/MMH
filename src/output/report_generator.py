@@ -6,11 +6,6 @@ import io
 from datetime import datetime
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-
 from ._common import results_to_dataframe
 
 
@@ -49,6 +44,9 @@ def generate_report(results: list[dict], out_path: Path, nm_per_pixel: float) ->
 
 
 def _histogram_b64(values) -> str:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(7, 3.5), dpi=100)
     ax.hist(values, bins="auto", color="#4a90d9", edgecolor="white", linewidth=0.5)
     mean_v = values.mean()

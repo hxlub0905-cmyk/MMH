@@ -175,6 +175,7 @@ class CMGRecipe(BaseRecipe):
                     col_id=int(m.col_id),
                     flag=m.flag,
                     state_name=m.state_name,
+                    structure_name=self._descriptor.structure_name,
                     extra_metrics={
                         "upper_bbox": (int(ub.x0), int(ub.y0), int(ub.x1), int(ub.y1)),
                         "lower_bbox": (int(lb.x0), int(lb.y0), int(lb.x1), int(lb.y1)),

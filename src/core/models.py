@@ -99,6 +99,7 @@ class MeasurementRecord:
     col_id: int = 0
     flag: str = ""
     state_name: str = ""
+    structure_name: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -122,6 +123,7 @@ class MeasurementRecord:
             "col_id": int(self.col_id),
             "flag": self.flag,
             "state_name": self.state_name,
+            "structure_name": self.structure_name,
         }
 
     @staticmethod
@@ -148,6 +150,7 @@ class MeasurementRecord:
             col_id=int(d.get("col_id", 0)),
             flag=d.get("flag", ""),
             state_name=d.get("state_name", ""),
+            structure_name=d.get("structure_name", ""),
         )
 
 

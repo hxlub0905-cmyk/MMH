@@ -14,7 +14,6 @@ from ..core.preprocessor import PreprocessParams
 class ControlPanel(QWidget):
     params_changed = pyqtSignal(float, PreprocessParams)
     run_single = pyqtSignal()
-    run_batch = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -105,14 +104,7 @@ class ControlPanel(QWidget):
         btn_single.setObjectName("runSingle")
         btn_single.clicked.connect(self.run_single)
         btn_single.setMinimumHeight(38)
-
-        btn_batch = QPushButton("⚡  Run Batch…")
-        btn_batch.setObjectName("runBatch")
-        btn_batch.clicked.connect(self.run_batch)
-        btn_batch.setMinimumHeight(38)
-
         self._layout.addWidget(btn_single)
-        self._layout.addWidget(btn_batch)
 
     def _on_add_profile(self) -> None:
         name, ok = QInputDialog.getText(self, "Add Measurement", "Profile name:", text=f"Measure {len(self._profiles)+1}")
