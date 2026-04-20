@@ -65,10 +65,8 @@ class RecipeRegistry:
         desc = self.get_descriptor(recipe_id)
         if desc is None:
             return None
-        if desc.recipe_type in ("CMG_YCD", "CMG_XCD"):
-            from .recipes.cmg_recipe import CMGRecipe
-            return CMGRecipe(descriptor=desc)
-        return None
+        from .recipes.cmg_recipe import CMGRecipe
+        return CMGRecipe(descriptor=desc)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -81,13 +79,13 @@ class RecipeRegistry:
         return desc
 
     def create_default_cmg(self) -> MeasurementRecipe:
-        """Create and save a default CMG Y-CD recipe."""
+        """Create and save a default CMG Y-CD recipe (built-in template)."""
         from .recipe_base import RecipeConfig
         desc = MeasurementRecipe(
             recipe_id=str(uuid.uuid4()),
             recipe_name="CMG Y-CD (Default)",
             recipe_type="CMG_YCD",
-            feature_family="CMG",
+            structure_name="CMG",
             axis_mode="Y",
             preprocess_config=RecipeConfig(data={
                 "gl_min": 100,

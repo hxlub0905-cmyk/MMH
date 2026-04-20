@@ -1,4 +1,4 @@
-"""Bottom results panel: per-CMG, per-column Y-CD table."""
+"""Bottom results panel: per-structure, per-feature CD measurement table."""
 
 from __future__ import annotations
 from PyQt6.QtWidgets import (
@@ -9,7 +9,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtCore import pyqtSignal, Qt
 from ..core.cmg_analyzer import CMGCut
 
-_COLUMNS = ["State", "Image", "CMG", "Col", "CD (px)", "CD (nm)", "Axis", "Flag", "Status"]
+_COLUMNS = ["State", "Image", "Structure", "Feature ID", "CD (px)", "CD (nm)", "Axis", "Flag", "Status"]
 
 _ROW_COLOURS = {
     "MIN": QColor(255, 244, 232),
@@ -70,7 +70,7 @@ class ResultsPanel(QWidget):
         total = sum(len(c.measurements) for c in cuts)
         n_cuts = len(cuts)
         self._status_label.setText(
-            f"{image_name}  ·  {n_cuts} CMG cut{'s' if n_cuts != 1 else ''}  ·  "
+            f"{image_name}  ·  {n_cuts} structure{'s' if n_cuts != 1 else ''}  ·  "
             f"{total} measurement{'s' if total != 1 else ''}"
         )
         for cut in cuts:
@@ -78,8 +78,8 @@ class ResultsPanel(QWidget):
                 self._rows.append({
                     "state_name": getattr(m, "state_name", "") or "Default",
                     "image_name": image_name,
-                    "cmg_id": m.cmg_id,
-                    "col_id": m.col_id,
+                    "structure_name": getattr(m, "structure_name", "") or "—",
+                    "feature_id": f"{m.cmg_id}:{m.col_id}",
                     "y_cd_px": m.y_cd_px,
                     "y_cd_nm": m.y_cd_nm,
                     "axis": getattr(m, "axis", "Y"),
@@ -124,8 +124,9 @@ class ResultsPanel(QWidget):
         if row < 0:
             return
         try:
-            cmg_id = int(self._table.item(row, 2).text())
-            col_id = int(self._table.item(row, 3).text())
+            # Column 3 = feature_id, format "cmg_id:col_id"
+            feat = self._table.item(row, 3).text()
+            cmg_id, col_id = (int(v) for v in feat.split(":"))
             self.row_selected.emit(cmg_id, col_id)
         except (AttributeError, ValueError):
             pass
@@ -149,7 +150,7 @@ class ResultsPanel(QWidget):
             row = self._table.rowCount()
             self._table.insertRow(row)
             values = [
-                r["state_name"], r["image_name"], str(r["cmg_id"]), str(r["col_id"]),
+                r["state_name"], r["image_name"], r["structure_name"], r["feature_id"],
                 f"{r['y_cd_px']:.1f}", f"{r['y_cd_nm']:.2f}", r["axis"], r["flag"], r["status"],
             ]
             bg = _ROW_COLOURS.get(r["flag"])

@@ -27,6 +27,7 @@ class YCDMeasurement:
     flag: str = ""   # "MIN", "MAX", or ""
     axis: str = "Y"
     state_name: str = ""
+    structure_name: str = ""
 
 
 @dataclass

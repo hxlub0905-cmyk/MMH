@@ -64,7 +64,7 @@ def _process_one(args: tuple) -> dict:
 
         if not cuts:
             result["status"] = "FAIL"
-            result["error"] = "No CMG cuts detected"
+            result["error"] = "No structures detected"
         else:
             # Serialise cuts to plain dicts (not dataclasses) for cross-process transport
             result["cuts"] = _serialise_cuts(cuts)

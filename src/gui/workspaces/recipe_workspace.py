@@ -49,12 +49,15 @@ class RecipeWorkspace(QWidget):
 
         btn_row = QHBoxLayout()
         new_btn = QPushButton("New")
+        tmpl_btn = QPushButton("CMG Template")
         dup_btn = QPushButton("Duplicate")
         del_btn = QPushButton("Delete")
         new_btn.clicked.connect(self._new_recipe)
+        tmpl_btn.clicked.connect(self._new_from_cmg_template)
         dup_btn.clicked.connect(self._duplicate_recipe)
         del_btn.clicked.connect(self._delete_recipe)
         btn_row.addWidget(new_btn)
+        btn_row.addWidget(tmpl_btn)
         btn_row.addWidget(dup_btn)
         btn_row.addWidget(del_btn)
         lv.addLayout(btn_row)
@@ -82,15 +85,14 @@ class RecipeWorkspace(QWidget):
 
         self._name_edit   = QLineEdit()
         self._layer_edit  = QLineEdit()
-        self._type_combo  = QComboBox()
-        self._type_combo.addItems(["CMG_YCD", "CMG_XCD"])
+        self._struct_edit = QLineEdit()
+        self._struct_edit.setPlaceholderText("e.g. CMG, PEPI, MG")
         self._axis_combo  = QComboBox()
         self._axis_combo.addItems(["Y", "X"])
-        self._type_combo.currentIndexChanged.connect(self._sync_axis_from_type)
 
         form.addRow("Name:", self._name_edit)
         form.addRow("Target layer:", self._layer_edit)
-        form.addRow("Recipe type:", self._type_combo)
+        form.addRow("Structure name:", self._struct_edit)
         form.addRow("Axis mode:", self._axis_combo)
 
         # Preprocess
@@ -132,7 +134,9 @@ class RecipeWorkspace(QWidget):
         self._list.blockSignals(True)
         self._list.clear()
         for desc in self._registry.list_recipes():
-            item = QListWidgetItem(f"{desc.recipe_name}  [{desc.recipe_type}]")
+            struct = desc.structure_name or "?"
+            tag = f"{struct} {desc.axis_mode}-CD"
+            item = QListWidgetItem(f"{desc.recipe_name}  [{tag}]")
             item.setData(Qt.ItemDataRole.UserRole, desc.recipe_id)
             self._list.addItem(item)
         self._list.blockSignals(False)
@@ -149,8 +153,7 @@ class RecipeWorkspace(QWidget):
     def _load_descriptor_to_form(self, desc: MeasurementRecipe) -> None:
         self._name_edit.setText(desc.recipe_name)
         self._layer_edit.setText(desc.target_layer)
-        idx = self._type_combo.findText(desc.recipe_type)
-        self._type_combo.setCurrentIndex(max(0, idx))
+        self._struct_edit.setText(desc.structure_name)
         self._axis_combo.setCurrentText(desc.axis_mode)
 
         pc = desc.preprocess_config
@@ -167,10 +170,6 @@ class RecipeWorkspace(QWidget):
         self._overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
         self._cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
 
-    def _sync_axis_from_type(self) -> None:
-        rtype = self._type_combo.currentText()
-        self._axis_combo.setCurrentText("X" if "XCD" in rtype else "Y")
-
     # ── CRUD ──────────────────────────────────────────────────────────────────
 
     def _new_recipe(self) -> None:
@@ -178,10 +177,34 @@ class RecipeWorkspace(QWidget):
         blank = MeasurementRecipe(
             recipe_id=str(uuid.uuid4()),
             recipe_name="New Recipe",
-            recipe_type="CMG_YCD",
+            recipe_type="STRUCT_YCD",
+            structure_name="",
             axis_mode="Y",
         )
         self._load_descriptor_to_form(blank)
+        self._name_edit.setFocus()
+        self._name_edit.selectAll()
+
+    def _new_from_cmg_template(self) -> None:
+        """Pre-fill editor with built-in CMG Y-CD defaults (does not save yet)."""
+        self._current_id = None
+        from ...core.recipe_base import RecipeConfig
+        tmpl = MeasurementRecipe(
+            recipe_id=str(uuid.uuid4()),
+            recipe_name="CMG Y-CD",
+            recipe_type="CMG_YCD",
+            structure_name="CMG",
+            axis_mode="Y",
+            preprocess_config=RecipeConfig(data={
+                "gl_min": 100, "gl_max": 220,
+                "gauss_kernel": 3, "morph_open_k": 3, "morph_close_k": 5,
+                "use_clahe": True, "clahe_clip": 2.0, "clahe_grid": 8,
+            }),
+            edge_locator_config=RecipeConfig(data={
+                "x_overlap_ratio": 0.5, "y_cluster_tol": 10,
+            }),
+        )
+        self._load_descriptor_to_form(tmpl)
         self._name_edit.setFocus()
         self._name_edit.selectAll()
 
@@ -228,13 +251,16 @@ class RecipeWorkspace(QWidget):
         desc = self._registry.get_descriptor(rid)
         created = desc.created_at if desc else datetime.now(timezone.utc).isoformat()
 
+        struct = self._struct_edit.text().strip()
+        axis = self._axis_combo.currentText()
+        recipe_type = f"{struct or 'STRUCT'}_{axis}CD"
         new_desc = MeasurementRecipe(
             recipe_id=rid,
             recipe_name=name,
-            recipe_type=self._type_combo.currentText(),
+            recipe_type=recipe_type,
             target_layer=self._layer_edit.text().strip(),
-            feature_family="CMG",
-            axis_mode=self._axis_combo.currentText(),
+            structure_name=struct,
+            axis_mode=axis,
             preprocess_config=RecipeConfig(data={
                 "gl_min": self._gl_min.value(),
                 "gl_max": self._gl_max.value(),

@@ -17,12 +17,13 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from ..control_panel import ControlPanel
 from ..image_viewer import ImageViewer
 from ..results_panel import ResultsPanel
+from ..layer_control_panel import LayerControlPanel
 from ...core.models import ImageRecord
 from ...core.recipe_base import PipelineResult
 from ...core.recipe_registry import RecipeRegistry
 from ...core.measurement_engine import MeasurementEngine
 from ...core.calibration import CalibrationManager
-from ...core.annotator import OverlayOptions, draw_overlays
+from ...core.annotator import OverlayOptions, draw_overlays, draw_overlays_multi
 from ..._compat import records_to_legacy_cuts
 
 
@@ -49,6 +50,7 @@ class MeasureWorkspace(QWidget):
         self._current_records: list = []
         self._current_annotated = None
         self._profile_masks: list = []
+        self._per_layer_cuts: list = []   # [(cuts, color_bgr)] per config
         self._focused_measurement: tuple[int, int] | None = None
         self._last_result: PipelineResult | None = None
 
@@ -90,12 +92,17 @@ class MeasureWorkspace(QWidget):
         cv.addWidget(v_split, stretch=1)
         splitter.addWidget(center)
 
-        # Right: recipe selector + legacy ControlPanel
+        # Right: recipe selector + layer panel + legacy ControlPanel
         right = QWidget()
         rv = QVBoxLayout(right)
         rv.setContentsMargins(4, 4, 4, 4)
         rv.setSpacing(6)
         rv.addWidget(self._build_recipe_selector())
+
+        self._layer_panel = LayerControlPanel()
+        self._layer_panel.setVisible(False)
+        self._layer_panel.layers_changed.connect(self._refresh_annotated)
+        rv.addWidget(self._layer_panel)
 
         self._ctrl = ControlPanel()
         self._ctrl.setMinimumWidth(230)
@@ -216,7 +223,9 @@ class MeasureWorkspace(QWidget):
         self._recipe_combo.clear()
         self._recipe_combo.addItem("— Use legacy cards (ControlPanel) —", None)
         for desc in self._registry.list_recipes():
-            self._recipe_combo.addItem(f"{desc.recipe_name}  [{desc.recipe_type}]", desc.recipe_id)
+            struct = desc.structure_name or "?"
+            tag = f"{struct} {desc.axis_mode}-CD"
+            self._recipe_combo.addItem(f"{desc.recipe_name}  [{tag}]", desc.recipe_id)
         self._recipe_combo.blockSignals(False)
 
     def _selected_recipe_id(self) -> str | None:
@@ -283,6 +292,14 @@ class MeasureWorkspace(QWidget):
         self._focused_measurement = None
 
         name = Path(self._current_ir.file_path).name
+        desc = self._registry.get_descriptor(recipe_id)
+        recipe_name = desc.recipe_name if desc else "Recipe"
+
+        # Populate layer panel with single recipe layer
+        self._per_layer_cuts = []
+        self._layer_panel.set_layers([recipe_name], [self._current_cuts])
+        self._layer_panel.setVisible(bool(self._current_cuts))
+
         self._viewer.set_images(result.raw, result.mask, result.annotated)
         if self._current_cuts:
             self._results.show_results(name, self._current_cuts)
@@ -313,10 +330,25 @@ class MeasureWorkspace(QWidget):
         self._profile_masks = profile_masks
         self._focused_measurement = None
 
-        annotated = (
-            draw_overlays(self._current_raw, mask, cuts, self._get_overlay_opts())
-            if cuts else None
-        )
+        # Build per-layer cuts (one per card) for layer panel
+        cards = self._ctrl.get_measurement_cards()
+        layer_names: list[str] = []
+        layer_cuts: list[list] = []
+        from ..._compat import records_to_legacy_cuts as _rtlc  # noqa: F401
+        from ...core.cmg_analyzer import CMGCut as _CMGCut
+        card_states = [card.get("name", f"Measure {i+1}") for i, card in enumerate(cards)]
+        for sn in card_states:
+            card_cuts = []
+            for c in cuts:
+                ms = [m for m in c.measurements if getattr(m, "state_name", "") == sn]
+                if ms:
+                    card_cuts.append(_CMGCut(cmg_id=c.cmg_id, measurements=ms))
+            layer_names.append(sn)
+            layer_cuts.append(card_cuts)
+        self._layer_panel.set_layers(layer_names, layer_cuts)
+        self._layer_panel.setVisible(bool(cuts))
+
+        annotated = self._render_layered_annotated() if cuts else None
         self._current_annotated = annotated
         self._viewer.set_images(self._current_raw, mask, annotated, profile_masks=profile_masks)
 
@@ -327,7 +359,7 @@ class MeasureWorkspace(QWidget):
             self._overlay_widget.setVisible(True)
             self._viewer.set_mode("annotated")
         else:
-            self._results.show_fail(name, "No CMG cuts detected")
+            self._results.show_fail(name, "No structures detected")
 
         n_meas = sum(len(c.measurements) for c in cuts)
         self.status_message.emit(f"{name}  ·  {len(cuts)} cut(s)  ·  {n_meas} measurement(s)")
@@ -370,25 +402,43 @@ class MeasureWorkspace(QWidget):
                 continue
 
             blobs = detect_blobs(mask_local, min_area=card.get("min_area", min_area_default))
-            if axis == "X":
-                blobs = [_rot_blob_to_ori(b, raw.shape[0]) for b in blobs]
+            # Analyze in rotated space; back-rotate blob coords after (same fix as CMGRecipe)
             cuts = analyze(blobs, nm_px)
+            if axis == "X":
+                orig_h = raw.shape[0]
+                for c in cuts:
+                    for m in c.measurements:
+                        m.upper_blob = _rot_blob_to_ori(m.upper_blob, orig_h)
+                        m.lower_blob = _rot_blob_to_ori(m.lower_blob, orig_h)
             for c in cuts:
                 c.cmg_id += cmg_offset
                 for m in c.measurements:
                     m.cmg_id = c.cmg_id
                     m.axis = axis
                     m.state_name = card.get("name", f"Measure {ci+1}")
+                    m.structure_name = card.get("structure_name", "")
             cmg_offset += len(cuts)
             cuts_all.extend(cuts)
 
         return full_mask, cuts_all, profile_masks
 
+    def _render_layered_annotated(self) -> np.ndarray:
+        """Render annotations with per-layer colors from the layer panel."""
+        if self._current_raw is None:
+            return None
+        configs = self._layer_panel.get_configs()
+        opts = self._get_overlay_opts()
+        if not configs:
+            return draw_overlays(self._current_raw, self._current_mask, self._current_cuts, opts)
+        layers = [(cfg.cuts, cfg.color_bgr) for cfg in configs if cfg.show_annot]
+        if not layers:
+            return cv2.cvtColor(self._current_raw, cv2.COLOR_GRAY2BGR)
+        return draw_overlays_multi(self._current_raw, layers, opts)
+
     def _refresh_annotated(self) -> None:
         if self._current_raw is None or not self._current_cuts:
             return
-        opts = self._get_overlay_opts()
-        annotated = draw_overlays(self._current_raw, self._current_mask, self._current_cuts, opts)
+        annotated = self._render_layered_annotated()
         self._current_annotated = annotated
         self._viewer.set_images(self._current_raw, self._current_mask, annotated,
                                 profile_masks=self._profile_masks)

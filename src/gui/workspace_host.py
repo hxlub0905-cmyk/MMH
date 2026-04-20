@@ -23,8 +23,8 @@ class WorkspaceHost(QTabWidget):
     TAB_BROWSE  = 0
     TAB_RECIPE  = 1
     TAB_MEASURE = 2
-    TAB_REVIEW  = 3
-    TAB_BATCH   = 4
+    TAB_BATCH   = 3
+    TAB_REVIEW  = 4
     TAB_REPORT  = 5
 
     def __init__(self, parent: QWidget | None = None):
@@ -46,8 +46,8 @@ class WorkspaceHost(QTabWidget):
         self.addTab(self._browse,  "Browse")
         self.addTab(self._recipe,  "Recipe")
         self.addTab(self._measure, "Measure")
-        self.addTab(self._review,  "Review")
         self.addTab(self._batch,   "Batch")
+        self.addTab(self._review,  "Review")
         self.addTab(self._report,  "Report")
 
         self._connect_signals()

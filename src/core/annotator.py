@@ -43,8 +43,14 @@ def draw_overlays(
     _mask: np.ndarray,
     cuts: list[CMGCut],
     opts: OverlayOptions | None = None,
+    color_override: tuple | None = None,
 ) -> np.ndarray:
-    """Return annotated BGR image."""
+    """Return annotated BGR image.
+
+    Args:
+        color_override: When set, use this BGR color for all measurements
+                        instead of the default MIN/MAX/normal palette.
+    """
     if opts is None:
         opts = OverlayOptions()
 
@@ -56,11 +62,38 @@ def draw_overlays(
 
     for cut in cuts:
         for m in cut.measurements:
-            col = _COL.get(m.flag, _COL[""])
+            col = color_override if color_override is not None else _COL.get(m.flag, _COL[""])
             _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
 
-    if opts.show_legend:
+    if opts.show_legend and color_override is None:
         _draw_legend(canvas, fs)
+
+    return canvas
+
+
+def draw_overlays_multi(
+    img_gray: np.ndarray,
+    layers: list[tuple],
+    opts: OverlayOptions | None = None,
+) -> np.ndarray:
+    """Render multiple cut layers, each with its own BGR color.
+
+    Args:
+        layers: list of (cuts, color_bgr) tuples — one per recipe/config.
+    """
+    if opts is None:
+        opts = OverlayOptions()
+
+    canvas = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
+    h      = img_gray.shape[0]
+    fs     = max(0.20, h / 2600)
+    th     = max(1, round(fs))
+    last_label_y: dict[int, int] = {}
+
+    for cuts, color in layers:
+        for cut in cuts:
+            for m in cut.measurements:
+                _draw_measurement(canvas, m, color, fs, th, opts, last_label_y)
 
     return canvas
 

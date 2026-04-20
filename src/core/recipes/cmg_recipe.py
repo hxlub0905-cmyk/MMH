@@ -93,12 +93,9 @@ class CMGRecipe(BaseRecipe):
     # ── Stage 4: locate_edges ─────────────────────────────────────────────────
 
     def locate_edges(self, features: list, context: dict) -> list:
-        axis = self._descriptor.axis_mode.upper()
-        if axis == "X":
-            raw = context.get("raw")
-            if raw is not None:
-                orig_h = raw.shape[0]
-                features = [_rot_blob_to_ori(b, orig_h) for b in features]
+        # For X-CD: keep blobs in rotated space so analyze() finds Y-gaps there
+        # (those Y-gaps correspond to X-gaps in original image space).
+        # Back-rotation to original coordinates happens after analysis in compute_metrics().
         context["blobs_ori"] = features
         return features
 
@@ -121,6 +118,16 @@ class CMGRecipe(BaseRecipe):
             x_overlap_ratio=ec.get("x_overlap_ratio", 0.5),
             y_cluster_tol=ec.get("y_cluster_tol", 10),
         )
+
+        # For X-CD: blobs were analyzed in rotated space; back-rotate blob
+        # coordinates now so annotations are drawn in original image space.
+        if axis == "X":
+            orig_h = context["raw"].shape[0]
+            for cut in cuts:
+                for m in cut.measurements:
+                    m.upper_blob = _rot_blob_to_ori(m.upper_blob, orig_h)
+                    m.lower_blob = _rot_blob_to_ori(m.lower_blob, orig_h)
+
         context["cmg_cuts"] = cuts
 
         _STATUS = {"MIN": "min", "MAX": "max", "": "normal"}
@@ -130,21 +137,33 @@ class CMGRecipe(BaseRecipe):
             for m in cut.measurements:
                 m.axis = axis
                 m.state_name = self._descriptor.recipe_name
+                m.structure_name = self._descriptor.structure_name
 
                 ub, lb = m.upper_blob, m.lower_blob
-                bbox: tuple[int, int, int, int] = (
-                    int(min(ub.x0, lb.x0)),
-                    int(ub.y1),
-                    int(max(ub.x1, lb.x1)),
-                    int(lb.y0),
-                )
+                if axis == "X":
+                    # After back-rotation ub/lb are left/right blobs; bbox = the gap
+                    left_b, right_b = (ub, lb) if ub.cx <= lb.cx else (lb, ub)
+                    bbox: tuple[int, int, int, int] = (
+                        int(left_b.x1),
+                        int(min(left_b.y0, right_b.y0)),
+                        int(right_b.x0),
+                        int(max(left_b.y1, right_b.y1)),
+                    )
+                else:
+                    bbox = (
+                        int(min(ub.x0, lb.x0)),
+                        int(ub.y1),
+                        int(max(ub.x1, lb.x1)),
+                        int(lb.y0),
+                    )
 
+                struct = self._descriptor.structure_name or "STRUCT"
                 rec = MeasurementRecord(
                     measurement_id=str(uuid.uuid4()),
                     image_id=image_record.image_id,
                     recipe_id=self.recipe_id,
-                    feature_type="CMG_GAP",
-                    feature_id=f"cmg{m.cmg_id}_col{m.col_id}",
+                    feature_type=f"{struct}_GAP",
+                    feature_id=f"feat{m.cmg_id}_col{m.col_id}",
                     bbox=bbox,
                     center_x=float((bbox[0] + bbox[2]) / 2),
                     center_y=float((bbox[1] + bbox[3]) / 2),
@@ -188,11 +207,13 @@ class CMGRecipe(BaseRecipe):
         """Convert a legacy ControlPanel card dict → MeasurementRecipe."""
         axis = str(card.get("axis", "Y")).upper()
         axis_mode = "X" if axis.startswith("X") else "Y"
-        recipe_type = "CMG_XCD" if axis_mode == "X" else "CMG_YCD"
+        struct = str(card.get("structure_name", "CMG"))
+        recipe_type = f"{struct}_{axis_mode}CD"
         return MeasurementRecipe(
             recipe_id=str(uuid.uuid4()),
             recipe_name=str(card.get("name", "Unnamed")),
             recipe_type=recipe_type,
+            structure_name=struct,
             axis_mode=axis_mode,
             preprocess_config=RecipeConfig(data={
                 "gl_min": int(card.get("gl_min", 100)),
