@@ -15,6 +15,56 @@ from .mg_detector import Blob
 X_OVERLAP_MIN_RATIO = 0.5   # fraction of the narrower blob's width that must overlap
 Y_CLUSTER_TOL = 10          # pixels; gaps within this Y-distance = same CMG cut
 
+# CD measurement method keys
+CD_METHOD_BBOX     = "bbox"         # binary blob bounding-box edges (default)
+CD_METHOD_GRADIENT = "gradient"     # first-derivative peak on gray profile
+CD_METHOD_GAUSSIAN = "gaussian_fit" # weighted centroid of gradient peak (sub-pixel)
+
+
+def _profile_y(
+    raw: np.ndarray,
+    x0: int, x1: int,
+    y0: int, y1: int,
+) -> np.ndarray:
+    """Return mean intensity profile along Y for columns [x0, x1)."""
+    x0 = max(0, min(x0, raw.shape[1] - 1))
+    x1 = max(x0 + 1, min(x1, raw.shape[1]))
+    return raw[y0:y1, x0:x1].mean(axis=1).astype(float)
+
+
+def _find_edge_y(
+    raw: np.ndarray,
+    x0: int, x1: int,
+    approx_y: int,
+    sign: int,
+    method: str,
+    window: int = 8,
+) -> float:
+    """Refine an edge Y position from the gray-level intensity profile.
+
+    sign=+1  dark→bright transition (top edge of lower blob)
+    sign=-1  bright→dark transition (bottom edge of upper blob)
+    """
+    y_lo = max(0, approx_y - window)
+    y_hi = min(raw.shape[0], approx_y + window + 1)
+    if y_hi <= y_lo:
+        return float(approx_y)
+    profile = _profile_y(raw, x0, x1, y_lo, y_hi)
+    grad = np.gradient(profile)
+    signed = sign * grad
+
+    if method == CD_METHOD_GRADIENT:
+        peak = int(np.argmax(signed))
+        return float(y_lo + peak)
+
+    # gaussian_fit — weighted centroid of the positive portion of the gradient peak
+    weights = np.maximum(signed, 0.0)
+    total = weights.sum()
+    if total <= 0.0:
+        return float(approx_y)
+    positions = np.arange(len(weights), dtype=float) + y_lo
+    return float(np.average(positions, weights=weights))
+
 
 @dataclass
 class YCDMeasurement:
@@ -78,8 +128,14 @@ def analyze(
     nm_per_pixel: float,
     x_overlap_ratio: float = X_OVERLAP_MIN_RATIO,
     y_cluster_tol: int = Y_CLUSTER_TOL,
+    raw: "np.ndarray | None" = None,
+    cd_method: str = CD_METHOD_BBOX,
 ) -> list[CMGCut]:
-    """Return CMG cuts with per-column Y-CD measurements."""
+    """Return CMG cuts with per-column Y-CD measurements.
+
+    raw: optional gray-level image; required for gradient / gaussian_fit methods.
+    cd_method: one of CD_METHOD_BBOX, CD_METHOD_GRADIENT, CD_METHOD_GAUSSIAN.
+    """
     if len(blobs) < 2:
         return []
 
@@ -113,8 +169,21 @@ def analyze(
         for k in range(len(sorted_blobs) - 1):
             upper = sorted_blobs[k]
             lower = sorted_blobs[k + 1]
-            upper_edge = upper.cy + (upper.height / 2.0)
-            lower_edge = lower.cy - (lower.height / 2.0)
+            approx_upper = int(upper.cy + upper.height / 2.0)
+            approx_lower = int(lower.cy - lower.height / 2.0)
+
+            if raw is not None and cd_method != CD_METHOD_BBOX:
+                ox0 = max(upper.x0, lower.x0)
+                ox1 = min(upper.x1, lower.x1)
+                if ox1 <= ox0:   # no X overlap — widen to union
+                    ox0 = min(upper.x0, lower.x0)
+                    ox1 = max(upper.x1, lower.x1)
+                upper_edge = _find_edge_y(raw, ox0, ox1, approx_upper, sign=-1, method=cd_method)
+                lower_edge = _find_edge_y(raw, ox0, ox1, approx_lower, sign=+1, method=cd_method)
+            else:
+                upper_edge = float(approx_upper)
+                lower_edge = float(approx_lower)
+
             cd_px = lower_edge - upper_edge
             if cd_px <= 0:
                 continue   # blobs overlap — skip

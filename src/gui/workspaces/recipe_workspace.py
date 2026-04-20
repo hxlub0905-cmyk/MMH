@@ -206,6 +206,13 @@ class RecipeWorkspace(QWidget):
         self._range_enabled = QCheckBox("Enable range filter"); self._range_enabled.setChecked(False)
         self._min_line_px = QDoubleSpinBox(); self._min_line_px.setRange(0, 9999); self._min_line_px.setValue(0); self._min_line_px.setSuffix(" px"); self._min_line_px.setSpecialValueText("off")
         self._max_line_px = QDoubleSpinBox(); self._max_line_px.setRange(0, 9999); self._max_line_px.setValue(0); self._max_line_px.setSuffix(" px"); self._max_line_px.setSpecialValueText("off")
+        from PyQt6.QtWidgets import QComboBox as _QCB
+        self._cd_method = _QCB()
+        self._cd_method.addItems([
+            "Binary Edge (bbox)",
+            "Gradient Peak",
+            "Gaussian Centroid (sub-px)",
+        ])
 
         ana_tab = QWidget()
         af = QFormLayout(ana_tab)
@@ -213,6 +220,7 @@ class RecipeWorkspace(QWidget):
         edge_lbl = QLabel("─── Edge Locator ───")
         edge_lbl.setStyleSheet("color:#666; font-size:11px;")
         af.addRow(edge_lbl)
+        af.addRow("CD Method:", self._cd_method)
         af.addRow("X overlap ratio:", self._overlap)
         af.addRow("Cluster tol (px):", self._cluster_tol)
         range_lbl = QLabel("─── Range Filter ───")
@@ -293,6 +301,14 @@ class RecipeWorkspace(QWidget):
         ec = desc.edge_locator_config
         self._overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
         self._cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
+        _cd_labels = {
+            "bbox": "Binary Edge (bbox)",
+            "gradient": "Gradient Peak",
+            "gaussian_fit": "Gaussian Centroid (sub-px)",
+        }
+        self._cd_method.setCurrentText(
+            _cd_labels.get(ec.get("cd_method", "bbox"), "Binary Edge (bbox)")
+        )
 
         self._range_enabled.setChecked(bool(dc.get("range_enabled", False)))
         self._min_line_px.setValue(float(dc.get("min_line_px", 0)))
@@ -432,6 +448,11 @@ class RecipeWorkspace(QWidget):
             edge_locator_config=RecipeConfig(data={
                 "x_overlap_ratio": self._overlap.value(),
                 "y_cluster_tol": self._cluster_tol.value(),
+                "cd_method": {
+                    "Binary Edge (bbox)":        "bbox",
+                    "Gradient Peak":             "gradient",
+                    "Gaussian Centroid (sub-px)": "gaussian_fit",
+                }.get(self._cd_method.currentText(), "bbox"),
             }),
             version=((desc.version + 1) if desc else 1),
             created_at=created,

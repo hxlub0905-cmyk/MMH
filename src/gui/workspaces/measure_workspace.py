@@ -400,7 +400,7 @@ class MeasureWorkspace(QWidget):
     def _analyze_with_cards(self, raw: np.ndarray, preview_only: bool) -> tuple:
         from ...core.preprocessor import preprocess, PreprocessParams, apply_column_strip_mask
         from ...core.mg_detector import detect_blobs, detect_mg_column_centers_pitch_phase, regularize_blobs_to_columns
-        from ...core.cmg_analyzer import analyze
+        from ...core.cmg_analyzer import analyze, CD_METHOD_BBOX
         from ...core.recipes.cmg_recipe import _rot_blob_to_ori
 
         cards = self._ctrl.get_measurement_cards()
@@ -489,7 +489,12 @@ class MeasureWorkspace(QWidget):
                 blobs  = regularize_blobs_to_columns(blobs, col_centers, half_w, tol, norm_x)
 
             # Analyze in rotated space; back-rotate blob coords after (same fix as CMGRecipe)
-            cuts = analyze(blobs, nm_px)
+            cd_method = card.get("cd_method", CD_METHOD_BBOX)
+            cuts = analyze(
+                blobs, nm_px,
+                raw=roi if cd_method != CD_METHOD_BBOX else None,
+                cd_method=cd_method,
+            )
             if axis == "X":
                 orig_h = raw.shape[0]
                 for c in cuts:

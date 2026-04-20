@@ -152,7 +152,8 @@ class ReportWorkspace(QWidget):
 
     def _export_csv(self) -> None:
         if not self._records:
-            QMessageBox.information(self, "No data", "Load a batch run first.")
+            QMessageBox.information(self, "No data",
+                "Please run a Batch job first to export results.")
             return
         p = self._get_out_path(".csv")
         if p is None:
@@ -166,7 +167,8 @@ class ReportWorkspace(QWidget):
 
     def _export_excel(self) -> None:
         if not self._records:
-            QMessageBox.information(self, "No data", "Load a batch run first.")
+            QMessageBox.information(self, "No data",
+                "Please run a Batch job first to export results.")
             return
         p = self._get_out_path(".xlsx")
         if p is None:
@@ -180,7 +182,8 @@ class ReportWorkspace(QWidget):
 
     def _export_json(self) -> None:
         if not self._records:
-            QMessageBox.information(self, "No data", "Load a batch run first.")
+            QMessageBox.information(self, "No data",
+                "Please run a Batch job first to export results.")
             return
         p = self._get_out_path(".json")
         if p is None:
@@ -193,8 +196,14 @@ class ReportWorkspace(QWidget):
             QMessageBox.critical(self, "Export failed", str(exc))
 
     def _export_html(self) -> None:
+        if self._batch_run is None:
+            QMessageBox.information(self, "No data",
+                "Please run a Batch job first, then return to this tab.")
+            return
         if not self._records:
-            QMessageBox.information(self, "No data", "Load a batch run first.")
+            QMessageBox.information(self, "No measurements",
+                "The batch completed but no measurements were found.\n"
+                "Check your recipe settings and image quality.")
             return
         p = self._get_out_path(".html")
         if p is None:
@@ -234,7 +243,7 @@ class ReportWorkspace(QWidget):
             for i, entry in enumerate(results):
                 progress.setValue(i)
                 QApplication.processEvents()
-                if progress.wasCancelled():
+                if progress.wasCanceled():
                     break
                 image_path = entry.get("image_path", "")
                 if not image_path or not Path(image_path).exists():

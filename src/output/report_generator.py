@@ -21,13 +21,13 @@ def generate_report(results: list[dict], out_path: Path, nm_per_pixel: float) ->
         "Count": len(ok),
         "Mean (nm)": f"{ok.mean():.3f}" if len(ok) else "N/A",
         "Median (nm)": f"{ok.median():.3f}" if len(ok) else "N/A",
-        "Std Dev (nm)": f"{ok.std():.3f}" if len(ok) else "N/A",
-        "3-Sigma (nm)": f"{ok.std()*3:.3f}" if len(ok) else "N/A",
+        "Std Dev (nm)": f"{ok.std():.3f}" if len(ok) > 1 else ("0.000" if len(ok) == 1 else "N/A"),
+        "3-Sigma (nm)": f"{ok.std()*3:.3f}" if len(ok) > 1 else ("0.000" if len(ok) == 1 else "N/A"),
         "Min (nm)": f"{ok.min():.3f}" if len(ok) else "N/A",
         "Max (nm)": f"{ok.max():.3f}" if len(ok) else "N/A",
     }
 
-    hist_b64 = _histogram_b64(ok) if len(ok) > 0 else ""
+    hist_b64 = _histogram_b64(ok) if len(ok) > 1 else ""
     fail_list = [Path(r["path"]).name for r in results if r.get("status") != "OK"]
 
     html = _render_html(
@@ -89,12 +89,12 @@ def generate_report_from_records(
         "Count": len(ok),
         "Mean (nm)": f"{ok.mean():.3f}" if len(ok) else "N/A",
         "Median (nm)": f"{ok.median():.3f}" if len(ok) else "N/A",
-        "Std Dev (nm)": f"{ok.std():.3f}" if len(ok) else "N/A",
-        "3-Sigma (nm)": f"{ok.std()*3:.3f}" if len(ok) else "N/A",
+        "Std Dev (nm)": f"{ok.std():.3f}" if len(ok) > 1 else ("0.000" if len(ok) == 1 else "N/A"),
+        "3-Sigma (nm)": f"{ok.std()*3:.3f}" if len(ok) > 1 else ("0.000" if len(ok) == 1 else "N/A"),
         "Min (nm)": f"{ok.min():.3f}" if len(ok) else "N/A",
         "Max (nm)": f"{ok.max():.3f}" if len(ok) else "N/A",
     }
-    hist_b64 = _histogram_b64(ok) if len(ok) > 0 else ""
+    hist_b64 = _histogram_b64(ok) if len(ok) > 1 else ""
     fail_list = []
     if batch_run:
         fail_list = [entry.get("image_path", "") for entry in batch_run.error_log]

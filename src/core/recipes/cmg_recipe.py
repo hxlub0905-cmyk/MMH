@@ -180,16 +180,21 @@ class CMGRecipe(BaseRecipe):
         image_record: ImageRecord,
         context: dict,
     ) -> list[MeasurementRecord]:
-        from ..cmg_analyzer import analyze
+        from ..cmg_analyzer import analyze, CD_METHOD_BBOX
         nm_per_pixel = image_record.pixel_size_nm
         axis = self._descriptor.axis_mode.upper()
 
         ec = self._descriptor.edge_locator_config
+        cd_method = ec.get("cd_method", CD_METHOD_BBOX)
+        raw_for_analysis = context.get("roi") if cd_method != CD_METHOD_BBOX else None
+
         cuts = analyze(
             edge_features,
             nm_per_pixel,
             x_overlap_ratio=ec.get("x_overlap_ratio", 0.5),
             y_cluster_tol=ec.get("y_cluster_tol", 10),
+            raw=raw_for_analysis,
+            cd_method=cd_method,
         )
 
         # For X-CD: blobs were analyzed in rotated space; back-rotate blob

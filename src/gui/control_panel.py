@@ -117,6 +117,11 @@ class ControlPanel(QWidget):
         form = QFormLayout(box)
 
         axis = QComboBox(); axis.addItems(["Y-CD", "X-CD"])
+        cd_method = QComboBox(); cd_method.addItems([
+            "Binary Edge (bbox)",
+            "Gradient Peak",
+            "Gaussian Centroid (sub-px)",
+        ])
         min_val = QLabel("100"); min_val.setObjectName("thresholdValue"); min_val.setFixedWidth(34)
         max_val = QLabel("220"); max_val.setObjectName("thresholdValue"); max_val.setFixedWidth(34)
         gl_min = QSlider(Qt.Orientation.Horizontal); gl_min.setRange(0, 255); gl_min.setValue(100)
@@ -182,6 +187,7 @@ class ControlPanel(QWidget):
         gl_min.valueChanged.connect(on_min)
         gl_max.valueChanged.connect(on_max)
         axis.currentIndexChanged.connect(self._emit)
+        cd_method.currentIndexChanged.connect(self._emit)
         min_area.valueChanged.connect(self._emit)
         for w in (min_ar, max_ar, min_w, max_w, min_h, vert_erode_k, vert_erode_iter,
                   xproj_smooth, xproj_pitch, xproj_frac,
@@ -197,6 +203,7 @@ class ControlPanel(QWidget):
 
         form.addRow("Enable", enabled)
         form.addRow("Axis", axis)
+        form.addRow("CD Method", cd_method)
         form.addRow("GL Min", min_wrap)
         form.addRow("GL Max", max_wrap)
         form.addRow("Min blob area", min_area)
@@ -238,6 +245,7 @@ class ControlPanel(QWidget):
             "name": name,
             "enabled": enabled,
             "axis": axis,
+            "cd_method": cd_method,
             "gl_min": gl_min,
             "gl_max": gl_max,
             "min_area": min_area,
@@ -318,6 +326,11 @@ class ControlPanel(QWidget):
                 "range_enabled": p["range_enabled"].isChecked(),
                 "min_line_px": p["min_line_px"].value(),
                 "max_line_px": p["max_line_px"].value(),
+                "cd_method": {
+                    "Binary Edge (bbox)":        "bbox",
+                    "Gradient Peak":             "gradient",
+                    "Gaussian Centroid (sub-px)": "gaussian_fit",
+                }.get(p["cd_method"].currentText(), "bbox"),
             })
         return out
 

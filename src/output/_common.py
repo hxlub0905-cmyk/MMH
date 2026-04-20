@@ -47,6 +47,13 @@ def results_to_dataframe(results: list[dict], nm_per_pixel: float) -> pd.DataFra
     return pd.DataFrame(rows)
 
 
+_RECORD_SCHEMA = [
+    "image_file", "nm_per_pixel", "cmg_id", "col_id", "y_cd_px", "y_cd_nm",
+    "flag", "upper_bbox", "lower_bbox", "status", "error",
+    "recipe_id", "recipe_name", "axis",
+]
+
+
 def records_to_dataframe(
     records: list["MeasurementRecord"],
     image_records: list["ImageRecord"] | None = None,
@@ -75,4 +82,6 @@ def records_to_dataframe(
             "recipe_name": r.state_name,
             "axis": r.axis,
         })
+    if not rows:
+        return pd.DataFrame(columns=_RECORD_SCHEMA)
     return pd.DataFrame(rows)

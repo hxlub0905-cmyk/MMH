@@ -188,8 +188,8 @@ def _draw_legend(canvas: np.ndarray, fs: float) -> None:
         ("MAX Y-CD", _COL["MAX"]),
         ("NORMAL", _COL[""]),
     ]
-    pad = 8
-    lh = 16
+    pad = 6
+    lh = 13
     box_w = 130
     box_h = pad * 2 + lh * len(items)
     x0 = max(0, W - box_w - 10)
