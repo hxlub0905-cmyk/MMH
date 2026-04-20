@@ -100,7 +100,6 @@ class MeasureWorkspace(QWidget):
         rv.addWidget(self._build_recipe_selector())
 
         self._layer_panel = LayerControlPanel()
-        self._layer_panel.setVisible(False)
         self._layer_panel.layers_changed.connect(self._refresh_annotated)
         rv.addWidget(self._layer_panel)
 
@@ -110,6 +109,8 @@ class MeasureWorkspace(QWidget):
         self._ctrl.params_changed.connect(self._on_params_changed)
         self._ctrl.run_single.connect(self._run_single)
         rv.addWidget(self._ctrl, stretch=1)
+
+        right.setMinimumWidth(255)
 
         splitter.addWidget(right)
         splitter.setSizes([1000, 270])
@@ -331,7 +332,6 @@ class MeasureWorkspace(QWidget):
         # Populate layer panel with single recipe layer
         self._per_layer_cuts = []
         self._layer_panel.set_layers([recipe_name], [self._current_cuts])
-        self._layer_panel.setVisible(bool(self._current_cuts))
 
         self._viewer.set_images(result.raw, result.mask, result.annotated)
         if self._current_cuts:
@@ -379,7 +379,6 @@ class MeasureWorkspace(QWidget):
             layer_names.append(sn)
             layer_cuts.append(card_cuts)
         self._layer_panel.set_layers(layer_names, layer_cuts)
-        self._layer_panel.setVisible(bool(cuts))
 
         annotated = self._render_layered_annotated() if cuts else None
         self._current_annotated = annotated
