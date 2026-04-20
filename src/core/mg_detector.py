@@ -68,6 +68,43 @@ def detect_mg_column_centers(
     return centers
 
 
+def regularize_blobs_to_columns(
+    blobs: list[Blob],
+    col_centers: list[int],
+    half_width: int,
+    pitch_tol_px: int = 5,
+    normalize_x: bool = True,
+) -> list[Blob]:
+    """Snap blobs onto a known pitch grid, discarding off-grid blobs.
+
+    For each blob:
+      1. Find the nearest col_center.
+      2. Discard if |blob.cx - nearest_col| > pitch_tol_px (not on grid → noise/PEPI).
+      3. If normalize_x: force x0 = col_center - half_width,
+                               x1 = col_center + half_width + 1,
+                               cx = float(col_center).
+    Result: all BBOX_X identical width, all BBOX pitches = layout pitch.
+    """
+    if not blobs or not col_centers:
+        return blobs
+
+    from dataclasses import replace as _replace
+    result: list[Blob] = []
+    for b in blobs:
+        nearest = min(col_centers, key=lambda xc: abs(b.cx - xc))
+        if abs(b.cx - nearest) > pitch_tol_px:
+            continue  # off-grid → discard
+        if normalize_x:
+            b = _replace(
+                b,
+                x0=max(0, nearest - half_width),
+                x1=min(b.x1 + 9999, nearest + half_width + 1),
+                cx=float(nearest),
+            )
+        result.append(b)
+    return result
+
+
 def detect_blobs(mask: np.ndarray, min_area: int | None = None) -> list[Blob]:
     """Return list of MG blobs extracted from *mask*.
 

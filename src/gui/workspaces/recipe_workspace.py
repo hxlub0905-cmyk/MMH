@@ -162,6 +162,9 @@ class RecipeWorkspace(QWidget):
         self._strip_pitch   = QSpinBox(); self._strip_pitch.setRange(1, 9999); self._strip_pitch.setValue(44); self._strip_pitch.setSuffix(" px")
         self._strip_width   = QSpinBox(); self._strip_width.setRange(1, 9999); self._strip_width.setValue(22); self._strip_width.setSuffix(" px")
         self._strip_margin  = QSpinBox(); self._strip_margin.setRange(0, 9999); self._strip_margin.setValue(4); self._strip_margin.setSuffix(" px")
+        self._strip_regularize  = QCheckBox("Regularize to grid"); self._strip_regularize.setChecked(False)
+        self._strip_pitch_tol   = QSpinBox(); self._strip_pitch_tol.setRange(1, 99); self._strip_pitch_tol.setValue(5); self._strip_pitch_tol.setSuffix(" px")
+        self._strip_normalize_x = QCheckBox("Normalize X bounds"); self._strip_normalize_x.setChecked(True)
         self._strip_auto.toggled.connect(lambda on: self._strip_start_x.setEnabled(not on))
         sf.addRow(self._strip_enabled)
         sf.addRow(self._strip_auto)
@@ -169,6 +172,9 @@ class RecipeWorkspace(QWidget):
         sf.addRow("Pitch:", self._strip_pitch)
         sf.addRow("Strip width:", self._strip_width)
         sf.addRow("Margin ±:", self._strip_margin)
+        sf.addRow(self._strip_regularize)
+        sf.addRow("Pitch tolerance:", self._strip_pitch_tol)
+        sf.addRow(self._strip_normalize_x)
 
         # Edge locator
         edge_box = QGroupBox("Edge Locator")
@@ -257,6 +263,9 @@ class RecipeWorkspace(QWidget):
         self._strip_pitch.setValue(int(dc.get("col_mask_pitch_px", 44)))
         self._strip_width.setValue(int(dc.get("col_mask_width_px", 22)))
         self._strip_margin.setValue(int(dc.get("col_mask_margin_px", 4)))
+        self._strip_regularize.setChecked(bool(dc.get("col_mask_regularize", False)))
+        self._strip_pitch_tol.setValue(int(dc.get("col_mask_pitch_tol_px", 5)))
+        self._strip_normalize_x.setChecked(bool(dc.get("col_mask_normalize_x", True)))
 
         ec = desc.edge_locator_config
         self._overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
@@ -389,6 +398,9 @@ class RecipeWorkspace(QWidget):
                 "col_mask_pitch_px": self._strip_pitch.value(),
                 "col_mask_width_px": self._strip_width.value(),
                 "col_mask_margin_px": self._strip_margin.value(),
+                "col_mask_regularize": self._strip_regularize.isChecked(),
+                "col_mask_pitch_tol_px": self._strip_pitch_tol.value(),
+                "col_mask_normalize_x": self._strip_normalize_x.isChecked(),
                 "range_enabled": self._range_enabled.isChecked(),
                 "min_line_px": self._min_line_px.value(),
                 "max_line_px": self._max_line_px.value(),

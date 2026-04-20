@@ -373,7 +373,7 @@ class MeasureWorkspace(QWidget):
 
     def _analyze_with_cards(self, raw: np.ndarray, preview_only: bool) -> tuple:
         from ...core.preprocessor import preprocess, PreprocessParams, apply_column_strip_mask
-        from ...core.mg_detector import detect_blobs, detect_mg_column_centers
+        from ...core.mg_detector import detect_blobs, detect_mg_column_centers, regularize_blobs_to_columns
         from ...core.cmg_analyzer import analyze
         from ...core.recipes.cmg_recipe import _rot_blob_to_ori
 
@@ -408,8 +408,8 @@ class MeasureWorkspace(QWidget):
             mask_local = preprocess(roi, params)
 
             # Strategy 1+2a: column strip masking (severs EPI lateral bridge)
+            col_centers: list[int] = []
             if card.get("col_mask_enabled", False):
-                col_centers: list[int] = []
                 if card.get("col_mask_auto_centers", False):
                     col_centers = detect_mg_column_centers(
                         mask_local,
@@ -452,6 +452,13 @@ class MeasureWorkspace(QWidget):
                     if _min_h and b.height < _min_h: continue
                     filtered.append(b)
                 blobs = filtered
+
+            # Pitch Grid Regularization: snap blobs onto layout grid, normalize X bounds
+            if card.get("col_mask_enabled", False) and card.get("col_mask_regularize", False) and col_centers:
+                half_w = int(card.get("col_mask_width_px", 22)) // 2
+                tol    = int(card.get("col_mask_pitch_tol_px", 5))
+                norm_x = bool(card.get("col_mask_normalize_x", True))
+                blobs  = regularize_blobs_to_columns(blobs, col_centers, half_w, tol, norm_x)
 
             # Analyze in rotated space; back-rotate blob coords after (same fix as CMGRecipe)
             cuts = analyze(blobs, nm_px)

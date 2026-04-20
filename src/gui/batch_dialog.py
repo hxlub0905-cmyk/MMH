@@ -17,7 +17,7 @@ def _process_one(args: tuple) -> dict:
     image_path, nm_per_pixel, gl_min, gl_max, gauss_k, morph_open_k, morph_close_k, use_clahe, min_area, cards = args
     from ..core.image_loader import load_grayscale
     from ..core.preprocessor import preprocess, PreprocessParams, apply_column_strip_mask
-    from ..core.mg_detector import detect_blobs, Blob
+    from ..core.mg_detector import detect_blobs, Blob, regularize_blobs_to_columns
     from ..core.cmg_analyzer import analyze
 
     result: dict = {"path": str(image_path), "status": "OK", "cuts": [], "error": ""}
@@ -44,11 +44,11 @@ def _process_one(args: tuple) -> dict:
             )
             m_roi = preprocess(roi, params)
             # Column strip masking (Strategy 1) with optional auto xproj centers (F1c)
+            col_centers: list[int] = []
             if card.get("col_mask_enabled", False):
                 start_x = int(card.get("col_mask_start_x", 0))
                 pitch = int(card.get("col_mask_pitch_px", 44))
                 cw = m_roi.shape[1]
-                col_centers: list[int] = []
                 if card.get("col_mask_auto_centers", False):
                     from ..core.mg_detector import detect_mg_column_centers
                     col_centers = detect_mg_column_centers(
@@ -82,6 +82,12 @@ def _process_one(args: tuple) -> dict:
                     if _min_h and b.height < _min_h: continue
                     filtered.append(b)
                 blobs = filtered
+            # Pitch Grid Regularization: snap blobs onto layout grid, normalize X bounds
+            if card.get("col_mask_enabled", False) and card.get("col_mask_regularize", False) and col_centers:
+                half_w = int(card.get("col_mask_width_px", 22)) // 2
+                tol    = int(card.get("col_mask_pitch_tol_px", 5))
+                norm_x = bool(card.get("col_mask_normalize_x", True))
+                blobs  = regularize_blobs_to_columns(blobs, col_centers, half_w, tol, norm_x)
             if axis.startswith("X"):
                 blobs = [Blob(
                     label=b.label,
