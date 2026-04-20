@@ -40,23 +40,68 @@ def detect_mg_column_centers(
     edge_margin_px: exclude detected peaks within this many px of the image
     left/right boundary (avoids mislocated peaks caused by partial columns).
     """
+    return _xproj_peaks(mask, smooth_k, min_pitch_px, min_height_frac, edge_margin_px)
+
+
+def detect_mg_column_centers_twopass(
+    mask: np.ndarray,
+    smooth_k: int = 5,
+    min_pitch_px: int = 30,
+    min_height_frac: float = 0.3,
+    edge_margin_px: int = 0,
+    half_width: int = 11,
+    margin: int = 4,
+) -> list[int]:
+    """Two-pass X-proj: eliminates PEPI-induced peak bias.
+
+    Pass 1: X-proj on full mask  → rough centers (may be off by 1-3 px due to PEPI)
+    Pass 2: Strip mask with 2× margin → X-proj on clean MG-only mask → accurate centers
+
+    Falls back to Pass-1 result if Pass 2 returns no peaks.
+    """
+    rough = _xproj_peaks(mask, smooth_k, min_pitch_px, min_height_frac, edge_margin_px)
+    if not rough:
+        return []
+    # Build a strip mask to isolate MG pixels (remove PEPI lateral bridges)
+    strip = np.zeros_like(mask)
+    hw = half_width + margin * 2          # extra-wide window for pass 1
+    W = mask.shape[1]
+    lft = max(edge_margin_px, 0)
+    rgt = max(edge_margin_px, 0)
+    for xc in rough:
+        x0 = max(lft, xc - hw)
+        x1 = min(W - rgt, xc + hw + 1)
+        if x1 > x0:
+            strip[:, x0:x1] = 255
+    clean = cv2.bitwise_and(mask, strip)
+    # Pass 2: no smoothing needed — PEPI already removed
+    refined = _xproj_peaks(clean, smooth_k=1, min_pitch_px=min_pitch_px,
+                            min_height_frac=min_height_frac, edge_margin_px=edge_margin_px)
+    return refined if refined else rough
+
+
+def _xproj_peaks(
+    mask: np.ndarray,
+    smooth_k: int,
+    min_pitch_px: int,
+    min_height_frac: float,
+    edge_margin_px: int,
+) -> list[int]:
+    """Internal: find X-projection local maxima above threshold."""
     x_proj = mask.sum(axis=0).astype(float)
     if smooth_k > 1:
-        # Edge-padded convolution avoids zero-padding artifacts at image borders
         pad = smooth_k // 2
         x_padded = np.pad(x_proj, pad, mode="edge")
         x_proj = np.convolve(x_padded, np.ones(smooth_k) / smooth_k, mode="valid")
     if x_proj.max() == 0:
         return []
     threshold = float(x_proj.max()) * min_height_frac
-    # collect raw local maxima above threshold
     candidates: list[int] = []
     for i in range(1, len(x_proj) - 1):
         if x_proj[i] >= threshold and x_proj[i] >= x_proj[i - 1] and x_proj[i] >= x_proj[i + 1]:
             candidates.append(i)
     if not candidates:
         return []
-    # suppress peaks closer than min_pitch_px — keep the tallest in each cluster
     centers: list[int] = []
     group_peak = candidates[0]
     for c in candidates[1:]:
@@ -67,7 +112,6 @@ def detect_mg_column_centers(
             centers.append(group_peak)
             group_peak = c
     centers.append(group_peak)
-    # exclude boundary peaks that correspond to partially-visible MG columns
     if edge_margin_px > 0:
         W = mask.shape[1]
         centers = [c for c in centers if edge_margin_px <= c < W - edge_margin_px]

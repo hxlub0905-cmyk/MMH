@@ -46,23 +46,25 @@ def _process_one(args: tuple) -> dict:
             # Column strip masking (Strategy 1) with optional auto xproj centers (F1c)
             col_centers: list[int] = []
             edge_margin = int(card.get("col_mask_edge_margin_px", 0))
+            half_w = int(card.get("col_mask_width_px", 22)) // 2
+            margin = int(card.get("col_mask_margin_px", 4))
             if card.get("col_mask_enabled", False):
                 start_x = int(card.get("col_mask_start_x", 0))
                 pitch = int(card.get("col_mask_pitch_px", 44))
                 cw = m_roi.shape[1]
                 if card.get("col_mask_auto_centers", False):
-                    from ..core.mg_detector import detect_mg_column_centers
-                    col_centers = detect_mg_column_centers(
+                    from ..core.mg_detector import detect_mg_column_centers_twopass
+                    col_centers = detect_mg_column_centers_twopass(
                         m_roi,
                         smooth_k=int(card.get("xproj_smooth_k", 5)),
                         min_pitch_px=int(card.get("xproj_min_pitch_px", 30)),
                         min_height_frac=float(card.get("xproj_peak_min_frac", 0.3)),
                         edge_margin_px=edge_margin,
+                        half_width=half_w,
+                        margin=margin,
                     )
                 if not col_centers:  # fallback to manual start_x + pitch
                     col_centers = list(range(start_x, cw, pitch)) if pitch > 0 and start_x < cw else []
-                half_w = int(card.get("col_mask_width_px", 22)) // 2
-                margin = int(card.get("col_mask_margin_px", 4))
                 m_roi = apply_column_strip_mask(m_roi, col_centers, half_w, margin, edge_margin)
             m_ori = m_roi if axis.startswith("Y") else cv2.rotate(m_roi, cv2.ROTATE_90_COUNTERCLOCKWISE)
             mask = np.maximum(mask, m_ori)

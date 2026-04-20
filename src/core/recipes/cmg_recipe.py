@@ -84,7 +84,7 @@ class CMGRecipe(BaseRecipe):
     # ── Stage 3: detect_features ──────────────────────────────────────────────
 
     def detect_features(self, mask: np.ndarray, context: dict) -> list:
-        from ..mg_detector import detect_blobs, detect_mg_column_centers, regularize_blobs_to_columns
+        from ..mg_detector import detect_blobs, detect_mg_column_centers, detect_mg_column_centers_twopass, regularize_blobs_to_columns
         from ..preprocessor import apply_column_strip_mask
         dc = self._descriptor.detector_config
         min_area = dc.get("min_area", None)
@@ -92,15 +92,19 @@ class CMGRecipe(BaseRecipe):
         col_centers: list[int] = []
 
         edge_margin = int(dc.get("col_mask_edge_margin_px", 0))
+        half_w = int(dc.get("col_mask_width_px", 22)) // 2
+        col_margin = int(dc.get("col_mask_margin_px", 4))
 
         # Strategy 2a: X-projection peak detection → auto-detect MG column centers
         if dc.get("xproj_enabled", False):
-            col_centers = detect_mg_column_centers(
+            col_centers = detect_mg_column_centers_twopass(
                 mask_roi,
                 smooth_k=int(dc.get("xproj_smooth_k", 5)),
                 min_pitch_px=int(dc.get("xproj_min_pitch_px", 30)),
                 min_height_frac=float(dc.get("xproj_peak_min_frac", 0.3)),
                 edge_margin_px=edge_margin,
+                half_width=half_w,
+                margin=col_margin,
             )
             context["mg_col_centers"] = col_centers
 
@@ -109,12 +113,14 @@ class CMGRecipe(BaseRecipe):
             if not col_centers:
                 col_centers = context.get("mg_col_centers", [])
             if dc.get("col_mask_auto_centers", False) and not col_centers:
-                col_centers = detect_mg_column_centers(
+                col_centers = detect_mg_column_centers_twopass(
                     mask_roi,
                     smooth_k=int(dc.get("xproj_smooth_k", 5)),
                     min_pitch_px=int(dc.get("xproj_min_pitch_px", 30)),
                     min_height_frac=float(dc.get("xproj_peak_min_frac", 0.3)),
                     edge_margin_px=edge_margin,
+                    half_width=half_w,
+                    margin=col_margin,
                 )
             if not col_centers:  # fallback to manual grid
                 start_x = int(dc.get("col_mask_start_x", 0))
@@ -122,9 +128,7 @@ class CMGRecipe(BaseRecipe):
                 w = mask_roi.shape[1]
                 if pitch > 0 and start_x < w:
                     col_centers = list(range(start_x, w, pitch))
-            half_w = int(dc.get("col_mask_width_px", 22)) // 2
-            margin = int(dc.get("col_mask_margin_px", 4))
-            mask_roi = apply_column_strip_mask(mask_roi, col_centers, half_w, margin, edge_margin)
+            mask_roi = apply_column_strip_mask(mask_roi, col_centers, half_w, col_margin, edge_margin)
             context["mask_roi_stripped"] = mask_roi
             context["mg_col_centers"] = col_centers
 
@@ -155,7 +159,6 @@ class CMGRecipe(BaseRecipe):
 
         # Pitch Grid Regularization: snap blobs onto layout grid, normalize X bounds
         if dc.get("col_mask_enabled", False) and dc.get("col_mask_regularize", False) and col_centers:
-            half_w = int(dc.get("col_mask_width_px", 22)) // 2
             tol    = int(dc.get("col_mask_pitch_tol_px", 5))
             norm_x = bool(dc.get("col_mask_normalize_x", True))
             blobs  = regularize_blobs_to_columns(blobs, col_centers, half_w, tol, norm_x)

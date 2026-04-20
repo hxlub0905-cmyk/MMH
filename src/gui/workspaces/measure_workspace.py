@@ -373,7 +373,7 @@ class MeasureWorkspace(QWidget):
 
     def _analyze_with_cards(self, raw: np.ndarray, preview_only: bool) -> tuple:
         from ...core.preprocessor import preprocess, PreprocessParams, apply_column_strip_mask
-        from ...core.mg_detector import detect_blobs, detect_mg_column_centers, regularize_blobs_to_columns
+        from ...core.mg_detector import detect_blobs, detect_mg_column_centers_twopass, regularize_blobs_to_columns
         from ...core.cmg_analyzer import analyze
         from ...core.recipes.cmg_recipe import _rot_blob_to_ori
 
@@ -410,14 +410,18 @@ class MeasureWorkspace(QWidget):
             # Strategy 1+2a: column strip masking (severs EPI lateral bridge)
             col_centers: list[int] = []
             edge_margin = int(card.get("col_mask_edge_margin_px", 0))
+            half_w = int(card.get("col_mask_width_px", 22)) // 2
+            margin = int(card.get("col_mask_margin_px", 4))
             if card.get("col_mask_enabled", False):
                 if card.get("col_mask_auto_centers", False):
-                    col_centers = detect_mg_column_centers(
+                    col_centers = detect_mg_column_centers_twopass(
                         mask_local,
                         smooth_k=int(card.get("xproj_smooth_k", 5)),
                         min_pitch_px=int(card.get("xproj_min_pitch_px", 30)),
                         min_height_frac=float(card.get("xproj_peak_min_frac", 0.3)),
                         edge_margin_px=edge_margin,
+                        half_width=half_w,
+                        margin=margin,
                     )
                 if not col_centers:  # fallback to manual
                     start_x = int(card.get("col_mask_start_x", 0))
@@ -425,8 +429,6 @@ class MeasureWorkspace(QWidget):
                     cw = mask_local.shape[1]
                     if pitch > 0 and start_x < cw:
                         col_centers = list(range(start_x, cw, pitch))
-                half_w = int(card.get("col_mask_width_px", 22)) // 2
-                margin = int(card.get("col_mask_margin_px", 4))
                 mask_local = apply_column_strip_mask(mask_local, col_centers, half_w, margin, edge_margin)
 
             mask_ori = mask_local if axis == "Y" else cv2.rotate(mask_local, cv2.ROTATE_90_COUNTERCLOCKWISE)
