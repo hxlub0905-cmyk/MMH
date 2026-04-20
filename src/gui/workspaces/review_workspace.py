@@ -9,7 +9,7 @@ import numpy as np
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QLabel, QPushButton, QButtonGroup, QFrame,
-    QListWidget, QListWidgetItem, QGroupBox,
+    QListWidget, QListWidgetItem, QGroupBox, QCheckBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -30,8 +30,13 @@ class ReviewWorkspace(QWidget):
         self._focused: tuple[int, int] | None = None
 
         # Batch mode state
-        self._batch_entries: list[dict] = []   # raw entry dicts from output_manifest
-        self._batch_records: list[list[MeasurementRecord]] = []  # per-image records
+        self._batch_entries: list[dict] = []
+        self._batch_records: list[list[MeasurementRecord]] = []
+
+        # Cached current view (for overlay re-render without re-loading image)
+        self._cur_raw   = None
+        self._cur_mask  = None
+        self._cur_cuts: list = []
 
         self._build_ui()
 
@@ -106,13 +111,31 @@ class ReviewWorkspace(QWidget):
         for btn in (self._btn_raw, self._btn_mask, self._btn_ann):
             grp.addButton(btn)
 
-        self._btn_raw.clicked.connect(lambda: self._viewer.set_mode("raw"))
-        self._btn_mask.clicked.connect(lambda: self._viewer.set_mode("mask"))
-        self._btn_ann.clicked.connect(lambda: self._viewer.set_mode("annotated"))
+        self._btn_raw.clicked.connect(self._on_mode_raw)
+        self._btn_mask.clicked.connect(self._on_mode_mask)
+        self._btn_ann.clicked.connect(self._on_mode_ann)
 
         hbox.addWidget(self._btn_raw)
         hbox.addWidget(self._btn_mask)
         hbox.addWidget(self._btn_ann)
+
+        sep = QLabel("  |  ")
+        sep.setStyleSheet("color:#d8cbb8;")
+        hbox.addWidget(sep)
+
+        self._overlay_widget = QWidget()
+        self._overlay_widget.setVisible(False)
+        ov = QHBoxLayout(self._overlay_widget)
+        ov.setContentsMargins(0, 0, 0, 0)
+        ov.setSpacing(12)
+        self._chk_lines  = _ov_chk("Lines",  True)
+        self._chk_labels = _ov_chk("Values", True)
+        self._chk_boxes  = _ov_chk("Boxes",  False)
+        self._chk_legend = _ov_chk("Legend", True)
+        for chk in (self._chk_lines, self._chk_labels, self._chk_boxes, self._chk_legend):
+            chk.stateChanged.connect(self._refresh_annotated)
+            ov.addWidget(chk)
+        hbox.addWidget(self._overlay_widget)
 
         # Batch navigation
         self._prev_btn = QPushButton("◀")
@@ -157,9 +180,12 @@ class ReviewWorkspace(QWidget):
         self._focused = None
         cuts = records_to_legacy_cuts(result.records)
 
+        self._cur_raw  = result.raw
+        self._cur_mask = result.mask
+        self._cur_cuts = cuts
+
         self._viewer.set_images(result.raw, result.mask, result.annotated)
-        self._viewer.set_mode("annotated")
-        self._btn_ann.setChecked(True)
+        self._on_mode_ann()
 
         name = Path(result.image_record.file_path).name
         if cuts:
@@ -216,10 +242,14 @@ class ReviewWorkspace(QWidget):
         self._focused = None
         self._batch_entries = []
         self._batch_records = []
+        self._cur_raw  = None
+        self._cur_mask = None
+        self._cur_cuts = []
         self._results.clear()
         self._img_list.clear()
         self._list_panel.setVisible(False)
         self._batch_nav.setVisible(False)
+        self._overlay_widget.setVisible(False)
         self._info_label.setText("No result loaded.")
 
     # ── Internal — batch navigation ───────────────────────────────────────────
@@ -265,18 +295,21 @@ class ReviewWorkspace(QWidget):
         self._focused = None
         cuts = records_to_legacy_cuts(records)
 
+        self._cur_raw  = raw
+        self._cur_mask = None
+        self._cur_cuts = cuts
+
         annotated = None
         if cuts:
             try:
-                annotated = draw_overlays(raw, None, cuts)
+                annotated = draw_overlays(raw, None, cuts, self._get_overlay_opts())
             except Exception:
                 annotated = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
         else:
             annotated = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
 
         self._viewer.set_images(raw, None, annotated)
-        self._viewer.set_mode("annotated")
-        self._btn_ann.setChecked(True)
+        self._on_mode_ann()
 
         if cuts:
             self._results.show_results(name, cuts)
@@ -289,39 +322,60 @@ class ReviewWorkspace(QWidget):
             f"{name}  ·  {status}  ·  {n} measurement(s)"
         )
 
+    # ── Mode handlers ─────────────────────────────────────────────────────────
+
+    def _on_mode_raw(self) -> None:
+        self._overlay_widget.setVisible(False)
+        self._viewer.set_mode("raw")
+
+    def _on_mode_mask(self) -> None:
+        self._overlay_widget.setVisible(False)
+        self._viewer.set_mode("mask")
+
+    def _on_mode_ann(self) -> None:
+        self._overlay_widget.setVisible(True)
+        self._btn_ann.setChecked(True)
+        self._viewer.set_mode("annotated")
+
+    # ── Overlay helpers ───────────────────────────────────────────────────────
+
+    def _get_overlay_opts(self) -> OverlayOptions:
+        return OverlayOptions(
+            show_lines=self._chk_lines.isChecked(),
+            show_labels=self._chk_labels.isChecked(),
+            show_boxes=self._chk_boxes.isChecked(),
+            show_legend=self._chk_legend.isChecked(),
+            focus=self._focused,
+        )
+
+    def _refresh_annotated(self) -> None:
+        if self._cur_raw is None:
+            return
+        opts = self._get_overlay_opts()
+        if self._cur_cuts:
+            try:
+                annotated = draw_overlays(self._cur_raw, self._cur_mask, self._cur_cuts, opts)
+            except Exception:
+                annotated = cv2.cvtColor(self._cur_raw, cv2.COLOR_GRAY2BGR)
+        else:
+            annotated = cv2.cvtColor(self._cur_raw, cv2.COLOR_GRAY2BGR)
+        self._viewer.set_images(self._cur_raw, self._cur_mask, annotated)
+        self._on_mode_ann()
+
     # ── Slots ─────────────────────────────────────────────────────────────────
 
     def _on_result_selected(self, cmg_id: int, col_id: int) -> None:
         self._focused = (cmg_id, col_id)
-        opts = OverlayOptions(focus=self._focused)
+        self._refresh_annotated()
 
-        # Single-image mode
-        if self._result is not None and not self._batch_entries:
-            annotated = draw_overlays(
-                self._result.raw, self._result.mask,
-                records_to_legacy_cuts(self._result.records), opts,
-            )
-            self._viewer.set_images(self._result.raw, self._result.mask, annotated)
-            self._btn_ann.setChecked(True)
-            self._viewer.set_mode("annotated")
-            return
 
-        # Batch mode — re-render current entry
-        row = self._img_list.currentRow()
-        if row < 0 or row >= len(self._batch_entries):
-            return
-        entry = self._batch_entries[row]
-        records = self._batch_records[row]
-        image_path = entry.get("image_path", "")
-        if not image_path or not Path(image_path).exists():
-            return
-        try:
-            from ...core.image_loader import load_grayscale
-            raw = load_grayscale(image_path)
-            cuts = records_to_legacy_cuts(records)
-            annotated = draw_overlays(raw, None, cuts, opts)
-            self._viewer.set_images(raw, None, annotated)
-            self._btn_ann.setChecked(True)
-            self._viewer.set_mode("annotated")
-        except Exception:
-            pass
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _ov_chk(text: str, checked: bool = True) -> QCheckBox:
+    chk = QCheckBox(text)
+    chk.setChecked(checked)
+    chk.setStyleSheet(
+        "QCheckBox { color:#8c7a66; font-size:11px; spacing:4px; }"
+        "QCheckBox::indicator { width:12px; height:12px; }"
+    )
+    return chk

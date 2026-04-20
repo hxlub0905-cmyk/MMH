@@ -201,6 +201,30 @@ class CMGRecipe(BaseRecipe):
                     m.upper_blob = _rot_blob_to_ori(m.upper_blob, orig_h)
                     m.lower_blob = _rot_blob_to_ori(m.lower_blob, orig_h)
 
+        # Range filter — applied here so batch (Recipe path) behaves identically to
+        # the legacy-cards path in measure_workspace / batch_dialog.
+        dc = self._descriptor.detector_config
+        if dc.get("range_enabled", False):
+            from ..cmg_analyzer import CMGCut as _CMGCut
+            min_px = float(dc.get("min_line_px", 0.0))
+            max_px = float(dc.get("max_line_px", 0.0))
+            filtered = []
+            for cut in cuts:
+                kept = [
+                    m for m in cut.measurements
+                    if (min_px <= 0 or m.cd_px >= min_px)
+                    and (max_px <= 0 or m.cd_px <= max_px)
+                ]
+                if kept:
+                    filtered.append(_CMGCut(cmg_id=cut.cmg_id, measurements=kept))
+            cuts = filtered
+            all_m = [m for c in cuts for m in c.measurements]
+            if len(all_m) >= 2:
+                mn = min(m.cd_px for m in all_m)
+                mx = max(m.cd_px for m in all_m)
+                for m in all_m:
+                    m.flag = "MIN" if m.cd_px == mn else ("MAX" if m.cd_px == mx else "")
+
         context["cmg_cuts"] = cuts
 
         _STATUS = {"MIN": "min", "MAX": "max", "": "normal"}
