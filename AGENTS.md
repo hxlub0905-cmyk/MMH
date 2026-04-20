@@ -1,7 +1,7 @@
 # AGENTS.md — SEM MM 開發指南
 
 本文件供 AI Agent 或開發者快速掌握 SEM MM 專案的架構、慣例與開發方式。
-最後更新：2026-04-20（Phase A vNext 架構升級）
+最後更新：2026-04-20（Phase G2 六項新功能）
 
 ---
 
@@ -19,8 +19,9 @@
 
 | 項目 | 說明 |
 |------|------|
-| 版本階段 | **Phase A（vNext 架構升級）已完成** |
+| 版本階段 | **Phase A + F2 + G2 已完成** |
 | 核心演算法 | CMG Y-CD / X-CD 量測（完整保留，以 Recipe 包裝） |
+| X-Proj 偵測 | Pitch-anchored 相位偵測（`detect_mg_column_centers_pitch_phase()`） |
 | 架構模型 | Recipe-driven SEM Metrology Platform |
 | 測試數量 | 36 項全數通過 |
 | 未完成 Phase | B（體驗升級）、C（能力升級）、D（平台化） |
@@ -227,7 +228,23 @@ class Blob:
     area: int; cx: float; cy: float
 
 def detect_blobs(mask: np.ndarray, min_area: int | None = None) -> list[Blob]
+
+def detect_mg_column_centers_pitch_phase(
+    mask: np.ndarray,
+    pitch_px: int,
+    smooth_k: int = 5,
+    min_height_frac: float = 0.3,
+    edge_margin_px: int = 0,
+) -> list[int]:
+    """Pitch-anchored phase detection：對 X-proj 以已知 pitch 做相位搜尋，
+    返回等間距 MG 欄位中心列表。PEPI 偏向在全局平均中被消除。"""
+
+def regularize_blobs_to_columns(
+    blobs, col_centers, half_w, tol, norm_x
+) -> list[Blob]
 ```
+
+⚠️ `detect_mg_column_centers_twopass()` 已於 Phase F2 移除，請勿引用。
 
 ### `src/core/annotator.py`
 
@@ -242,6 +259,15 @@ def draw_overlays(img_gray, mask, cuts: list[CMGCut], opts) -> np.ndarray
 ```
 
 顏色：MIN → 橘色，MAX → 天藍色，正常 → 薄荷綠
+
+**標注文字常數（Phase G2 調整）：**
+
+| 常數 | 值 | 說明 |
+|------|----|------|
+| `_LABEL_MIN_DY` | `6` | 標籤碰撞最小 Y 間距（px） |
+| `fs` | `max(0.18, h/3200)` | 字體縮放公式（縮小以減少重疊） |
+| lane | `x_lbl // 30` | 碰撞偵測 lane 寬（縮窄避免遠欄互推） |
+| x offset | `x_mid + _TICK_HALF + 2` | 數值標籤緊貼量測線
 
 ---
 
@@ -419,6 +445,9 @@ pytest tests/ -v
 | 已修復 | batch_review_dialog.py | `QWidget` 未匯入導致批次閃退 | ✅ |
 | 已修復 | main_window.py | 巢狀 `exec()` 不穩定 | ✅ |
 | 已修復 | batch_dialog.py | `cancelled` 為 class 變數 | ✅ |
+| 已修復 | mg_detector.py | Two-pass X-proj 受 PEPI 偏向，Auto-detect 失效 | ✅ F2 |
+| 已修復 | report_generator.py | matplotlib 未安裝時 HTML 匯出崩潰 | ✅ G2-4 |
+| 已修復 | cmg_recipe.py | `_card_to_descriptor()` 缺 17 個 col_mask/range 欄位 | ✅ G2-1 |
 | Phase B | batch_workspace.py | Batch 結果尚未加入 cache，大批次重新匯出效率低 | 待修 |
 | Phase B | review_workspace.py | Review 工作流程為基礎版，缺 Accept/Reject 操作 | 待修 |
 | Phase B | annotator.py | X-CD 標注 overlay 座標對齊待驗證 | 待修 |
@@ -431,15 +460,29 @@ pytest tests/ -v
 
 ### 目前狀態總結（2026-04-20）
 
-本次 Phase A 完成以下重大架構升級：
+#### Phase A — 架構升級（已完成）
 
-1. **不破壞現有功能**：`cmg_analyzer.py`、`preprocessor.py`、`mg_detector.py`、`annotator.py` 完全未動。現有 batch_dialog.py / batch_review_dialog.py / control_panel.py / styles.py 保留，透過相容層橋接新架構。
-
+1. **不破壞現有功能**：`cmg_analyzer.py`、`preprocessor.py`、`mg_detector.py`、`annotator.py` 核心演算法完全保留。現有 batch_dialog.py / batch_review_dialog.py / control_panel.py / styles.py 保留，透過相容層橋接新架構。
 2. **新架構入口點**：使用者操作流程改為 Browse → Recipe → Measure → Review → Batch → Report 六工作區。舊版功能在 MeasureWorkspace 的「Legacy Cards」路徑仍然完全可用。
-
 3. **Recipe 持久化**：建立的 Recipe 儲存於 `~/.mmh/recipes/`，Calibration 儲存於 `~/.mmh/calibrations/`。
-
 4. **MeasurementRecord 為新核心**：所有新功能應基於 `MeasurementRecord` 建構，不再使用 `YCDMeasurement` / `CMGCut` 作為主要傳遞格式。
+
+#### Phase F2 — X-Proj 相位偵測（已完成）
+
+- `detect_mg_column_centers_twopass()` 已由 `detect_mg_column_centers_pitch_phase()` 取代
+- 新演算法：已知 MG pitch → 對 X-proj reshape 成 `(N, pitch_px)` 矩陣 → argmax 相位 → 等間距正規網格
+- 優點：全局最優，PEPI 貢獻被平均消除；三處 pipeline call site 已同步更新
+
+#### Phase G2 — 六項新功能（已完成）
+
+| 編號 | 功能 | 主要檔案 |
+|------|------|---------|
+| G2-1 | Measure「Save Cards as Recipe」一鍵轉存 | `measure_workspace.py`, `cmg_recipe.py` |
+| G2-2 | Results/Review 表格表頭點擊數字排序 | `results_panel.py` |
+| G2-3 | Batch Run 早期進度提示（Preparing/Submitted） | `batch_dialog.py` |
+| G2-4 | HTML 匯出 matplotlib 容錯 + 圖片匯出進度條 | `report_generator.py`, `report_workspace.py` |
+| G2-5 | Recipe 編輯器改為 QTabWidget 四 Tab 佈局 | `recipe_workspace.py` |
+| G2-6 | Annotated 數值標籤字體縮小、間距加緊 | `annotator.py` |
 
 ### Phase B 開發重點（下一步）
 
