@@ -188,17 +188,17 @@ def _draw_legend(canvas: np.ndarray, fs: float) -> None:
         ("MAX Y-CD", _COL["MAX"]),
         ("NORMAL", _COL[""]),
     ]
-    pad = 8
-    lh = 16
-    box_w = 130
-    box_h = pad * 2 + lh * len(items)
-    x0 = max(0, W - box_w - 10)
-    y0 = 10
+    pad = 5
+    lh = 12                            # reduced from 16 → tighter line spacing
+    box_w = 118
+    box_h = pad * 2 + lh * len(items) + 2
+    x0 = max(0, W - box_w - 8)
+    y0 = 8
     overlay = canvas.copy()
     cv2.rectangle(overlay, (x0, y0), (x0 + box_w, y0 + box_h), (255, 255, 255), -1)
-    cv2.addWeighted(overlay, 0.75, canvas, 0.25, 0, canvas)
-    cv2.rectangle(canvas, (x0, y0), (x0 + box_w, y0 + box_h), (210, 210, 210), 1)
+    cv2.addWeighted(overlay, 0.78, canvas, 0.22, 0, canvas)
+    cv2.rectangle(canvas, (x0, y0), (x0 + box_w, y0 + box_h), (200, 200, 200), 1)
     for i, (label, col) in enumerate(items):
-        yy = y0 + pad + (i + 1) * lh - 4
-        cv2.circle(canvas, (x0 + 12, yy - 3), 4, col, -1)
-        cv2.putText(canvas, label, (x0 + 24, yy), font, max(0.32, fs), (60, 60, 60), 1, cv2.LINE_AA)
+        yy = y0 + pad + (i + 1) * lh - 2
+        cv2.circle(canvas, (x0 + 10, yy - 3), 3, col, -1)
+        cv2.putText(canvas, label, (x0 + 19, yy), font, max(0.30, fs * 0.9), (55, 55, 55), 1, cv2.LINE_AA)

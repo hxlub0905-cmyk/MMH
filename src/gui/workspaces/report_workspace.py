@@ -234,7 +234,7 @@ class ReportWorkspace(QWidget):
             for i, entry in enumerate(results):
                 progress.setValue(i)
                 QApplication.processEvents()
-                if progress.wasCancelled():
+                if progress.wasCanceled():
                     break
                 image_path = entry.get("image_path", "")
                 if not image_path or not Path(image_path).exists():

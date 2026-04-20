@@ -192,6 +192,72 @@ class CMGRecipe(BaseRecipe):
             y_cluster_tol=ec.get("y_cluster_tol", 10),
         )
 
+        # ── Subpixel Y-edge refinement (Y-CD only) ───────────────────────────
+        # Locally refines upper/lower blob bbox edges using raw-image gradients.
+        # X-CD path is completely untouched.
+        if axis == "Y":
+            raw_img = context.get("raw")
+            if raw_img is not None:
+                _sp          = ec   # edge_locator_config carries subpixel knobs
+                _half_col    = int  (_sp.get("subpixel_half_col",    3))
+                _search_half = int  (_sp.get("subpixel_search_half", 10))
+                _proximity   = int  (_sp.get("subpixel_proximity",   5))
+                _smooth_k    = int  (_sp.get("subpixel_smooth_k",    5))
+                _grad_frac   = float(_sp.get("subpixel_min_grad_frac", 0.10))
+                _peak_ratio  = float(_sp.get("subpixel_peak_ratio",  0.60))
+                # Stable X anchors from pitch-phase detection (may be empty)
+                _col_centers = context.get("mg_col_centers", [])
+
+                for cut in cuts:
+                    for m in cut.measurements:
+                        ub, lb = m.upper_blob, m.lower_blob
+
+                        # [1] x_center: prefer pitch-grid center over blob mean
+                        blob_cx = (ub.cx + lb.cx) / 2.0
+                        if _col_centers:
+                            x_ctr = float(
+                                min(_col_centers, key=lambda c, _b=blob_cx: abs(c - _b))
+                            )
+                        else:
+                            x_ctr = blob_cx
+
+                        # [2] y_guess: canonical bbox edges (matches Y-CD definition)
+                        y_up = float(ub.y1)   # bottom of upper blob = top of gap
+                        y_lo = float(lb.y0)   # top of lower blob   = bottom of gap
+
+                        # [3-5] refine each edge; helper falls back to y_guess on
+                        # any constraint failure (weak gradient, ambiguous peak,
+                        # proximity violation), which equals the original bbox edge
+                        up_ref = _refine_yedge_subpixel(
+                            raw_img, x_ctr, y_up,
+                            half_col=_half_col, search_half=_search_half,
+                            proximity=_proximity, smooth_k=_smooth_k,
+                            min_grad_frac=_grad_frac, peak_ratio_thr=_peak_ratio,
+                        )
+                        lo_ref = _refine_yedge_subpixel(
+                            raw_img, x_ctr, y_lo,
+                            half_col=_half_col, search_half=_search_half,
+                            proximity=_proximity, smooth_k=_smooth_k,
+                            min_grad_frac=_grad_frac, peak_ratio_thr=_peak_ratio,
+                        )
+
+                        cd_ref = lo_ref - up_ref
+                        if cd_ref > 0.0:    # [6] gap must remain positive
+                            m.cd_px = cd_ref
+                            m.cd_nm = cd_ref * nm_per_pixel
+                        # else: keep m.cd_px / m.cd_nm from analyze() unchanged
+
+                # [7] Re-flag MIN/MAX per cut based on (possibly refined) cd_px
+                for cut in cuts:
+                    if len(cut.measurements) >= 2:
+                        vals = [m.cd_px for m in cut.measurements]
+                        mn, mx = min(vals), max(vals)
+                        for m in cut.measurements:
+                            m.flag = (
+                                "MIN" if m.cd_px == mn else
+                                "MAX" if m.cd_px == mx else ""
+                            )
+
         # For X-CD: blobs were analyzed in rotated space; back-rotate blob
         # coordinates now so annotations are drawn in original image space.
         if axis == "X":
@@ -353,6 +419,115 @@ class CMGRecipe(BaseRecipe):
 
 
 # ── Coordinate helpers ────────────────────────────────────────────────────────
+
+def _refine_yedge_subpixel(
+    image: np.ndarray,
+    x_center: float,
+    y_guess: float,
+    half_col: int = 3,
+    search_half: int = 10,
+    proximity: int = 5,
+    smooth_k: int = 5,
+    min_grad_frac: float = 0.10,
+    peak_ratio_thr: float = 0.60,
+) -> float:
+    """Refine a Y-edge position to subpixel precision using gradient-based detection.
+
+    Extracts a narrow column profile from the raw grayscale image around
+    (x_center, y_guess), finds the dominant gradient peak with quality checks,
+    and applies quadratic subpixel interpolation.
+
+    Constraints enforced:
+    - Relative gradient threshold (min_grad_frac × profile contrast range)
+    - Peak dominance: rejects profiles with multiple comparable peaks
+    - Proximity: refined result must lie within ±proximity px of y_guess
+    - Search window strictly bounded to ±search_half px of y_guess
+
+    Returns refined float Y position, or y_guess on any failure/fallback.
+    """
+    if image is None or image.ndim < 2:
+        return y_guess
+
+    img = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    h, w = img.shape
+
+    # Step 1: narrow column strip around x_center
+    x0 = max(0, int(x_center) - half_col)
+    x1 = min(w, int(x_center) + half_col + 1)
+    if x1 - x0 < 1:
+        return y_guess
+
+    # Step 2: Y search window strictly bounded to ±search_half px
+    y_lo = max(0, int(round(y_guess)) - search_half)
+    y_hi = min(h, int(round(y_guess)) + search_half + 1)
+    n = y_hi - y_lo
+    if n < 3:
+        return y_guess
+
+    # Step 3: 1D profile — mean intensity over X strip
+    profile = img[y_lo:y_hi, x0:x1].astype(np.float64).mean(axis=1)
+
+    # Step 4: relative gradient threshold — profile must have visible contrast
+    p_range = float(profile.max() - profile.min())
+    if p_range < 1.0:           # essentially flat region → no edge to find
+        return y_guess
+    min_grad_abs = min_grad_frac * p_range
+
+    # Step 5: moving-average smoothing
+    k = smooth_k | 1            # ensure odd kernel
+    if n >= k:
+        kernel = np.ones(k, dtype=np.float64) / k
+        profile = np.convolve(profile, kernel, mode='same')
+
+    # Step 6: absolute gradient
+    abs_grad = np.abs(np.gradient(profile))
+
+    # Step 7: search interior only (avoid convolution boundary artefacts)
+    margin = max(1, k // 2)
+    lo_m = margin
+    hi_m = max(lo_m + 1, n - margin)
+    search_slice = abs_grad[lo_m:hi_m]
+
+    peak_in_slice = int(np.argmax(search_slice))
+    peak_local = peak_in_slice + lo_m
+    peak_val = abs_grad[peak_local]
+
+    # Step 8: relative gradient threshold check
+    if peak_val < min_grad_abs:
+        return y_guess
+
+    # Step 9: peak dominance check (simplified polarity / quality gate)
+    # Mask ±2 px around the primary peak and inspect residual
+    mask = np.ones(len(search_slice), dtype=bool)
+    excl_lo = max(0, peak_in_slice - 2)
+    excl_hi = min(len(search_slice), peak_in_slice + 3)
+    mask[excl_lo:excl_hi] = False
+    if mask.any():
+        second_val = float(search_slice[mask].max())
+        if second_val > peak_ratio_thr * peak_val:
+            return y_guess      # multiple peaks of similar height → ambiguous
+
+    # Step 10: quadratic subpixel interpolation on gradient peak
+    if 0 < peak_local < n - 1:
+        a = abs_grad[peak_local - 1]
+        b = abs_grad[peak_local]
+        c = abs_grad[peak_local + 1]
+        denom = a - 2.0 * b + c
+        delta = 0.5 * (a - c) / denom if abs(denom) > 1e-12 else 0.0
+        peak_sub = float(peak_local) + delta
+    else:
+        peak_sub = float(peak_local)
+
+    # Clamp to search window
+    peak_sub = max(0.0, min(float(n - 1), peak_sub))
+    refined = float(y_lo) + peak_sub
+
+    # Step 11: proximity constraint — refined must stay close to initial guess
+    if abs(refined - y_guess) > proximity:
+        return y_guess
+
+    return refined
+
 
 def _rot_blob_to_ori(b: Any, orig_h: int) -> Any:
     """Convert a blob from 90°-CW-rotated space back to original image space."""
