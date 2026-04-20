@@ -26,7 +26,7 @@ _COL = {
 _TICK_HALF = 5
 _LINE_W    = 1
 _BOX_W     = 1
-_LABEL_MIN_DY = 8
+_LABEL_MIN_DY = 6
 
 
 @dataclass
@@ -43,21 +43,60 @@ def draw_overlays(
     _mask: np.ndarray,
     cuts: list[CMGCut],
     opts: OverlayOptions | None = None,
+    color_override: tuple | None = None,
 ) -> np.ndarray:
-    """Return annotated BGR image."""
+    """Return annotated BGR image.
+
+    Args:
+        color_override: When set, use this BGR color for *normal* measurements.
+                        MIN and MAX measurements always use their designated colors.
+    """
     if opts is None:
         opts = OverlayOptions()
 
     canvas = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
     h      = img_gray.shape[0]
-    fs     = max(0.20, h / 2600)
+    fs     = max(0.18, h / 3200)
     th     = max(1, round(fs))
     last_label_y: dict[int, int] = {}
 
     for cut in cuts:
         for m in cut.measurements:
-            col = _COL.get(m.flag, _COL[""])
+            col = _COL.get(m.flag) if m.flag else (color_override if color_override is not None else _COL[""])
             _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
+
+    if opts.show_legend:
+        _draw_legend(canvas, fs)
+
+    return canvas
+
+
+def draw_overlays_multi(
+    img_gray: np.ndarray,
+    layers: list[tuple],
+    opts: OverlayOptions | None = None,
+) -> np.ndarray:
+    """Render multiple cut layers, each with its own BGR color.
+
+    Args:
+        layers: list of (cuts, color_bgr) tuples — one per recipe/config.
+                Normal measurements use the layer color; MIN/MAX always use
+                their designated orange/sky colors for consistent highlighting.
+    """
+    if opts is None:
+        opts = OverlayOptions()
+
+    canvas = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
+    h      = img_gray.shape[0]
+    fs     = max(0.18, h / 3200)
+    th     = max(1, round(fs))
+    last_label_y: dict[int, int] = {}
+
+    for cuts, color in layers:
+        for cut in cuts:
+            for m in cut.measurements:
+                col = _COL.get(m.flag) if m.flag else color
+                _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
 
     if opts.show_legend:
         _draw_legend(canvas, fs)
@@ -112,7 +151,7 @@ def _draw_measurement(
 
     # ── label: just the number, no unit, no tag, no background ───────────────
     if opts.show_labels:
-        text   = f"{m.y_cd_nm:.1f}"
+        text   = f"{m.cd_nm:.1f}"
         font   = cv2.FONT_HERSHEY_SIMPLEX
         (tw, th_px), _ = cv2.getTextSize(text, font, fs, th)
         if axis == "X":
@@ -126,10 +165,10 @@ def _draw_measurement(
             y_top = ub.y1
             y_bot = lb.y0
             x_mid = int((max(ub.x0, lb.x0) + min(ub.x1, lb.x1)) / 2)
-            x_lbl = x_mid + _TICK_HALF + 4
+            x_lbl = x_mid + _TICK_HALF + 2
             y_lbl = int((y_top + y_bot) / 2) + th_px // 2
         H, W   = canvas.shape[:2]
-        lane   = x_lbl // 24
+        lane   = x_lbl // 30
         prev_y = last_label_y.get(lane)
         if prev_y is not None and abs(y_lbl - prev_y) < _LABEL_MIN_DY:
             y_lbl = min(H - 2, prev_y + _LABEL_MIN_DY)

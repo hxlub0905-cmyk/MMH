@@ -7,9 +7,9 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QFormLayout,
     QLabel, QPushButton, QFileDialog, QMessageBox, QSizePolicy,
-    QScrollArea,
+    QScrollArea, QProgressDialog, QApplication,
 )
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, Qt
 
 from ...core.models import BatchRunRecord, ImageRecord, MeasurementRecord
 
@@ -33,11 +33,8 @@ class ReportWorkspace(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(
-            scroll.horizontalScrollBarPolicy().ScrollBarAlwaysOff
-            if hasattr(scroll.horizontalScrollBarPolicy(), 'ScrollBarAlwaysOff')
-            else scroll.horizontalScrollBarPolicy()
-        )
+        from PyQt6.QtCore import Qt
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         inner = QWidget()
         iv = QVBoxLayout(inner)
         iv.setSpacing(8)
@@ -47,23 +44,25 @@ class ReportWorkspace(QWidget):
         self._summary_layout = QFormLayout(self._summary_box)
         iv.addWidget(self._summary_box)
 
-        # Statistics
-        self._stats_box = QGroupBox("Y-CD Statistics")
+        # Statistics (generic — covers both Y-CD and X-CD)
+        self._stats_box = QGroupBox("CD Statistics")
         self._stats_layout = QFormLayout(self._stats_box)
         iv.addWidget(self._stats_box)
 
         # Export buttons
         export_box = QGroupBox("Export")
         ev = QVBoxLayout(export_box)
-        btn_csv   = QPushButton("Export CSV")
-        btn_excel = QPushButton("Export Excel")
-        btn_json  = QPushButton("Export JSON")
-        btn_html  = QPushButton("Generate HTML Report")
+        btn_csv    = QPushButton("Export CSV")
+        btn_excel  = QPushButton("Export Excel")
+        btn_json   = QPushButton("Export JSON")
+        btn_html   = QPushButton("Generate HTML Report")
+        btn_images = QPushButton("Export Images (Raw + Annotated)…")
         btn_csv.clicked.connect(self._export_csv)
         btn_excel.clicked.connect(self._export_excel)
         btn_json.clicked.connect(self._export_json)
         btn_html.clicked.connect(self._export_html)
-        for btn in (btn_csv, btn_excel, btn_json, btn_html):
+        btn_images.clicked.connect(self._export_images)
+        for btn in (btn_csv, btn_excel, btn_json, btn_html, btn_images):
             ev.addWidget(btn)
         iv.addWidget(export_box)
         iv.addStretch()
@@ -80,7 +79,7 @@ class ReportWorkspace(QWidget):
         # Reconstruct MeasurementRecord and ImageRecord lists
         self._records = []
         self._image_records = []
-        seen_img = set()
+        seen_img: set[str] = set()
         for r in results:
             img_id = r.get("image_id", "")
             img_path = r.get("image_path", "")
@@ -105,10 +104,7 @@ class ReportWorkspace(QWidget):
         br = self._batch_run
         if br is None:
             return
-        for i in reversed(range(self._summary_layout.count())):
-            item = self._summary_layout.itemAt(i)
-            if item and item.widget():
-                item.widget().deleteLater()
+        _clear_form(self._summary_layout)
 
         rows = [
             ("Total images:", str(br.total_images)),
@@ -121,10 +117,7 @@ class ReportWorkspace(QWidget):
             self._summary_layout.addRow(QLabel(label), QLabel(value))
 
     def _refresh_stats(self) -> None:
-        for i in reversed(range(self._stats_layout.count())):
-            item = self._stats_layout.itemAt(i)
-            if item and item.widget():
-                item.widget().deleteLater()
+        _clear_form(self._stats_layout)
 
         ok_vals = [r.calibrated_nm for r in self._records if r.status not in ("rejected",)]
         if not ok_vals:
@@ -159,36 +152,129 @@ class ReportWorkspace(QWidget):
 
     def _export_csv(self) -> None:
         if not self._records:
-            QMessageBox.information(self, "No data", "Load a batch run first."); return
+            QMessageBox.information(self, "No data", "Load a batch run first.")
+            return
         p = self._get_out_path(".csv")
-        if p is None: return
-        from ...output.csv_exporter import export_csv_from_records
-        export_csv_from_records(self._records, p, self._image_records)
-        self.status_message.emit(f"CSV exported → {p.name}")
+        if p is None:
+            return
+        try:
+            from ...output.csv_exporter import export_csv_from_records
+            export_csv_from_records(self._records, p, self._image_records)
+            self.status_message.emit(f"CSV exported → {p.name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
 
     def _export_excel(self) -> None:
         if not self._records:
-            QMessageBox.information(self, "No data", "Load a batch run first."); return
+            QMessageBox.information(self, "No data", "Load a batch run first.")
+            return
         p = self._get_out_path(".xlsx")
-        if p is None: return
-        from ...output.excel_exporter import export_excel_from_records
-        export_excel_from_records(self._records, p, self._image_records)
-        self.status_message.emit(f"Excel exported → {p.name}")
+        if p is None:
+            return
+        try:
+            from ...output.excel_exporter import export_excel_from_records
+            export_excel_from_records(self._records, p, self._image_records)
+            self.status_message.emit(f"Excel exported → {p.name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
 
     def _export_json(self) -> None:
         if not self._records:
-            QMessageBox.information(self, "No data", "Load a batch run first."); return
+            QMessageBox.information(self, "No data", "Load a batch run first.")
+            return
         p = self._get_out_path(".json")
-        if p is None: return
-        from ...output.json_exporter import export_json_from_records
-        export_json_from_records(self._records, p, self._image_records, self._batch_run)
-        self.status_message.emit(f"JSON exported → {p.name}")
+        if p is None:
+            return
+        try:
+            from ...output.json_exporter import export_json_from_records
+            export_json_from_records(self._records, p, self._image_records, self._batch_run)
+            self.status_message.emit(f"JSON exported → {p.name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
 
     def _export_html(self) -> None:
         if not self._records:
-            QMessageBox.information(self, "No data", "Load a batch run first."); return
+            QMessageBox.information(self, "No data", "Load a batch run first.")
+            return
         p = self._get_out_path(".html")
-        if p is None: return
-        from ...output.report_generator import generate_report_from_records
-        generate_report_from_records(self._records, p, self._image_records, self._batch_run)
-        self.status_message.emit(f"HTML report → {p.name}")
+        if p is None:
+            return
+        try:
+            from ...output.report_generator import generate_report_from_records
+            generate_report_from_records(self._records, p, self._image_records, self._batch_run)
+            self.status_message.emit(f"HTML report → {p.name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+
+    def _export_images(self) -> None:
+        """Export raw + annotated images for each batch entry into a chosen folder."""
+        if not self._batch_run:
+            QMessageBox.information(self, "No data", "Load a batch run first.")
+            return
+        out_dir = QFileDialog.getExistingDirectory(self, "Select output folder")
+        if not out_dir:
+            return
+        out_path = Path(out_dir)
+
+        try:
+            import cv2
+            from ...core.image_loader import load_grayscale
+            from ...core.annotator import draw_overlays
+            from ..._compat import records_to_legacy_cuts
+
+            results = self._batch_run.output_manifest.get("results", [])
+            total = len(results)
+
+            progress = QProgressDialog("Exporting images…", "Cancel", 0, total, self)
+            progress.setWindowTitle("Export Images")
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setMinimumDuration(0)
+
+            exported = errors = 0
+            for i, entry in enumerate(results):
+                progress.setValue(i)
+                QApplication.processEvents()
+                if progress.wasCancelled():
+                    break
+                image_path = entry.get("image_path", "")
+                if not image_path or not Path(image_path).exists():
+                    errors += 1
+                    continue
+                stem = Path(image_path).stem
+                try:
+                    raw = load_grayscale(image_path)
+                    cv2.imwrite(str(out_path / f"{stem}_raw.png"), raw)
+                    records_dicts = entry.get("measurements", [])
+                    records = []
+                    for m_dict in records_dicts:
+                        try:
+                            records.append(MeasurementRecord.from_dict(m_dict))
+                        except Exception:
+                            pass
+                    cuts = records_to_legacy_cuts(records)
+                    if cuts:
+                        annotated = draw_overlays(raw, None, cuts)
+                    else:
+                        annotated = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
+                    cv2.imwrite(str(out_path / f"{stem}_annotated.png"), annotated)
+                    exported += 1
+                except Exception:
+                    errors += 1
+
+            progress.setValue(total)
+            msg = f"Exported {exported} image pair(s) to {out_path.name}"
+            if errors:
+                msg += f"  ({errors} skipped)"
+            self.status_message.emit(msg)
+            QMessageBox.information(self, "Done", msg)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _clear_form(layout) -> None:
+    for i in reversed(range(layout.count())):
+        item = layout.itemAt(i)
+        if item and item.widget():
+            item.widget().deleteLater()

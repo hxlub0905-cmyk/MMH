@@ -16,8 +16,8 @@ def _process_one(args: tuple) -> dict:
     """Top-level worker function (must be picklable for multiprocessing)."""
     image_path, nm_per_pixel, gl_min, gl_max, gauss_k, morph_open_k, morph_close_k, use_clahe, min_area, cards = args
     from ..core.image_loader import load_grayscale
-    from ..core.preprocessor import preprocess, PreprocessParams
-    from ..core.mg_detector import detect_blobs, Blob
+    from ..core.preprocessor import preprocess, PreprocessParams, apply_column_strip_mask
+    from ..core.mg_detector import detect_blobs, Blob, regularize_blobs_to_columns
     from ..core.cmg_analyzer import analyze
 
     result: dict = {"path": str(image_path), "status": "OK", "cuts": [], "error": ""}
@@ -39,11 +39,57 @@ def _process_one(args: tuple) -> dict:
                 morph_open_k=morph_open_k,
                 morph_close_k=morph_close_k,
                 use_clahe=use_clahe,
+                vert_erode_k=int(card.get("vert_erode_k", 0)),
+                vert_erode_iter=int(card.get("vert_erode_iter", 1)),
             )
             m_roi = preprocess(roi, params)
+            # Column strip masking (Strategy 1) with optional auto xproj centers (F1c)
+            col_centers: list[int] = []
+            edge_margin = int(card.get("col_mask_edge_margin_px", 0))
+            half_w = int(card.get("col_mask_width_px", 22)) // 2
+            margin = int(card.get("col_mask_margin_px", 4))
+            if card.get("col_mask_enabled", False):
+                start_x = int(card.get("col_mask_start_x", 0))
+                pitch = int(card.get("col_mask_pitch_px", 44))
+                cw = m_roi.shape[1]
+                if card.get("col_mask_auto_centers", False):
+                    from ..core.mg_detector import detect_mg_column_centers_pitch_phase
+                    col_centers = detect_mg_column_centers_pitch_phase(
+                        m_roi,
+                        pitch_px=int(card.get("col_mask_pitch_px", 44)),
+                        smooth_k=int(card.get("xproj_smooth_k", 5)),
+                        min_height_frac=float(card.get("xproj_peak_min_frac", 0.3)),
+                        edge_margin_px=edge_margin,
+                    )
+                if not col_centers:  # fallback to manual start_x + pitch
+                    col_centers = list(range(start_x, cw, pitch)) if pitch > 0 and start_x < cw else []
+                m_roi = apply_column_strip_mask(m_roi, col_centers, half_w, margin, edge_margin)
             m_ori = m_roi if axis.startswith("Y") else cv2.rotate(m_roi, cv2.ROTATE_90_COUNTERCLOCKWISE)
             mask = np.maximum(mask, m_ori)
             blobs = detect_blobs(m_roi, min_area=int(card.get("min_area", min_area)))
+            # Geometric filters (0 = disabled)
+            _min_ar = float(card.get("min_aspect_ratio", 0.0))
+            _max_ar = float(card.get("max_aspect_ratio", 0.0))
+            _min_w  = int(card.get("min_width", 0))
+            _max_w  = int(card.get("max_width", 0))
+            _min_h  = int(card.get("min_height", 0))
+            if any([_min_ar, _max_ar, _min_w, _max_w, _min_h]):
+                filtered = []
+                for b in blobs:
+                    ar = b.height / max(b.width, 1)
+                    if _min_ar and ar < _min_ar: continue
+                    if _max_ar and ar > _max_ar: continue
+                    if _min_w and b.width < _min_w: continue
+                    if _max_w and b.width > _max_w: continue
+                    if _min_h and b.height < _min_h: continue
+                    filtered.append(b)
+                blobs = filtered
+            # Pitch Grid Regularization: snap blobs onto layout grid, normalize X bounds
+            if card.get("col_mask_enabled", False) and card.get("col_mask_regularize", False) and col_centers:
+                half_w = int(card.get("col_mask_width_px", 22)) // 2
+                tol    = int(card.get("col_mask_pitch_tol_px", 5))
+                norm_x = bool(card.get("col_mask_normalize_x", True))
+                blobs  = regularize_blobs_to_columns(blobs, col_centers, half_w, tol, norm_x)
             if axis.startswith("X"):
                 blobs = [Blob(
                     label=b.label,
@@ -52,6 +98,12 @@ def _process_one(args: tuple) -> dict:
                     area=b.area, cx=b.cy, cy=(h - 1) - b.cx
                 ) for b in blobs]
             c = analyze(blobs, nm_per_pixel)
+            if card.get("range_enabled", False):
+                c = _filter_by_range(
+                    c,
+                    float(card.get("min_line_px", 0)),
+                    float(card.get("max_line_px", 0)),
+                )
             for cut in c:
                 cut.cmg_id += cmg_offset
                 for m in cut.measurements:
@@ -64,7 +116,7 @@ def _process_one(args: tuple) -> dict:
 
         if not cuts:
             result["status"] = "FAIL"
-            result["error"] = "No CMG cuts detected"
+            result["error"] = "No structures detected"
         else:
             # Serialise cuts to plain dicts (not dataclasses) for cross-process transport
             result["cuts"] = _serialise_cuts(cuts)
@@ -75,6 +127,27 @@ def _process_one(args: tuple) -> dict:
     return result
 
 
+def _filter_by_range(cuts, min_px: float, max_px: float) -> list:
+    """Keep only measurements whose cd_px falls within [min_px, max_px] (0 = disabled)."""
+    from ..core.cmg_analyzer import CMGCut
+    filtered = []
+    for cut in cuts:
+        kept = [
+            m for m in cut.measurements
+            if (min_px <= 0 or m.cd_px >= min_px)
+            and (max_px <= 0 or m.cd_px <= max_px)
+        ]
+        if kept:
+            filtered.append(CMGCut(cmg_id=cut.cmg_id, measurements=kept))
+    all_m = [m for c in filtered for m in c.measurements]
+    if len(all_m) >= 2:
+        mn = min(m.cd_px for m in all_m)
+        mx = max(m.cd_px for m in all_m)
+        for m in all_m:
+            m.flag = "MIN" if m.cd_px == mn else ("MAX" if m.cd_px == mx else "")
+    return filtered
+
+
 def _serialise_cuts(cuts) -> list:
     out = []
     for cut in cuts:
@@ -83,8 +156,8 @@ def _serialise_cuts(cuts) -> list:
             measurements.append({
                 "cmg_id": m.cmg_id,
                 "col_id": m.col_id,
-                "y_cd_px": m.y_cd_px,
-                "y_cd_nm": m.y_cd_nm,
+                "y_cd_px": m.cd_px,
+                "y_cd_nm": m.cd_nm,
                 "flag": m.flag,
                 "axis": m.axis,
                 "state_name": m.state_name,
@@ -111,6 +184,8 @@ class _BatchWorker(QThread):
         total = len(self._paths)
         p = self._params
 
+        self.progress.emit(0, total, f"Preparing {total} job(s)…")
+
         args_list = [
             (
                 path,
@@ -129,6 +204,7 @@ class _BatchWorker(QThread):
 
         with ProcessPoolExecutor(max_workers=self._max_workers) as pool:
             future_map = {pool.submit(_process_one, args): args[0] for args in args_list}
+            self.progress.emit(0, total, f"Submitted {total} job(s), waiting for results…")
             done = 0
             for future in as_completed(future_map):
                 if self.cancelled:
@@ -154,7 +230,7 @@ class BatchDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        self._lbl_current = QLabel("Starting…")
+        self._lbl_current = QLabel("Initializing…")
         layout.addWidget(self._lbl_current)
 
         self._progress = QProgressBar()

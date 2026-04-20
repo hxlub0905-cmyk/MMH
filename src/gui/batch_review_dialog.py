@@ -54,7 +54,7 @@ class BatchReviewDialog(QDialog):
         right_l.addWidget(self._img, 3)
 
         self._table = QTableWidget(0, 5)
-        self._table.setHorizontalHeaderLabels(["CMG", "Col", "Y-CD (px)", "Y-CD (nm)", "Flag"])
+        self._table.setHorizontalHeaderLabels(["Structure", "Feature ID", "CD (px)", "CD (nm)", "Flag"])
         right_l.addWidget(self._table, 2)
 
         self._meta = QTextEdit()

@@ -17,12 +17,13 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from ..control_panel import ControlPanel
 from ..image_viewer import ImageViewer
 from ..results_panel import ResultsPanel
+from ..layer_control_panel import LayerControlPanel
 from ...core.models import ImageRecord
 from ...core.recipe_base import PipelineResult
 from ...core.recipe_registry import RecipeRegistry
 from ...core.measurement_engine import MeasurementEngine
 from ...core.calibration import CalibrationManager
-from ...core.annotator import OverlayOptions, draw_overlays
+from ...core.annotator import OverlayOptions, draw_overlays, draw_overlays_multi
 from ..._compat import records_to_legacy_cuts
 
 
@@ -49,6 +50,7 @@ class MeasureWorkspace(QWidget):
         self._current_records: list = []
         self._current_annotated = None
         self._profile_masks: list = []
+        self._per_layer_cuts: list = []   # [(cuts, color_bgr)] per config
         self._focused_measurement: tuple[int, int] | None = None
         self._last_result: PipelineResult | None = None
 
@@ -90,12 +92,17 @@ class MeasureWorkspace(QWidget):
         cv.addWidget(v_split, stretch=1)
         splitter.addWidget(center)
 
-        # Right: recipe selector + legacy ControlPanel
+        # Right: recipe selector + layer panel + legacy ControlPanel
         right = QWidget()
         rv = QVBoxLayout(right)
         rv.setContentsMargins(4, 4, 4, 4)
         rv.setSpacing(6)
         rv.addWidget(self._build_recipe_selector())
+
+        self._layer_panel = LayerControlPanel()
+        self._layer_panel.setVisible(False)
+        self._layer_panel.layers_changed.connect(self._refresh_annotated)
+        rv.addWidget(self._layer_panel)
 
         self._ctrl = ControlPanel()
         self._ctrl.setMinimumWidth(230)
@@ -139,6 +146,13 @@ class MeasureWorkspace(QWidget):
         hbox.addWidget(self._btn_mask)
         hbox.addWidget(self._btn_ann)
 
+        self._btn_ruler = QPushButton("📏 Ruler")
+        self._btn_ruler.setCheckable(True)
+        self._btn_ruler.setFixedHeight(26)
+        self._btn_ruler.setToolTip("Toggle ruler (or Shift+Click on image)")
+        self._btn_ruler.toggled.connect(lambda on: self._viewer.set_ruler_mode(on))
+        hbox.addWidget(self._btn_ruler)
+
         sep = QLabel("  |  ")
         sep.setStyleSheet("color:#d8cbb8;")
         hbox.addWidget(sep)
@@ -177,7 +191,15 @@ class MeasureWorkspace(QWidget):
         run_btn = QPushButton("Run Single (F5)")
         run_btn.setShortcut("F5")
         run_btn.clicked.connect(self._run_single)
-        form.addRow(run_btn)
+
+        save_btn = QPushButton("Save Cards as Recipe…")
+        save_btn.setToolTip("Convert current ControlPanel profiles to Recipe(s) and save")
+        save_btn.clicked.connect(self._save_cards_as_recipe)
+
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(run_btn)
+        btn_row.addWidget(save_btn)
+        form.addRow(btn_row)
 
         self._refresh_recipe_selector_internal()
         return box
@@ -216,7 +238,9 @@ class MeasureWorkspace(QWidget):
         self._recipe_combo.clear()
         self._recipe_combo.addItem("— Use legacy cards (ControlPanel) —", None)
         for desc in self._registry.list_recipes():
-            self._recipe_combo.addItem(f"{desc.recipe_name}  [{desc.recipe_type}]", desc.recipe_id)
+            struct = desc.structure_name or "?"
+            tag = f"{struct} {desc.axis_mode}-CD"
+            self._recipe_combo.addItem(f"{desc.recipe_name}  [{tag}]", desc.recipe_id)
         self._recipe_combo.blockSignals(False)
 
     def _selected_recipe_id(self) -> str | None:
@@ -245,6 +269,24 @@ class MeasureWorkspace(QWidget):
         self._profile_masks = profile_masks
         self._viewer.set_images(self._current_raw, self._current_mask, self._current_annotated,
                                 profile_masks=profile_masks)
+
+    # ── Save cards as recipe ──────────────────────────────────────────────────
+
+    def _save_cards_as_recipe(self) -> None:
+        cards = self._ctrl.get_measurement_cards()
+        if not cards:
+            QMessageBox.information(self, "No profiles", "Add at least one measurement profile first.")
+            return
+        saved = []
+        for card in cards:
+            try:
+                desc = self._registry.import_from_card(card)
+                saved.append(desc.recipe_name)
+            except Exception as exc:
+                QMessageBox.warning(self, "Save failed", f"Card '{card.get('name','')}': {exc}")
+        if saved:
+            self._refresh_recipe_selector_internal()
+            self.status_message.emit(f"Saved recipe(s): {', '.join(saved)}")
 
     # ── Run logic ─────────────────────────────────────────────────────────────
 
@@ -283,6 +325,14 @@ class MeasureWorkspace(QWidget):
         self._focused_measurement = None
 
         name = Path(self._current_ir.file_path).name
+        desc = self._registry.get_descriptor(recipe_id)
+        recipe_name = desc.recipe_name if desc else "Recipe"
+
+        # Populate layer panel with single recipe layer
+        self._per_layer_cuts = []
+        self._layer_panel.set_layers([recipe_name], [self._current_cuts])
+        self._layer_panel.setVisible(bool(self._current_cuts))
+
         self._viewer.set_images(result.raw, result.mask, result.annotated)
         if self._current_cuts:
             self._results.show_results(name, self._current_cuts)
@@ -313,10 +363,25 @@ class MeasureWorkspace(QWidget):
         self._profile_masks = profile_masks
         self._focused_measurement = None
 
-        annotated = (
-            draw_overlays(self._current_raw, mask, cuts, self._get_overlay_opts())
-            if cuts else None
-        )
+        # Build per-layer cuts (one per card) for layer panel
+        cards = self._ctrl.get_measurement_cards()
+        layer_names: list[str] = []
+        layer_cuts: list[list] = []
+        from ..._compat import records_to_legacy_cuts as _rtlc  # noqa: F401
+        from ...core.cmg_analyzer import CMGCut as _CMGCut
+        card_states = [card.get("name", f"Measure {i+1}") for i, card in enumerate(cards)]
+        for sn in card_states:
+            card_cuts = []
+            for c in cuts:
+                ms = [m for m in c.measurements if getattr(m, "state_name", "") == sn]
+                if ms:
+                    card_cuts.append(_CMGCut(cmg_id=c.cmg_id, measurements=ms))
+            layer_names.append(sn)
+            layer_cuts.append(card_cuts)
+        self._layer_panel.set_layers(layer_names, layer_cuts)
+        self._layer_panel.setVisible(bool(cuts))
+
+        annotated = self._render_layered_annotated() if cuts else None
         self._current_annotated = annotated
         self._viewer.set_images(self._current_raw, mask, annotated, profile_masks=profile_masks)
 
@@ -327,14 +392,14 @@ class MeasureWorkspace(QWidget):
             self._overlay_widget.setVisible(True)
             self._viewer.set_mode("annotated")
         else:
-            self._results.show_fail(name, "No CMG cuts detected")
+            self._results.show_fail(name, "No structures detected")
 
         n_meas = sum(len(c.measurements) for c in cuts)
         self.status_message.emit(f"{name}  ·  {len(cuts)} cut(s)  ·  {n_meas} measurement(s)")
 
     def _analyze_with_cards(self, raw: np.ndarray, preview_only: bool) -> tuple:
-        from ...core.preprocessor import preprocess, PreprocessParams
-        from ...core.mg_detector import detect_blobs
+        from ...core.preprocessor import preprocess, PreprocessParams, apply_column_strip_mask
+        from ...core.mg_detector import detect_blobs, detect_mg_column_centers_pitch_phase, regularize_blobs_to_columns
         from ...core.cmg_analyzer import analyze
         from ...core.recipes.cmg_recipe import _rot_blob_to_ori
 
@@ -352,6 +417,8 @@ class MeasureWorkspace(QWidget):
         for ci, card in enumerate(cards):
             axis = card.get("axis", "Y")
             roi = raw if axis == "Y" else cv2.rotate(raw, cv2.ROTATE_90_CLOCKWISE)
+
+            # Strategy 2b: vertical erosion
             params = PreprocessParams(
                 gl_min=card["gl_min"],
                 gl_max=card["gl_max"],
@@ -361,8 +428,33 @@ class MeasureWorkspace(QWidget):
                 use_clahe=base_params.use_clahe,
                 clahe_clip=base_params.clahe_clip,
                 clahe_grid=base_params.clahe_grid,
+                vert_erode_k=int(card.get("vert_erode_k", 0)),
+                vert_erode_iter=int(card.get("vert_erode_iter", 1)),
             )
             mask_local = preprocess(roi, params)
+
+            # Strategy 1+2a: column strip masking (severs EPI lateral bridge)
+            col_centers: list[int] = []
+            edge_margin = int(card.get("col_mask_edge_margin_px", 0))
+            half_w = int(card.get("col_mask_width_px", 22)) // 2
+            margin = int(card.get("col_mask_margin_px", 4))
+            if card.get("col_mask_enabled", False):
+                if card.get("col_mask_auto_centers", False):
+                    col_centers = detect_mg_column_centers_pitch_phase(
+                        mask_local,
+                        pitch_px=int(card.get("col_mask_pitch_px", 44)),
+                        smooth_k=int(card.get("xproj_smooth_k", 5)),
+                        min_height_frac=float(card.get("xproj_peak_min_frac", 0.3)),
+                        edge_margin_px=edge_margin,
+                    )
+                if not col_centers:  # fallback to manual
+                    start_x = int(card.get("col_mask_start_x", 0))
+                    pitch = int(card.get("col_mask_pitch_px", 44))
+                    cw = mask_local.shape[1]
+                    if pitch > 0 and start_x < cw:
+                        col_centers = list(range(start_x, cw, pitch))
+                mask_local = apply_column_strip_mask(mask_local, col_centers, half_w, margin, edge_margin)
+
             mask_ori = mask_local if axis == "Y" else cv2.rotate(mask_local, cv2.ROTATE_90_COUNTERCLOCKWISE)
             full_mask = np.maximum(full_mask, mask_ori)
             profile_masks.append((mask_ori, palette[ci % len(palette)], card.get("name", f"S{ci+1}")))
@@ -370,25 +462,78 @@ class MeasureWorkspace(QWidget):
                 continue
 
             blobs = detect_blobs(mask_local, min_area=card.get("min_area", min_area_default))
-            if axis == "X":
-                blobs = [_rot_blob_to_ori(b, raw.shape[0]) for b in blobs]
+
+            # Geometric filters (0 = disabled)
+            _min_ar = float(card.get("min_aspect_ratio", 0.0))
+            _max_ar = float(card.get("max_aspect_ratio", 0.0))
+            _min_w  = int(card.get("min_width", 0))
+            _max_w  = int(card.get("max_width", 0))
+            _min_h  = int(card.get("min_height", 0))
+            if any([_min_ar, _max_ar, _min_w, _max_w, _min_h]):
+                filtered = []
+                for b in blobs:
+                    ar = b.height / max(b.width, 1)
+                    if _min_ar and ar < _min_ar: continue
+                    if _max_ar and ar > _max_ar: continue
+                    if _min_w and b.width < _min_w: continue
+                    if _max_w and b.width > _max_w: continue
+                    if _min_h and b.height < _min_h: continue
+                    filtered.append(b)
+                blobs = filtered
+
+            # Pitch Grid Regularization: snap blobs onto layout grid, normalize X bounds
+            if card.get("col_mask_enabled", False) and card.get("col_mask_regularize", False) and col_centers:
+                half_w = int(card.get("col_mask_width_px", 22)) // 2
+                tol    = int(card.get("col_mask_pitch_tol_px", 5))
+                norm_x = bool(card.get("col_mask_normalize_x", True))
+                blobs  = regularize_blobs_to_columns(blobs, col_centers, half_w, tol, norm_x)
+
+            # Analyze in rotated space; back-rotate blob coords after (same fix as CMGRecipe)
             cuts = analyze(blobs, nm_px)
+            if axis == "X":
+                orig_h = raw.shape[0]
+                for c in cuts:
+                    for m in c.measurements:
+                        m.upper_blob = _rot_blob_to_ori(m.upper_blob, orig_h)
+                        m.lower_blob = _rot_blob_to_ori(m.lower_blob, orig_h)
+
+            # Range filter: discard measurements outside [min_line_px, max_line_px]
+            if card.get("range_enabled", False):
+                cuts = _filter_by_range(
+                    cuts,
+                    float(card.get("min_line_px", 0)),
+                    float(card.get("max_line_px", 0)),
+                )
+
             for c in cuts:
                 c.cmg_id += cmg_offset
                 for m in c.measurements:
                     m.cmg_id = c.cmg_id
                     m.axis = axis
                     m.state_name = card.get("name", f"Measure {ci+1}")
+                    m.structure_name = card.get("structure_name", "")
             cmg_offset += len(cuts)
             cuts_all.extend(cuts)
 
         return full_mask, cuts_all, profile_masks
 
+    def _render_layered_annotated(self) -> np.ndarray:
+        """Render annotations with per-layer colors from the layer panel."""
+        if self._current_raw is None:
+            return None
+        configs = self._layer_panel.get_configs()
+        opts = self._get_overlay_opts()
+        if not configs:
+            return draw_overlays(self._current_raw, self._current_mask, self._current_cuts, opts)
+        layers = [(cfg.cuts, cfg.color_bgr) for cfg in configs if cfg.show_annot]
+        if not layers:
+            return cv2.cvtColor(self._current_raw, cv2.COLOR_GRAY2BGR)
+        return draw_overlays_multi(self._current_raw, layers, opts)
+
     def _refresh_annotated(self) -> None:
         if self._current_raw is None or not self._current_cuts:
             return
-        opts = self._get_overlay_opts()
-        annotated = draw_overlays(self._current_raw, self._current_mask, self._current_cuts, opts)
+        annotated = self._render_layered_annotated()
         self._current_annotated = annotated
         self._viewer.set_images(self._current_raw, self._current_mask, annotated,
                                 profile_masks=self._profile_masks)
@@ -434,6 +579,26 @@ class MeasureWorkspace(QWidget):
                 from ...core.cmg_analyzer import CMGCut
                 result.append(CMGCut(cmg_id=cut.cmg_id, measurements=keep))
         return result
+
+
+def _filter_by_range(cuts: list, min_px: float, max_px: float) -> list:
+    """Remove measurements outside [min_px, max_px] and re-flag MIN/MAX."""
+    from ...core.cmg_analyzer import CMGCut
+    filtered = []
+    for cut in cuts:
+        kept = [m for m in cut.measurements
+                if (min_px <= 0 or m.cd_px >= min_px)
+                and (max_px <= 0 or m.cd_px <= max_px)]
+        if kept:
+            filtered.append(CMGCut(cmg_id=cut.cmg_id, measurements=kept))
+    # Re-compute MIN/MAX flags on remaining measurements
+    all_m = [m for c in filtered for m in c.measurements]
+    if len(all_m) >= 2:
+        mn = min(m.cd_px for m in all_m)
+        mx = max(m.cd_px for m in all_m)
+        for m in all_m:
+            m.flag = "MIN" if m.cd_px == mn else ("MAX" if m.cd_px == mx else "")
+    return filtered
 
 
 def _ov_chk(text: str, checked: bool = True) -> QCheckBox:

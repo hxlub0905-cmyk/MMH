@@ -92,8 +92,8 @@ def test_records_to_legacy_cuts_values():
     m = cuts[0].measurements[0]
     assert m.cmg_id == 1
     assert m.col_id == 2
-    assert m.y_cd_px == pytest.approx(7.0)
-    assert m.y_cd_nm == pytest.approx(14.0)
+    assert m.cd_px == pytest.approx(7.0)
+    assert m.cd_nm == pytest.approx(14.0)
     assert m.flag == "MAX"
 
 

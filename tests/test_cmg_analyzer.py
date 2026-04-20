@@ -52,8 +52,8 @@ class TestAnalyze:
         cut = cuts[0]
         assert len(cut.measurements) == 2
         for m in cut.measurements:
-            assert m.y_cd_px == pytest.approx(10.0)
-            assert m.y_cd_nm == pytest.approx(20.0)
+            assert m.cd_px == pytest.approx(10.0)
+            assert m.cd_nm == pytest.approx(20.0)
 
     def test_min_max_flagging(self):
         """MIN and MAX should be correctly flagged across columns."""
@@ -66,8 +66,8 @@ class TestAnalyze:
         cuts = analyze(blobs, nm_per_pixel=1.0)
         assert len(cuts) == 1
         flags = {m.col_id: m.flag for m in cuts[0].measurements}
-        min_col = min(flags, key=lambda c: [m.y_cd_px for m in cuts[0].measurements if m.col_id == c][0])
-        max_col = max(flags, key=lambda c: [m.y_cd_px for m in cuts[0].measurements if m.col_id == c][0])
+        min_col = min(flags, key=lambda c: [m.cd_px for m in cuts[0].measurements if m.col_id == c][0])
+        max_col = max(flags, key=lambda c: [m.cd_px for m in cuts[0].measurements if m.col_id == c][0])
         assert flags[min_col] == "MIN"
         assert flags[max_col] == "MAX"
 
@@ -80,7 +80,7 @@ class TestAnalyze:
         ]
         cuts = analyze(blobs, nm_per_pixel=1.0)
         assert len(cuts) == 2
-        y_cds = sorted(m.y_cd_px for cut in cuts for m in cut.measurements)
+        y_cds = sorted(m.cd_px for cut in cuts for m in cut.measurements)
         assert y_cds == pytest.approx([10.0, 30.0])
 
     def test_nm_conversion(self):
@@ -89,7 +89,7 @@ class TestAnalyze:
             _blob(1, 0,  50, 20, 90),  # gap=10px
         ]
         cuts = analyze(blobs, nm_per_pixel=5.0)
-        assert cuts[0].measurements[0].y_cd_nm == pytest.approx(50.0)
+        assert cuts[0].measurements[0].cd_nm == pytest.approx(50.0)
 
     def test_overlapping_blobs_skipped(self):
         """Blobs that overlap in Y should not produce negative Y-CD."""
@@ -101,4 +101,4 @@ class TestAnalyze:
         # May return a cut if gap > 0 after sorting, or empty — just must not crash
         for cut in cuts:
             for m in cut.measurements:
-                assert m.y_cd_px > 0
+                assert m.cd_px > 0

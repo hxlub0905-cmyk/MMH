@@ -55,6 +55,7 @@ class ImageViewer(QGraphicsView):
         self._measure_start: QPointF | None = None
         self._measure_line: QGraphicsLineItem | None = None
         self._measure_label: QGraphicsSimpleTextItem | None = None
+        self._ruler_mode: bool = False
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -92,6 +93,17 @@ class ImageViewer(QGraphicsView):
     def set_mask_state_filter(self, state_name: str) -> None:
         self._mask_state_filter = state_name
         self._refresh()
+
+    def set_ruler_mode(self, enabled: bool) -> None:
+        self._ruler_mode = enabled
+        if enabled:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self._clear_measurement_overlay()
+            self.measure_updated.emit("")
 
     # ── internal ──────────────────────────────────────────────────────────────
 
@@ -131,9 +143,10 @@ class ImageViewer(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and (
-            event.modifiers() & Qt.KeyboardModifier.ShiftModifier
-        ):
+        is_ruler_click = event.button() == Qt.MouseButton.LeftButton and (
+            self._ruler_mode or (event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        )
+        if is_ruler_click:
             scene_pos = self.mapToScene(event.position().toPoint())
             if self._measure_start is None:
                 self._measure_start = scene_pos
@@ -171,15 +184,18 @@ class ImageViewer(QGraphicsView):
         sp = self._measure_start
         if self._measure_line:
             self._measure_line.setLine(sp.x(), sp.y(), end_pt.x(), end_pt.y())
-        dx = end_pt.x() - sp.x()
-        dy = end_pt.y() - sp.y()
+        dx = abs(end_pt.x() - sp.x())
+        dy = abs(end_pt.y() - sp.y())
         px_dist = float(np.hypot(dx, dy))
         nm_dist = px_dist * self._nm_per_pixel
-        msg = f"Ruler: {px_dist:.3f} px  ({nm_dist:.3f} nm)"
+        msg = f"dx={dx:.0f}  dy={dy:.0f}  |d|={px_dist:.1f} px  ({nm_dist:.1f} nm)"
         if self._measure_label:
             self._measure_label.setText(msg)
-            self._measure_label.setPos((sp.x() + end_pt.x()) / 2 + 6, (sp.y() + end_pt.y()) / 2 - 14)
-        self.measure_updated.emit(msg if not final else f"{msg}  ·  fixed (Shift+Click to remeasure)")
+            mid_x = (sp.x() + end_pt.x()) / 2
+            mid_y = (sp.y() + end_pt.y()) / 2
+            self._measure_label.setPos(mid_x + 6, mid_y - 14)
+        hint = "  ·  Click to reset" if self._ruler_mode else "  ·  Shift+Click to remeasure"
+        self.measure_updated.emit(msg if not final else f"{msg}{hint}")
 
     def _clear_measurement_overlay(self) -> None:
         if self._measure_line is not None:

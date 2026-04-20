@@ -1,4 +1,4 @@
-"""Bottom results panel: per-CMG, per-column Y-CD table."""
+"""Bottom results panel: per-structure, per-feature CD measurement table."""
 
 from __future__ import annotations
 from PyQt6.QtWidgets import (
@@ -9,7 +9,16 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtCore import pyqtSignal, Qt
 from ..core.cmg_analyzer import CMGCut
 
-_COLUMNS = ["State", "Image", "CMG", "Col", "CD (px)", "CD (nm)", "Axis", "Flag", "Status"]
+_COLUMNS = ["State", "Image", "Structure", "Feature ID", "CD (px)", "CD (nm)", "Axis", "Flag", "Status"]
+_NUMERIC_COLS = {4, 5}   # CD (px), CD (nm) — sort numerically
+
+
+class _NumericItem(QTableWidgetItem):
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        try:
+            return float(self.text()) < float(other.text())
+        except (ValueError, TypeError):
+            return super().__lt__(other)
 
 _ROW_COLOURS = {
     "MIN": QColor(255, 244, 232),
@@ -59,6 +68,8 @@ class ResultsPanel(QWidget):
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
         self._table.setAlternatingRowColors(True)
+        self._table.setSortingEnabled(True)
+        self._table.horizontalHeader().setSectionsClickable(True)
         self._table.itemSelectionChanged.connect(self._on_selection)
         layout.addWidget(self._table)
         self._rows: list[dict] = []
@@ -70,7 +81,7 @@ class ResultsPanel(QWidget):
         total = sum(len(c.measurements) for c in cuts)
         n_cuts = len(cuts)
         self._status_label.setText(
-            f"{image_name}  ·  {n_cuts} CMG cut{'s' if n_cuts != 1 else ''}  ·  "
+            f"{image_name}  ·  {n_cuts} structure{'s' if n_cuts != 1 else ''}  ·  "
             f"{total} measurement{'s' if total != 1 else ''}"
         )
         for cut in cuts:
@@ -78,10 +89,10 @@ class ResultsPanel(QWidget):
                 self._rows.append({
                     "state_name": getattr(m, "state_name", "") or "Default",
                     "image_name": image_name,
-                    "cmg_id": m.cmg_id,
-                    "col_id": m.col_id,
-                    "y_cd_px": m.y_cd_px,
-                    "y_cd_nm": m.y_cd_nm,
+                    "structure_name": getattr(m, "structure_name", "") or "—",
+                    "feature_id": f"{m.cmg_id}:{m.col_id}",
+                    "cd_px": m.cd_px,
+                    "cd_nm": m.cd_nm,
                     "axis": getattr(m, "axis", "Y"),
                     "flag": m.flag or "—",
                     "status": "OK",
@@ -124,8 +135,9 @@ class ResultsPanel(QWidget):
         if row < 0:
             return
         try:
-            cmg_id = int(self._table.item(row, 2).text())
-            col_id = int(self._table.item(row, 3).text())
+            # Column 3 = feature_id, format "cmg_id:col_id"
+            feat = self._table.item(row, 3).text()
+            cmg_id, col_id = (int(v) for v in feat.split(":"))
             self.row_selected.emit(cmg_id, col_id)
         except (AttributeError, ValueError):
             pass
@@ -144,23 +156,25 @@ class ResultsPanel(QWidget):
     def _render_table(self) -> None:
         sel = self._state_filter.currentText()
         rows = self._rows if sel == "All states" else [r for r in self._rows if r["state_name"] == sel]
+        self._table.setSortingEnabled(False)
         self._table.setRowCount(0)
         for r in rows:
             row = self._table.rowCount()
             self._table.insertRow(row)
             values = [
-                r["state_name"], r["image_name"], str(r["cmg_id"]), str(r["col_id"]),
-                f"{r['y_cd_px']:.1f}", f"{r['y_cd_nm']:.2f}", r["axis"], r["flag"], r["status"],
+                r["state_name"], r["image_name"], r["structure_name"], r["feature_id"],
+                f"{r['cd_px']:.1f}", f"{r['cd_nm']:.2f}", r["axis"], r["flag"], r["status"],
             ]
             bg = _ROW_COLOURS.get(r["flag"])
             for col, val in enumerate(values):
-                item = QTableWidgetItem(val)
+                item = _NumericItem(val) if col in _NUMERIC_COLS else QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if bg:
                     item.setBackground(bg)
                 if col == 7 and r["flag"] in _FLAG_TEXT:
                     item.setForeground(_FLAG_TEXT[r["flag"]])
                 self._table.setItem(row, col, item)
+        self._table.setSortingEnabled(True)
 
     def _on_state_filter_changed(self) -> None:
         self._render_table()

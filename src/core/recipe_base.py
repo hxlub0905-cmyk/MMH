@@ -50,9 +50,9 @@ class MeasurementRecipe:
     """Serialisable recipe descriptor, saved as JSON in ~/.mmh/recipes/."""
     recipe_id: str
     recipe_name: str
-    recipe_type: str                      # "CMG_YCD" | "CMG_XCD"
+    recipe_type: str                      # "{STRUCTURE}_YCD" | "{STRUCTURE}_XCD"
     target_layer: str = ""
-    feature_family: str = "CMG"
+    structure_name: str = ""              # User-defined structure label, e.g. "CMG", "PEPI", "MG"
     axis_mode: str = "Y"                  # "Y" | "X"
     preprocess_config: RecipeConfig = field(default_factory=RecipeConfig)
     detector_config: RecipeConfig = field(default_factory=RecipeConfig)
@@ -64,13 +64,18 @@ class MeasurementRecipe:
     created_at: str = field(default_factory=_now_iso)
     modified_at: str = ""
 
+    @property
+    def feature_family(self) -> str:
+        """Backward-compat alias for structure_name."""
+        return self.structure_name
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "recipe_id": self.recipe_id,
             "recipe_name": self.recipe_name,
             "recipe_type": self.recipe_type,
             "target_layer": self.target_layer,
-            "feature_family": self.feature_family,
+            "structure_name": self.structure_name,
             "axis_mode": self.axis_mode,
             "preprocess_config": self.preprocess_config.to_dict(),
             "detector_config": self.detector_config.to_dict(),
@@ -85,13 +90,17 @@ class MeasurementRecipe:
 
     @staticmethod
     def from_dict(d: dict) -> "MeasurementRecipe":
+        # "structure_name" is the new field; fall back to "feature_family" for old saved recipes
+        structure_name = d.get("structure_name") or d.get("feature_family", "")
+        axis_mode = d.get("axis_mode", "Y")
+        recipe_type = d.get("recipe_type") or f"{structure_name or 'STRUCT'}_{axis_mode}CD"
         return MeasurementRecipe(
             recipe_id=d["recipe_id"],
             recipe_name=d.get("recipe_name", "Unnamed"),
-            recipe_type=d.get("recipe_type", "CMG_YCD"),
+            recipe_type=recipe_type,
             target_layer=d.get("target_layer", ""),
-            feature_family=d.get("feature_family", "CMG"),
-            axis_mode=d.get("axis_mode", "Y"),
+            structure_name=structure_name,
+            axis_mode=axis_mode,
             preprocess_config=RecipeConfig.from_dict(d.get("preprocess_config", {})),
             detector_config=RecipeConfig.from_dict(d.get("detector_config", {})),
             edge_locator_config=RecipeConfig.from_dict(d.get("edge_locator_config", {})),

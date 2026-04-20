@@ -6,11 +6,6 @@ import io
 from datetime import datetime
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-
 from ._common import results_to_dataframe
 
 
@@ -49,6 +44,12 @@ def generate_report(results: list[dict], out_path: Path, nm_per_pixel: float) ->
 
 
 def _histogram_b64(values) -> str:
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return ""
     fig, ax = plt.subplots(figsize=(7, 3.5), dpi=100)
     ax.hist(values, bins="auto", color="#4a90d9", edgecolor="white", linewidth=0.5)
     mean_v = values.mean()
@@ -56,9 +57,9 @@ def _histogram_b64(values) -> str:
     ax.axvline(mean_v, color="red", linestyle="--", linewidth=1.5, label=f"Mean={mean_v:.2f}")
     ax.axvline(mean_v - 3 * std_v, color="orange", linestyle=":", linewidth=1, label="-3σ")
     ax.axvline(mean_v + 3 * std_v, color="orange", linestyle=":", linewidth=1, label="+3σ")
-    ax.set_xlabel("Y-CD (nm)")
+    ax.set_xlabel("CD (nm)")
     ax.set_ylabel("Count")
-    ax.set_title("Y-CD Distribution")
+    ax.set_title("CD Distribution")
     ax.legend(fontsize=8)
     fig.tight_layout()
     buf = io.BytesIO()
@@ -127,7 +128,8 @@ def _render_html(
     fail_items = "".join(f"<li>{name}</li>" for name in fail_list) or "<li>None</li>"
     hist_tag = (
         f'<img src="data:image/png;base64,{hist_b64}" alt="histogram" style="max-width:700px">'
-        if hist_b64 else "<p>No data available.</p>"
+        if hist_b64 else
+        '<p style="color:#888">Histogram unavailable (install matplotlib to enable).</p>'
     )
     return f"""<!DOCTYPE html>
 <html lang="en">

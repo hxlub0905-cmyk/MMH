@@ -176,7 +176,7 @@ class BatchWorkspace(QWidget):
             self._image_list.addItem(item)
 
         msg = (f"Batch complete  ·  {batch_run.success_count} OK  "
-               f"·  {batch_run.fail_count} failed")
+               f"·  {batch_run.fail_count} failed  —  Results sent to Review tab")
         self._log_text.append(msg)
         self.status_message.emit(msg)
         self.batch_completed.emit(batch_run)
