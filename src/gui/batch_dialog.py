@@ -83,8 +83,8 @@ def _serialise_cuts(cuts) -> list:
             measurements.append({
                 "cmg_id": m.cmg_id,
                 "col_id": m.col_id,
-                "y_cd_px": m.y_cd_px,
-                "y_cd_nm": m.y_cd_nm,
+                "y_cd_px": m.cd_px,
+                "y_cd_nm": m.cd_nm,
                 "flag": m.flag,
                 "axis": m.axis,
                 "state_name": m.state_name,

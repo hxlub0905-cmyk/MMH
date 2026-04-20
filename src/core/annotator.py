@@ -145,7 +145,7 @@ def _draw_measurement(
 
     # ── label: just the number, no unit, no tag, no background ───────────────
     if opts.show_labels:
-        text   = f"{m.y_cd_nm:.1f}"
+        text   = f"{m.cd_nm:.1f}"
         font   = cv2.FONT_HERSHEY_SIMPLEX
         (tw, th_px), _ = cv2.getTextSize(text, font, fs, th)
         if axis == "X":

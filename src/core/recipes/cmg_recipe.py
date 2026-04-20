@@ -87,6 +87,27 @@ class CMGRecipe(BaseRecipe):
         min_area = dc.get("min_area", None)
         mask_roi = context.get("mask_roi", mask)
         blobs = detect_blobs(mask_roi, min_area=min_area)
+
+        # Geometric filters (0 = disabled)
+        min_ar = float(dc.get("min_aspect_ratio", 0.0))
+        max_ar = float(dc.get("max_aspect_ratio", 0.0))
+        min_w  = int(dc.get("min_width", 0))
+        min_h  = int(dc.get("min_height", 0))
+        if any([min_ar, max_ar, min_w, min_h]):
+            filtered = []
+            for b in blobs:
+                ar = b.height / max(b.width, 1)
+                if min_ar and ar < min_ar:
+                    continue
+                if max_ar and ar > max_ar:
+                    continue
+                if min_w and b.width < min_w:
+                    continue
+                if min_h and b.height < min_h:
+                    continue
+                filtered.append(b)
+            blobs = filtered
+
         context["blobs_roi"] = blobs
         return blobs
 
@@ -168,8 +189,8 @@ class CMGRecipe(BaseRecipe):
                     center_x=float((bbox[0] + bbox[2]) / 2),
                     center_y=float((bbox[1] + bbox[3]) / 2),
                     axis=axis,
-                    raw_px=float(m.y_cd_px),
-                    calibrated_nm=float(m.y_cd_nm),
+                    raw_px=float(m.cd_px),
+                    calibrated_nm=float(m.cd_nm),
                     status=_STATUS.get(m.flag, "normal"),
                     cmg_id=int(m.cmg_id),
                     col_id=int(m.col_id),
@@ -228,6 +249,10 @@ class CMGRecipe(BaseRecipe):
             }),
             detector_config=RecipeConfig(data={
                 "min_area": card.get("min_area"),
+                "min_aspect_ratio": float(card.get("min_aspect_ratio", 0.0)),
+                "max_aspect_ratio": float(card.get("max_aspect_ratio", 0.0)),
+                "min_width": int(card.get("min_width", 0)),
+                "min_height": int(card.get("min_height", 0)),
             }),
         )
 

@@ -25,6 +25,7 @@ class RecipeWorkspace(QWidget):
         super().__init__(parent)
         self._registry = registry
         self._current_id: str | None = None
+        self._name_auto: bool = False  # True while name should follow struct+axis
         self._build_ui()
         self._refresh_list()
 
@@ -90,6 +91,11 @@ class RecipeWorkspace(QWidget):
         self._axis_combo  = QComboBox()
         self._axis_combo.addItems(["Y", "X"])
 
+        # Auto-update name when struct/axis changes (until user edits it manually)
+        self._struct_edit.textChanged.connect(self._on_struct_axis_changed)
+        self._axis_combo.currentIndexChanged.connect(self._on_struct_axis_changed)
+        self._name_edit.textEdited.connect(self._on_name_manually_edited)
+
         form.addRow("Name:", self._name_edit)
         form.addRow("Target layer:", self._layer_edit)
         form.addRow("Structure name:", self._struct_edit)
@@ -115,6 +121,20 @@ class RecipeWorkspace(QWidget):
         pf.addRow("CLAHE clip:", self._clahe_clip)
         pf.addRow("CLAHE grid:", self._clahe_grid)
 
+        # Detector
+        det_box = QGroupBox("Detector")
+        df = QFormLayout(det_box)
+        self._min_area   = QSpinBox();        self._min_area.setRange(0, 500_000);  self._min_area.setValue(0);    self._min_area.setSuffix(" px²");   self._min_area.setSpecialValueText("auto")
+        self._min_ar     = QDoubleSpinBox();  self._min_ar.setRange(0.0, 100.0);   self._min_ar.setValue(0.0);    self._min_ar.setSingleStep(0.1);    self._min_ar.setSpecialValueText("off")
+        self._max_ar     = QDoubleSpinBox();  self._max_ar.setRange(0.0, 100.0);   self._max_ar.setValue(0.0);    self._max_ar.setSingleStep(0.1);    self._max_ar.setSpecialValueText("off")
+        self._min_width  = QSpinBox();        self._min_width.setRange(0, 9999);    self._min_width.setValue(0);   self._min_width.setSuffix(" px");    self._min_width.setSpecialValueText("off")
+        self._min_height = QSpinBox();        self._min_height.setRange(0, 9999);   self._min_height.setValue(0);  self._min_height.setSuffix(" px");   self._min_height.setSpecialValueText("off")
+        df.addRow("Min area:", self._min_area)
+        df.addRow("Min aspect (h/w):", self._min_ar)
+        df.addRow("Max aspect (h/w):", self._max_ar)
+        df.addRow("Min width:", self._min_width)
+        df.addRow("Min height:", self._min_height)
+
         # Edge locator
         edge_box = QGroupBox("Edge Locator")
         ef = QFormLayout(edge_box)
@@ -124,6 +144,7 @@ class RecipeWorkspace(QWidget):
         ef.addRow("Cluster tol (px):", self._cluster_tol)
 
         form.addRow(pre_box)
+        form.addRow(det_box)
         form.addRow(edge_box)
 
         return box
@@ -151,6 +172,7 @@ class RecipeWorkspace(QWidget):
             self._load_descriptor_to_form(desc)
 
     def _load_descriptor_to_form(self, desc: MeasurementRecipe) -> None:
+        self._name_auto = False  # loaded recipes keep their explicit name
         self._name_edit.setText(desc.recipe_name)
         self._layer_edit.setText(desc.target_layer)
         self._struct_edit.setText(desc.structure_name)
@@ -166,6 +188,13 @@ class RecipeWorkspace(QWidget):
         self._clahe_clip.setValue(float(pc.get("clahe_clip", 2.0)))
         self._clahe_grid.setValue(int(pc.get("clahe_grid", 8)))
 
+        dc = desc.detector_config
+        self._min_area.setValue(int(dc.get("min_area", 0) or 0))
+        self._min_ar.setValue(float(dc.get("min_aspect_ratio", 0.0)))
+        self._max_ar.setValue(float(dc.get("max_aspect_ratio", 0.0)))
+        self._min_width.setValue(int(dc.get("min_width", 0)))
+        self._min_height.setValue(int(dc.get("min_height", 0)))
+
         ec = desc.edge_locator_config
         self._overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
         self._cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
@@ -174,16 +203,18 @@ class RecipeWorkspace(QWidget):
 
     def _new_recipe(self) -> None:
         self._current_id = None
+        self._name_auto = True  # enable auto-name until user edits manually
         blank = MeasurementRecipe(
             recipe_id=str(uuid.uuid4()),
-            recipe_name="New Recipe",
+            recipe_name="",
             recipe_type="STRUCT_YCD",
             structure_name="",
             axis_mode="Y",
         )
         self._load_descriptor_to_form(blank)
-        self._name_edit.setFocus()
-        self._name_edit.selectAll()
+        self._name_auto = True  # restore after load (load sets it False)
+        self._name_edit.setPlaceholderText("auto-generated from structure + axis")
+        self._struct_edit.setFocus()
 
     def _new_from_cmg_template(self) -> None:
         """Pre-fill editor with built-in CMG Y-CD defaults (does not save yet)."""
@@ -242,7 +273,9 @@ class RecipeWorkspace(QWidget):
         self.status_message.emit(f"Deleted recipe '{name}'")
 
     def _save_recipe(self) -> None:
-        name = self._name_edit.text().strip()
+        struct = self._struct_edit.text().strip()
+        axis = self._axis_combo.currentText()
+        name = self._name_edit.text().strip() or f"{struct or 'STRUCT'} {axis}-CD"
         if not name:
             QMessageBox.warning(self, "Validation", "Recipe name cannot be empty.")
             return
@@ -251,9 +284,8 @@ class RecipeWorkspace(QWidget):
         desc = self._registry.get_descriptor(rid)
         created = desc.created_at if desc else datetime.now(timezone.utc).isoformat()
 
-        struct = self._struct_edit.text().strip()
-        axis = self._axis_combo.currentText()
         recipe_type = f"{struct or 'STRUCT'}_{axis}CD"
+        min_area_val = self._min_area.value() or None  # 0 → None (auto)
         new_desc = MeasurementRecipe(
             recipe_id=rid,
             recipe_name=name,
@@ -271,6 +303,13 @@ class RecipeWorkspace(QWidget):
                 "clahe_clip": self._clahe_clip.value(),
                 "clahe_grid": self._clahe_grid.value(),
             }),
+            detector_config=RecipeConfig(data={
+                "min_area": min_area_val,
+                "min_aspect_ratio": self._min_ar.value(),
+                "max_aspect_ratio": self._max_ar.value(),
+                "min_width": self._min_width.value(),
+                "min_height": self._min_height.value(),
+            }),
             edge_locator_config=RecipeConfig(data={
                 "x_overlap_ratio": self._overlap.value(),
                 "y_cluster_tol": self._cluster_tol.value(),
@@ -286,3 +325,17 @@ class RecipeWorkspace(QWidget):
 
     def refresh_from_registry(self) -> None:
         self._refresh_list()
+
+    # ── Auto-name helpers ─────────────────────────────────────────────────────
+
+    def _on_struct_axis_changed(self) -> None:
+        if not self._name_auto:
+            return
+        struct = self._struct_edit.text().strip()
+        axis = self._axis_combo.currentText()
+        if struct:
+            self._name_edit.setText(f"{struct} {axis}-CD")
+
+    def _on_name_manually_edited(self) -> None:
+        self._name_auto = False
+        self._name_edit.setPlaceholderText("")

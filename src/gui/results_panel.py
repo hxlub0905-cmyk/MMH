@@ -80,8 +80,8 @@ class ResultsPanel(QWidget):
                     "image_name": image_name,
                     "structure_name": getattr(m, "structure_name", "") or "—",
                     "feature_id": f"{m.cmg_id}:{m.col_id}",
-                    "y_cd_px": m.y_cd_px,
-                    "y_cd_nm": m.y_cd_nm,
+                    "cd_px": m.cd_px,
+                    "cd_nm": m.cd_nm,
                     "axis": getattr(m, "axis", "Y"),
                     "flag": m.flag or "—",
                     "status": "OK",
@@ -151,7 +151,7 @@ class ResultsPanel(QWidget):
             self._table.insertRow(row)
             values = [
                 r["state_name"], r["image_name"], r["structure_name"], r["feature_id"],
-                f"{r['y_cd_px']:.1f}", f"{r['y_cd_nm']:.2f}", r["axis"], r["flag"], r["status"],
+                f"{r['cd_px']:.1f}", f"{r['cd_nm']:.2f}", r["axis"], r["flag"], r["status"],
             ]
             bg = _ROW_COLOURS.get(r["flag"])
             for col, val in enumerate(values):

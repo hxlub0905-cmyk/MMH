@@ -22,8 +22,8 @@ class YCDMeasurement:
     col_id: int
     upper_blob: Blob
     lower_blob: Blob
-    y_cd_px: float
-    y_cd_nm: float
+    cd_px: float
+    cd_nm: float
     flag: str = ""   # "MIN", "MAX", or ""
     axis: str = "Y"
     state_name: str = ""
@@ -37,7 +37,7 @@ class CMGCut:
 
     @property
     def y_cd_values(self) -> list[float]:
-        return [m.y_cd_nm for m in self.measurements]
+        return [m.cd_nm for m in self.measurements]
 
     @property
     def min_nm(self) -> Optional[float]:
@@ -104,7 +104,7 @@ def analyze(
         col_index: int         # index within this column (0, 1, …)
         upper: Blob
         lower: Blob
-        y_cd_px: float
+        cd_px: float
         mid_y: float           # used for clustering across columns
 
     gaps: list[Gap] = []
@@ -115,8 +115,8 @@ def analyze(
             lower = sorted_blobs[k + 1]
             upper_edge = upper.cy + (upper.height / 2.0)
             lower_edge = lower.cy - (lower.height / 2.0)
-            y_cd_px = lower_edge - upper_edge
-            if y_cd_px <= 0:
+            cd_px = lower_edge - upper_edge
+            if cd_px <= 0:
                 continue   # blobs overlap — skip
             mid_y = (upper_edge + lower_edge) / 2.0
             gaps.append(
@@ -125,7 +125,7 @@ def analyze(
                     col_index=k,
                     upper=upper,
                     lower=lower,
-                    y_cd_px=y_cd_px,
+                    cd_px=cd_px,
                     mid_y=mid_y,
                 )
             )
@@ -157,8 +157,8 @@ def analyze(
             col_id=gap.col_group,
             upper_blob=gap.upper,
             lower_blob=gap.lower,
-            y_cd_px=gap.y_cd_px,
-            y_cd_nm=gap.y_cd_px * nm_per_pixel,
+            cd_px=gap.cd_px,
+            cd_nm=gap.cd_px * nm_per_pixel,
         )
         cmg_map[cid].measurements.append(meas)
 
@@ -167,12 +167,12 @@ def analyze(
     for cut in cuts:
         if len(cut.measurements) < 2:
             continue
-        vals = [m.y_cd_nm for m in cut.measurements]
+        vals = [m.cd_nm for m in cut.measurements]
         min_val, max_val = min(vals), max(vals)
         for m in cut.measurements:
-            if m.y_cd_nm == min_val:
+            if m.cd_nm == min_val:
                 m.flag = "MIN"
-            elif m.y_cd_nm == max_val:
+            elif m.cd_nm == max_val:
                 m.flag = "MAX"
 
     return cuts

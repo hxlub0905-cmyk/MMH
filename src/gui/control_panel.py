@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QDoubleSpinBox,
     QSlider, QSpinBox, QLabel, QCheckBox, QGroupBox,
     QPushButton, QHBoxLayout, QScrollArea, QSizePolicy, QComboBox,
-    QToolButton, QInputDialog,
+    QToolButton, QInputDialog, QFrame,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from ..core.preprocessor import PreprocessParams
@@ -129,6 +129,12 @@ class ControlPanel(QWidget):
 
         min_area = QSpinBox(); min_area.setRange(1, 500_000); min_area.setValue(50); min_area.setSuffix(" px²")
 
+        # Geometric filters (0 = disabled)
+        min_ar  = QDoubleSpinBox(); min_ar.setRange(0.0, 100.0);  min_ar.setValue(0.0);  min_ar.setSingleStep(0.1);  min_ar.setSpecialValueText("off")
+        max_ar  = QDoubleSpinBox(); max_ar.setRange(0.0, 100.0);  max_ar.setValue(0.0);  max_ar.setSingleStep(0.1);  max_ar.setSpecialValueText("off")
+        min_w   = QSpinBox();        min_w.setRange(0, 9999);      min_w.setValue(0);     min_w.setSuffix(" px");     min_w.setSpecialValueText("off")
+        min_h   = QSpinBox();        min_h.setRange(0, 9999);      min_h.setValue(0);     min_h.setSuffix(" px");     min_h.setSpecialValueText("off")
+
         enabled = QCheckBox("Enabled"); enabled.setChecked(True)
 
         def on_min(v: int) -> None:
@@ -147,6 +153,8 @@ class ControlPanel(QWidget):
         gl_max.valueChanged.connect(on_max)
         axis.currentIndexChanged.connect(self._emit)
         min_area.valueChanged.connect(self._emit)
+        for w in (min_ar, max_ar, min_w, min_h):
+            w.valueChanged.connect(self._emit)
         enabled.stateChanged.connect(self._emit)
 
         form.addRow("Enable", enabled)
@@ -154,6 +162,13 @@ class ControlPanel(QWidget):
         form.addRow("GL Min", min_wrap)
         form.addRow("GL Max", max_wrap)
         form.addRow("Min blob area", min_area)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine); sep.setStyleSheet("color:#d0c8bc")
+        form.addRow(sep)
+        form.addRow("Min aspect (h/w)", min_ar)
+        form.addRow("Max aspect (h/w)", max_ar)
+        form.addRow("Min width", min_w)
+        form.addRow("Min height", min_h)
 
         self._profiles_layout.addWidget(box)
         self._profiles.append({
@@ -163,6 +178,10 @@ class ControlPanel(QWidget):
             "gl_min": gl_min,
             "gl_max": gl_max,
             "min_area": min_area,
+            "min_aspect_ratio": min_ar,
+            "max_aspect_ratio": max_ar,
+            "min_width": min_w,
+            "min_height": min_h,
         })
         self._emit()
 
@@ -194,6 +213,10 @@ class ControlPanel(QWidget):
                 "gl_min": p["gl_min"].value(),
                 "gl_max": p["gl_max"].value(),
                 "min_area": p["min_area"].value(),
+                "min_aspect_ratio": p["min_aspect_ratio"].value(),
+                "max_aspect_ratio": p["max_aspect_ratio"].value(),
+                "min_width": p["min_width"].value(),
+                "min_height": p["min_height"].value(),
             })
         return out
 
