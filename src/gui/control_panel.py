@@ -121,7 +121,7 @@ class ControlPanel(QWidget):
             "Binary Edge (bbox)",
             "Gradient Peak",
             "Gaussian Centroid (sub-px)",
-        ])
+        ]); cd_method.setMaximumWidth(160)
         min_val = QLabel("100"); min_val.setObjectName("thresholdValue"); min_val.setFixedWidth(34)
         max_val = QLabel("220"); max_val.setObjectName("thresholdValue"); max_val.setFixedWidth(34)
         gl_min = QSlider(Qt.Orientation.Horizontal); gl_min.setRange(0, 255); gl_min.setValue(100)

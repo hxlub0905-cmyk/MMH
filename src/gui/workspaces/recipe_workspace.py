@@ -213,6 +213,7 @@ class RecipeWorkspace(QWidget):
             "Gradient Peak",
             "Gaussian Centroid (sub-px)",
         ])
+        self._cd_method.setMaximumWidth(160)
 
         ana_tab = QWidget()
         af = QFormLayout(ana_tab)
