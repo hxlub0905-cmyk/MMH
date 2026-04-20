@@ -149,9 +149,10 @@ class ControlPanel(QWidget):
         strip_start_x  = QSpinBox(); strip_start_x.setRange(0, 9999); strip_start_x.setValue(0); strip_start_x.setSuffix(" px")
         strip_pitch    = QSpinBox(); strip_pitch.setRange(1, 9999); strip_pitch.setValue(44); strip_pitch.setSuffix(" px")
         strip_width    = QSpinBox(); strip_width.setRange(1, 9999); strip_width.setValue(22); strip_width.setSuffix(" px")
-        strip_margin     = QSpinBox(); strip_margin.setRange(0, 999);  strip_margin.setValue(4);  strip_margin.setSuffix(" px")
-        strip_regularize = QCheckBox("Regularize to grid"); strip_regularize.setChecked(False)
-        strip_pitch_tol  = QSpinBox(); strip_pitch_tol.setRange(1, 99); strip_pitch_tol.setValue(5); strip_pitch_tol.setSuffix(" px")
+        strip_margin      = QSpinBox(); strip_margin.setRange(0, 999);  strip_margin.setValue(4);  strip_margin.setSuffix(" px")
+        strip_edge_margin = QSpinBox(); strip_edge_margin.setRange(0, 999); strip_edge_margin.setValue(0); strip_edge_margin.setSuffix(" px"); strip_edge_margin.setSpecialValueText("off")
+        strip_regularize  = QCheckBox("Regularize to grid"); strip_regularize.setChecked(False)
+        strip_pitch_tol   = QSpinBox(); strip_pitch_tol.setRange(1, 99); strip_pitch_tol.setValue(5); strip_pitch_tol.setSuffix(" px")
         strip_normalize_x = QCheckBox("Normalize X bounds"); strip_normalize_x.setChecked(True)
 
         def _on_strip_auto(checked: int) -> None:
@@ -184,7 +185,8 @@ class ControlPanel(QWidget):
         min_area.valueChanged.connect(self._emit)
         for w in (min_ar, max_ar, min_w, max_w, min_h, vert_erode_k, vert_erode_iter,
                   xproj_smooth, xproj_pitch, xproj_frac,
-                  strip_start_x, strip_pitch, strip_width, strip_margin, strip_pitch_tol,
+                  strip_start_x, strip_pitch, strip_width, strip_margin,
+                  strip_edge_margin, strip_pitch_tol,
                   min_line_px, max_line_px):
             w.valueChanged.connect(self._emit)
         strip_enabled.stateChanged.connect(self._emit)
@@ -220,6 +222,7 @@ class ControlPanel(QWidget):
         form.addRow("Strip pitch", strip_pitch)
         form.addRow("Strip width", strip_width)
         form.addRow("Strip margin ±", strip_margin)
+        form.addRow("Edge margin", strip_edge_margin)
         form.addRow(strip_regularize)
         form.addRow("Pitch tolerance", strip_pitch_tol)
         form.addRow(strip_normalize_x)
@@ -254,6 +257,7 @@ class ControlPanel(QWidget):
             "col_mask_pitch_px": strip_pitch,
             "col_mask_width_px": strip_width,
             "col_mask_margin_px": strip_margin,
+            "col_mask_edge_margin_px": strip_edge_margin,
             "col_mask_regularize": strip_regularize,
             "col_mask_pitch_tol_px": strip_pitch_tol,
             "col_mask_normalize_x": strip_normalize_x,
@@ -307,6 +311,7 @@ class ControlPanel(QWidget):
                 "col_mask_pitch_px": p["col_mask_pitch_px"].value(),
                 "col_mask_width_px": p["col_mask_width_px"].value(),
                 "col_mask_margin_px": p["col_mask_margin_px"].value(),
+                "col_mask_edge_margin_px": p["col_mask_edge_margin_px"].value(),
                 "col_mask_regularize": p["col_mask_regularize"].isChecked(),
                 "col_mask_pitch_tol_px": p["col_mask_pitch_tol_px"].value(),
                 "col_mask_normalize_x": p["col_mask_normalize_x"].isChecked(),

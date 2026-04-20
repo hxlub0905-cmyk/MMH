@@ -63,18 +63,25 @@ def apply_column_strip_mask(
     col_centers: list[int],
     half_width: int,
     margin: int = 0,
+    edge_margin_px: int = 0,
 ) -> np.ndarray:
     """Zero out mask pixels outside the given MG column strips.
 
     Severs the EPI lateral bridge between adjacent MG columns, restoring
     Y-gaps inside each column for connectedComponents analysis.
+
+    edge_margin_px: additionally zero out this many pixels from the left and
+    right image boundaries before applying column strips, preventing partially-
+    visible boundary MG columns from producing skewed blobs.
     """
     if not col_centers:
         return mask
+    W = mask.shape[1]
     strip = np.zeros_like(mask)
     hw = half_width + margin
     for xc in col_centers:
-        x0 = max(0, xc - hw)
-        x1 = min(mask.shape[1], xc + hw + 1)
-        strip[:, x0:x1] = 255
+        x0 = max(edge_margin_px, xc - hw)
+        x1 = min(W - edge_margin_px, xc + hw + 1)
+        if x1 > x0:
+            strip[:, x0:x1] = 255
     return cv2.bitwise_and(mask, strip)

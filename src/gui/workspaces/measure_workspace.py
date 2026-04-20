@@ -409,6 +409,7 @@ class MeasureWorkspace(QWidget):
 
             # Strategy 1+2a: column strip masking (severs EPI lateral bridge)
             col_centers: list[int] = []
+            edge_margin = int(card.get("col_mask_edge_margin_px", 0))
             if card.get("col_mask_enabled", False):
                 if card.get("col_mask_auto_centers", False):
                     col_centers = detect_mg_column_centers(
@@ -416,6 +417,7 @@ class MeasureWorkspace(QWidget):
                         smooth_k=int(card.get("xproj_smooth_k", 5)),
                         min_pitch_px=int(card.get("xproj_min_pitch_px", 30)),
                         min_height_frac=float(card.get("xproj_peak_min_frac", 0.3)),
+                        edge_margin_px=edge_margin,
                     )
                 if not col_centers:  # fallback to manual
                     start_x = int(card.get("col_mask_start_x", 0))
@@ -425,7 +427,7 @@ class MeasureWorkspace(QWidget):
                         col_centers = list(range(start_x, cw, pitch))
                 half_w = int(card.get("col_mask_width_px", 22)) // 2
                 margin = int(card.get("col_mask_margin_px", 4))
-                mask_local = apply_column_strip_mask(mask_local, col_centers, half_w, margin)
+                mask_local = apply_column_strip_mask(mask_local, col_centers, half_w, margin, edge_margin)
 
             mask_ori = mask_local if axis == "Y" else cv2.rotate(mask_local, cv2.ROTATE_90_COUNTERCLOCKWISE)
             full_mask = np.maximum(full_mask, mask_ori)

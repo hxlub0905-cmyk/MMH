@@ -91,6 +91,8 @@ class CMGRecipe(BaseRecipe):
         mask_roi = context.get("mask_roi", mask)
         col_centers: list[int] = []
 
+        edge_margin = int(dc.get("col_mask_edge_margin_px", 0))
+
         # Strategy 2a: X-projection peak detection → auto-detect MG column centers
         if dc.get("xproj_enabled", False):
             col_centers = detect_mg_column_centers(
@@ -98,6 +100,7 @@ class CMGRecipe(BaseRecipe):
                 smooth_k=int(dc.get("xproj_smooth_k", 5)),
                 min_pitch_px=int(dc.get("xproj_min_pitch_px", 30)),
                 min_height_frac=float(dc.get("xproj_peak_min_frac", 0.3)),
+                edge_margin_px=edge_margin,
             )
             context["mg_col_centers"] = col_centers
 
@@ -105,14 +108,14 @@ class CMGRecipe(BaseRecipe):
         if dc.get("col_mask_enabled", False):
             if not col_centers:
                 col_centers = context.get("mg_col_centers", [])
-            if not col_centers or dc.get("col_mask_auto_centers", False):
-                if dc.get("col_mask_auto_centers", False) and not col_centers:
-                    col_centers = detect_mg_column_centers(
-                        mask_roi,
-                        smooth_k=int(dc.get("xproj_smooth_k", 5)),
-                        min_pitch_px=int(dc.get("xproj_min_pitch_px", 30)),
-                        min_height_frac=float(dc.get("xproj_peak_min_frac", 0.3)),
-                    )
+            if dc.get("col_mask_auto_centers", False) and not col_centers:
+                col_centers = detect_mg_column_centers(
+                    mask_roi,
+                    smooth_k=int(dc.get("xproj_smooth_k", 5)),
+                    min_pitch_px=int(dc.get("xproj_min_pitch_px", 30)),
+                    min_height_frac=float(dc.get("xproj_peak_min_frac", 0.3)),
+                    edge_margin_px=edge_margin,
+                )
             if not col_centers:  # fallback to manual grid
                 start_x = int(dc.get("col_mask_start_x", 0))
                 pitch = int(dc.get("col_mask_pitch_px", 44))
@@ -121,7 +124,7 @@ class CMGRecipe(BaseRecipe):
                     col_centers = list(range(start_x, w, pitch))
             half_w = int(dc.get("col_mask_width_px", 22)) // 2
             margin = int(dc.get("col_mask_margin_px", 4))
-            mask_roi = apply_column_strip_mask(mask_roi, col_centers, half_w, margin)
+            mask_roi = apply_column_strip_mask(mask_roi, col_centers, half_w, margin, edge_margin)
             context["mask_roi_stripped"] = mask_roi
             context["mg_col_centers"] = col_centers
 

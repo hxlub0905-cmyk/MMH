@@ -31,17 +31,21 @@ def detect_mg_column_centers(
     smooth_k: int = 5,
     min_pitch_px: int = 30,
     min_height_frac: float = 0.3,
+    edge_margin_px: int = 0,
 ) -> list[int]:
     """Detect MG column center X positions from X-axis projection of the mask.
 
     Returns a list of X pixel positions sorted left-to-right.
-    Uses simple local-maxima detection after smoothing; peaks closer than
-    *min_pitch_px* are suppressed (only the tallest kept in each window).
+
+    edge_margin_px: exclude detected peaks within this many px of the image
+    left/right boundary (avoids mislocated peaks caused by partial columns).
     """
     x_proj = mask.sum(axis=0).astype(float)
     if smooth_k > 1:
-        kernel = np.ones(smooth_k) / smooth_k
-        x_proj = np.convolve(x_proj, kernel, mode="same")
+        # Edge-padded convolution avoids zero-padding artifacts at image borders
+        pad = smooth_k // 2
+        x_padded = np.pad(x_proj, pad, mode="edge")
+        x_proj = np.convolve(x_padded, np.ones(smooth_k) / smooth_k, mode="valid")
     if x_proj.max() == 0:
         return []
     threshold = float(x_proj.max()) * min_height_frac
@@ -54,7 +58,6 @@ def detect_mg_column_centers(
         return []
     # suppress peaks closer than min_pitch_px — keep the tallest in each cluster
     centers: list[int] = []
-    group_start = candidates[0]
     group_peak = candidates[0]
     for c in candidates[1:]:
         if c - group_peak < min_pitch_px:
@@ -63,8 +66,11 @@ def detect_mg_column_centers(
         else:
             centers.append(group_peak)
             group_peak = c
-        group_start = c
     centers.append(group_peak)
+    # exclude boundary peaks that correspond to partially-visible MG columns
+    if edge_margin_px > 0:
+        W = mask.shape[1]
+        centers = [c for c in centers if edge_margin_px <= c < W - edge_margin_px]
     return centers
 
 
@@ -98,7 +104,7 @@ def regularize_blobs_to_columns(
             b = _replace(
                 b,
                 x0=max(0, nearest - half_width),
-                x1=min(b.x1 + 9999, nearest + half_width + 1),
+                x1=nearest + half_width + 1,
                 cx=float(nearest),
             )
         result.append(b)

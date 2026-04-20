@@ -141,39 +141,35 @@ class RecipeWorkspace(QWidget):
         df.addRow("Max width:", self._max_width)
         df.addRow("Min height:", self._min_height)
 
-        # X-projection (Strategy 2a): auto-detect MG column centers
-        xproj_box = QGroupBox("X-Projection Column Detection")
-        xf = QFormLayout(xproj_box)
-        self._xproj_enabled  = QCheckBox("Enable X-projection"); self._xproj_enabled.setChecked(False)
-        self._xproj_smooth   = QSpinBox(); self._xproj_smooth.setRange(1, 51); self._xproj_smooth.setValue(5); self._xproj_smooth.setSuffix(" px")
-        self._xproj_pitch    = QSpinBox(); self._xproj_pitch.setRange(1, 9999); self._xproj_pitch.setValue(30); self._xproj_pitch.setSuffix(" px")
-        self._xproj_min_frac = QDoubleSpinBox(); self._xproj_min_frac.setRange(0.01, 1.0); self._xproj_min_frac.setValue(0.3); self._xproj_min_frac.setSingleStep(0.05)
-        xf.addRow(self._xproj_enabled)
-        xf.addRow("Smooth window:", self._xproj_smooth)
-        xf.addRow("Min pitch (px):", self._xproj_pitch)
-        xf.addRow("Min peak frac:", self._xproj_min_frac)
-
-        # Column Strip Masking (Strategy 1): sever EPI lateral bridge
+        # Column Strip Masking — includes X-proj auto-detect (consolidated)
         strip_box = QGroupBox("Column Strip Masking")
         sf = QFormLayout(strip_box)
-        self._strip_enabled = QCheckBox("Enable strip mask"); self._strip_enabled.setChecked(False)
-        self._strip_auto    = QCheckBox("Auto-detect centers (X-proj)"); self._strip_auto.setChecked(False)
-        self._strip_start_x = QSpinBox(); self._strip_start_x.setRange(0, 9999); self._strip_start_x.setValue(0); self._strip_start_x.setSuffix(" px")
-        self._strip_pitch   = QSpinBox(); self._strip_pitch.setRange(1, 9999); self._strip_pitch.setValue(44); self._strip_pitch.setSuffix(" px")
-        self._strip_width   = QSpinBox(); self._strip_width.setRange(1, 9999); self._strip_width.setValue(22); self._strip_width.setSuffix(" px")
-        self._strip_margin  = QSpinBox(); self._strip_margin.setRange(0, 9999); self._strip_margin.setValue(4); self._strip_margin.setSuffix(" px")
-        self._strip_regularize  = QCheckBox("Regularize to grid"); self._strip_regularize.setChecked(False)
-        self._strip_pitch_tol   = QSpinBox(); self._strip_pitch_tol.setRange(1, 99); self._strip_pitch_tol.setValue(5); self._strip_pitch_tol.setSuffix(" px")
-        self._strip_normalize_x = QCheckBox("Normalize X bounds"); self._strip_normalize_x.setChecked(True)
+        self._strip_enabled     = QCheckBox("Enable strip mask");             self._strip_enabled.setChecked(False)
+        self._strip_auto        = QCheckBox("Auto-detect centers (X-proj)");  self._strip_auto.setChecked(False)
+        self._xproj_smooth      = QSpinBox();       self._xproj_smooth.setRange(1, 51);    self._xproj_smooth.setValue(5);   self._xproj_smooth.setSuffix(" px")
+        self._xproj_pitch       = QSpinBox();       self._xproj_pitch.setRange(1, 9999);   self._xproj_pitch.setValue(30);   self._xproj_pitch.setSuffix(" px")
+        self._xproj_min_frac    = QDoubleSpinBox(); self._xproj_min_frac.setRange(0.01, 1.0); self._xproj_min_frac.setValue(0.3); self._xproj_min_frac.setSingleStep(0.05)
+        self._strip_start_x     = QSpinBox();       self._strip_start_x.setRange(0, 9999);  self._strip_start_x.setValue(0);  self._strip_start_x.setSuffix(" px")
+        self._strip_pitch       = QSpinBox();       self._strip_pitch.setRange(1, 9999);    self._strip_pitch.setValue(44);   self._strip_pitch.setSuffix(" px")
+        self._strip_width       = QSpinBox();       self._strip_width.setRange(1, 9999);    self._strip_width.setValue(22);   self._strip_width.setSuffix(" px")
+        self._strip_margin      = QSpinBox();       self._strip_margin.setRange(0, 9999);   self._strip_margin.setValue(4);   self._strip_margin.setSuffix(" px")
+        self._strip_edge_margin = QSpinBox();       self._strip_edge_margin.setRange(0, 999); self._strip_edge_margin.setValue(0); self._strip_edge_margin.setSuffix(" px"); self._strip_edge_margin.setSpecialValueText("off")
+        self._strip_regularize  = QCheckBox("Regularize to grid");            self._strip_regularize.setChecked(False)
+        self._strip_pitch_tol   = QSpinBox();       self._strip_pitch_tol.setRange(1, 99);  self._strip_pitch_tol.setValue(5); self._strip_pitch_tol.setSuffix(" px")
+        self._strip_normalize_x = QCheckBox("Normalize X bounds");            self._strip_normalize_x.setChecked(True)
         self._strip_auto.toggled.connect(lambda on: self._strip_start_x.setEnabled(not on))
         sf.addRow(self._strip_enabled)
         sf.addRow(self._strip_auto)
+        sf.addRow("  X-proj smooth:", self._xproj_smooth)
+        sf.addRow("  X-proj min pitch:", self._xproj_pitch)
+        sf.addRow("  X-proj min frac:", self._xproj_min_frac)
         sf.addRow("Start X (manual):", self._strip_start_x)
         sf.addRow("Pitch:", self._strip_pitch)
         sf.addRow("Strip width:", self._strip_width)
         sf.addRow("Margin ±:", self._strip_margin)
+        sf.addRow("Edge margin:", self._strip_edge_margin)
         sf.addRow(self._strip_regularize)
-        sf.addRow("Pitch tolerance:", self._strip_pitch_tol)
+        sf.addRow("  Pitch tolerance:", self._strip_pitch_tol)
         sf.addRow(self._strip_normalize_x)
 
         # Edge locator
@@ -196,7 +192,6 @@ class RecipeWorkspace(QWidget):
 
         form.addRow(pre_box)
         form.addRow(det_box)
-        form.addRow(xproj_box)
         form.addRow(strip_box)
         form.addRow(edge_box)
         form.addRow(range_box)
@@ -251,18 +246,18 @@ class RecipeWorkspace(QWidget):
         self._min_width.setValue(int(dc.get("min_width", 0)))
         self._max_width.setValue(int(dc.get("max_width", 0)))
         self._min_height.setValue(int(dc.get("min_height", 0)))
-        self._xproj_enabled.setChecked(bool(dc.get("xproj_enabled", False)))
         self._xproj_smooth.setValue(int(dc.get("xproj_smooth_k", 5)))
         self._xproj_pitch.setValue(int(dc.get("xproj_min_pitch_px", 30)))
         self._xproj_min_frac.setValue(float(dc.get("xproj_peak_min_frac", 0.3)))
         self._strip_enabled.setChecked(bool(dc.get("col_mask_enabled", False)))
-        auto_on = bool(dc.get("col_mask_auto_centers", False))
+        auto_on = bool(dc.get("col_mask_auto_centers", False)) or bool(dc.get("xproj_enabled", False))
         self._strip_auto.setChecked(auto_on)
         self._strip_start_x.setEnabled(not auto_on)
         self._strip_start_x.setValue(int(dc.get("col_mask_start_x", 0)))
         self._strip_pitch.setValue(int(dc.get("col_mask_pitch_px", 44)))
         self._strip_width.setValue(int(dc.get("col_mask_width_px", 22)))
         self._strip_margin.setValue(int(dc.get("col_mask_margin_px", 4)))
+        self._strip_edge_margin.setValue(int(dc.get("col_mask_edge_margin_px", 0)))
         self._strip_regularize.setChecked(bool(dc.get("col_mask_regularize", False)))
         self._strip_pitch_tol.setValue(int(dc.get("col_mask_pitch_tol_px", 5)))
         self._strip_normalize_x.setChecked(bool(dc.get("col_mask_normalize_x", True)))
@@ -388,7 +383,7 @@ class RecipeWorkspace(QWidget):
                 "min_width": self._min_width.value(),
                 "max_width": self._max_width.value(),
                 "min_height": self._min_height.value(),
-                "xproj_enabled": self._xproj_enabled.isChecked(),
+                "xproj_enabled": self._strip_auto.isChecked(),  # backward compat
                 "xproj_smooth_k": self._xproj_smooth.value(),
                 "xproj_min_pitch_px": self._xproj_pitch.value(),
                 "xproj_peak_min_frac": self._xproj_min_frac.value(),
@@ -398,6 +393,7 @@ class RecipeWorkspace(QWidget):
                 "col_mask_pitch_px": self._strip_pitch.value(),
                 "col_mask_width_px": self._strip_width.value(),
                 "col_mask_margin_px": self._strip_margin.value(),
+                "col_mask_edge_margin_px": self._strip_edge_margin.value(),
                 "col_mask_regularize": self._strip_regularize.isChecked(),
                 "col_mask_pitch_tol_px": self._strip_pitch_tol.value(),
                 "col_mask_normalize_x": self._strip_normalize_x.isChecked(),
