@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QGroupBox, QFormLayout, QComboBox, QPushButton,
     QLabel, QCheckBox, QButtonGroup, QFrame, QMessageBox,
-    QSizePolicy,
+    QSizePolicy, QDoubleSpinBox, QSpinBox,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 
@@ -98,6 +98,8 @@ class MeasureWorkspace(QWidget):
         rv.setContentsMargins(4, 4, 4, 4)
         rv.setSpacing(6)
         rv.addWidget(self._build_recipe_selector())
+
+        rv.addWidget(self._build_edge_locator_panel())
 
         self._layer_panel = LayerControlPanel()
         self._layer_panel.setVisible(False)
@@ -202,7 +204,50 @@ class MeasureWorkspace(QWidget):
         form.addRow(btn_row)
 
         self._refresh_recipe_selector_internal()
+        self._recipe_combo.currentIndexChanged.connect(self._on_recipe_combo_changed)
         return box
+
+    def _build_edge_locator_panel(self) -> QGroupBox:
+        """Controls that mirror Recipe workspace's Analysis tab edge-locator section."""
+        box = QGroupBox("Edge Locator")
+        form = QFormLayout(box)
+        form.setSpacing(6)
+        form.setContentsMargins(8, 6, 8, 6)
+
+        self._ec_method = QComboBox()
+        self._ec_method.addItem("Subpixel (gradient refined)", "subpixel")
+        self._ec_method.addItem("BBox (original integer edge)", "bbox")
+
+        self._ec_overlap = QDoubleSpinBox()
+        self._ec_overlap.setRange(0.0, 1.0)
+        self._ec_overlap.setSingleStep(0.05)
+        self._ec_overlap.setValue(0.5)
+        self._ec_overlap.setDecimals(2)
+
+        self._ec_cluster_tol = QSpinBox()
+        self._ec_cluster_tol.setRange(1, 200)
+        self._ec_cluster_tol.setValue(10)
+        self._ec_cluster_tol.setSuffix(" px")
+
+        form.addRow("Y-CD method:", self._ec_method)
+        form.addRow("X overlap:", self._ec_overlap)
+        form.addRow("Cluster tol:", self._ec_cluster_tol)
+        return box
+
+    def _on_recipe_combo_changed(self) -> None:
+        """When a recipe is selected, populate edge-locator panel from its saved values."""
+        rid = self._selected_recipe_id()
+        if rid is None:
+            return
+        desc = self._registry.get_descriptor(rid)
+        if desc is None:
+            return
+        ec = desc.edge_locator_config
+        _method = str(ec.get("ycd_edge_method", "subpixel")).lower()
+        idx = self._ec_method.findData(_method)
+        self._ec_method.setCurrentIndex(idx if idx >= 0 else 0)
+        self._ec_overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
+        self._ec_cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -307,6 +352,23 @@ class MeasureWorkspace(QWidget):
         if recipe is None:
             QMessageBox.warning(self, "Recipe error", "Could not load recipe.")
             return
+
+        # Apply edge-locator overrides from the panel (temporary — does not save)
+        import dataclasses
+        from ...core.recipe_base import RecipeConfig
+        from ...core.recipes.cmg_recipe import CMGRecipe as _CMGRecipe
+        _existing_ec = recipe.recipe_descriptor.edge_locator_config.to_dict()
+        _patched_desc = dataclasses.replace(
+            recipe.recipe_descriptor,
+            edge_locator_config=RecipeConfig(data={
+                **_existing_ec,
+                "ycd_edge_method": self._ec_method.currentData(),
+                "x_overlap_ratio": self._ec_overlap.value(),
+                "y_cluster_tol":   self._ec_cluster_tol.value(),
+            }),
+        )
+        recipe = _CMGRecipe(descriptor=_patched_desc)
+
         # Sync nm/pixel from ControlPanel to ImageRecord
         self._current_ir.pixel_size_nm = self._ctrl.get_nm_per_pixel()
         result = self._engine.run_single(self._current_ir, recipe)
@@ -401,12 +463,17 @@ class MeasureWorkspace(QWidget):
         from ...core.preprocessor import preprocess, PreprocessParams, apply_column_strip_mask
         from ...core.mg_detector import detect_blobs, detect_mg_column_centers_pitch_phase, regularize_blobs_to_columns
         from ...core.cmg_analyzer import analyze
-        from ...core.recipes.cmg_recipe import _rot_blob_to_ori
+        from ...core.recipes.cmg_recipe import _rot_blob_to_ori, apply_yedge_subpixel_to_cuts
 
         cards = self._ctrl.get_measurement_cards()
         base_params = self._ctrl.get_preprocess_params()
         min_area_default = self._ctrl.get_min_area()
         nm_px = self._ctrl.get_nm_per_pixel()
+
+        # Edge-locator panel values (shared with recipe mode)
+        _ec_method      = self._ec_method.currentData()
+        _ec_overlap     = self._ec_overlap.value()
+        _ec_cluster_tol = self._ec_cluster_tol.value()
 
         full_mask = np.zeros_like(raw, dtype=np.uint8)
         cuts_all: list = []
@@ -489,13 +556,23 @@ class MeasureWorkspace(QWidget):
                 blobs  = regularize_blobs_to_columns(blobs, col_centers, half_w, tol, norm_x)
 
             # Analyze in rotated space; back-rotate blob coords after (same fix as CMGRecipe)
-            cuts = analyze(blobs, nm_px)
+            cuts = analyze(blobs, nm_px,
+                           x_overlap_ratio=_ec_overlap,
+                           y_cluster_tol=_ec_cluster_tol)
             if axis == "X":
                 orig_h = raw.shape[0]
                 for c in cuts:
                     for m in c.measurements:
                         m.upper_blob = _rot_blob_to_ori(m.upper_blob, orig_h)
                         m.lower_blob = _rot_blob_to_ori(m.lower_blob, orig_h)
+
+            # Apply subpixel refinement for Y-CD if method is "subpixel"
+            if axis == "Y" and _ec_method == "subpixel":
+                apply_yedge_subpixel_to_cuts(
+                    cuts, roi, nm_px,
+                    col_centers=col_centers,
+                    store_meta=False,  # legacy-cuts path doesn't use MeasurementRecord
+                )
 
             # Range filter: discard measurements outside [min_line_px, max_line_px]
             if card.get("range_enabled", False):

@@ -233,79 +233,14 @@ class CMGRecipe(BaseRecipe):
                 # Stable X anchors from pitch-phase detection (may be empty)
                 _col_centers = context.get("mg_col_centers", [])
 
-                for cut in cuts:
-                    for m in cut.measurements:
-                        ub, lb = m.upper_blob, m.lower_blob
-
-                        # [1] x_center: prefer pitch-grid center over blob mean
-                        blob_cx = (ub.cx + lb.cx) / 2.0
-                        if _col_centers:
-                            x_ctr = float(
-                                min(_col_centers, key=lambda c, _b=blob_cx: abs(c - _b))
-                            )
-                        else:
-                            x_ctr = blob_cx
-
-                        # [2] y_guess: canonical bbox edges (matches Y-CD definition)
-                        y_up = float(ub.y1)   # bottom of upper blob = top of gap
-                        y_lo = float(lb.y0)   # top of lower blob   = bottom of gap
-
-                        # [3-5] refine each edge; helper returns _SubpixelResult
-                        # and falls back to y_guess on any constraint failure
-                        up_res = _refine_yedge_subpixel(
-                            raw_img, x_ctr, y_up,
-                            half_col=_half_col, search_half=_search_half,
-                            proximity=_proximity, smooth_k=_smooth_k,
-                            min_grad_frac=_grad_frac, peak_ratio_thr=_peak_ratio,
-                        )
-                        lo_res = _refine_yedge_subpixel(
-                            raw_img, x_ctr, y_lo,
-                            half_col=_half_col, search_half=_search_half,
-                            proximity=_proximity, smooth_k=_smooth_k,
-                            min_grad_frac=_grad_frac, peak_ratio_thr=_peak_ratio,
-                        )
-
-                        cd_ref = lo_res.y_refined - up_res.y_refined
-                        if cd_ref > 0.0:    # [6] gap must remain positive
-                            m.cd_px = cd_ref
-                            m.cd_nm = cd_ref * nm_per_pixel
-                            _refine_used = True
-                            _fallback_reason = _build_fallback_reason(up_res, lo_res)
-                        else:
-                            # keep m.cd_px / m.cd_nm from analyze() unchanged
-                            _refine_used = False
-                            _both_ok = (not up_res.fallback_reason
-                                        and not lo_res.fallback_reason)
-                            _fallback_reason = (
-                                "non_positive_gap" if _both_ok
-                                else _build_fallback_reason(up_res, lo_res)
-                            )
-
-                        # Store refine metadata for extra_metrics (per measurement)
-                        m._refine_meta = {
-                            "upper_edge_refined": up_res.y_refined,
-                            "lower_edge_refined": lo_res.y_refined,
-                            "refine_used": _refine_used,
-                            "refine_fallback_reason": _fallback_reason,
-                            "upper_peak_strength": up_res.peak_strength,
-                            "lower_peak_strength": lo_res.peak_strength,
-                            "upper_second_peak_ratio": up_res.second_peak_ratio,
-                            "lower_second_peak_ratio": lo_res.second_peak_ratio,
-                            "upper_refine_shift_px": up_res.shift_px,
-                            "lower_refine_shift_px": lo_res.shift_px,
-                        }
-
-                # [7] Re-flag MIN/MAX per cut based on (possibly refined) cd_px;
-                # use tolerance compare — subpixel floats are never exact integers
-                for cut in cuts:
-                    if len(cut.measurements) >= 2:
-                        vals = [m.cd_px for m in cut.measurements]
-                        mn, mx = min(vals), max(vals)
-                        for m in cut.measurements:
-                            m.flag = (
-                                "MIN" if abs(m.cd_px - mn) < _FLOAT_EPS else
-                                "MAX" if abs(m.cd_px - mx) < _FLOAT_EPS else ""
-                            )
+                # Delegate refine + MIN/MAX re-flag to shared helper
+                apply_yedge_subpixel_to_cuts(
+                    cuts, raw_img, nm_per_pixel,
+                    half_col=_half_col, search_half=_search_half,
+                    proximity=_proximity, smooth_k=_smooth_k,
+                    min_grad_frac=_grad_frac, peak_ratio=_peak_ratio,
+                    col_centers=_col_centers, store_meta=True,
+                )
 
         # For X-CD: blobs were analyzed in rotated space; back-rotate blob
         # coordinates now so annotations are drawn in original image space.
@@ -494,6 +429,96 @@ def _build_fallback_reason(up: _SubpixelResult, lo: _SubpixelResult) -> str:
     if lo.fallback_reason:
         parts.append(f"lo:{lo.fallback_reason}")
     return ",".join(parts)
+
+
+def apply_yedge_subpixel_to_cuts(
+    cuts: list,
+    raw_img,
+    nm_per_pixel: float,
+    half_col: int = 3,
+    search_half: int = 10,
+    proximity: int = 5,
+    smooth_k: int = 5,
+    min_grad_frac: float = 0.10,
+    peak_ratio: float = 0.60,
+    col_centers: list | None = None,
+    store_meta: bool = True,
+) -> None:
+    """Apply subpixel Y-edge refinement in place to a list of CMGCut objects.
+
+    Modifies m.cd_px / m.cd_nm on each YCDMeasurement and re-flags MIN/MAX per
+    cut with tolerance compare.  Optionally stores debug info as m._refine_meta
+    (used by CMGRecipe.compute_metrics() to populate MeasurementRecord.extra_metrics).
+
+    Safe to call from outside CMGRecipe — measure_workspace uses this for the
+    legacy-cards path so both paths share the same refinement logic.
+    """
+    _centers = col_centers or []
+
+    for cut in cuts:
+        for m in cut.measurements:
+            ub, lb = m.upper_blob, m.lower_blob
+            blob_cx = (ub.cx + lb.cx) / 2.0
+            if _centers:
+                x_ctr = float(min(_centers, key=lambda c, _b=blob_cx: abs(c - _b)))
+            else:
+                x_ctr = blob_cx
+
+            y_up = float(ub.y1)
+            y_lo = float(lb.y0)
+
+            up_res = _refine_yedge_subpixel(
+                raw_img, x_ctr, y_up,
+                half_col=half_col, search_half=search_half,
+                proximity=proximity, smooth_k=smooth_k,
+                min_grad_frac=min_grad_frac, peak_ratio_thr=peak_ratio,
+            )
+            lo_res = _refine_yedge_subpixel(
+                raw_img, x_ctr, y_lo,
+                half_col=half_col, search_half=search_half,
+                proximity=proximity, smooth_k=smooth_k,
+                min_grad_frac=min_grad_frac, peak_ratio_thr=peak_ratio,
+            )
+
+            cd_ref = lo_res.y_refined - up_res.y_refined
+            if cd_ref > 0.0:
+                m.cd_px = cd_ref
+                m.cd_nm = cd_ref * nm_per_pixel
+                _refine_used = True
+                _fallback_reason = _build_fallback_reason(up_res, lo_res)
+            else:
+                _refine_used = False
+                _both_ok = (not up_res.fallback_reason
+                            and not lo_res.fallback_reason)
+                _fallback_reason = (
+                    "non_positive_gap" if _both_ok
+                    else _build_fallback_reason(up_res, lo_res)
+                )
+
+            if store_meta:
+                m._refine_meta = {
+                    "upper_edge_refined": up_res.y_refined,
+                    "lower_edge_refined": lo_res.y_refined,
+                    "refine_used": _refine_used,
+                    "refine_fallback_reason": _fallback_reason,
+                    "upper_peak_strength": up_res.peak_strength,
+                    "lower_peak_strength": lo_res.peak_strength,
+                    "upper_second_peak_ratio": up_res.second_peak_ratio,
+                    "lower_second_peak_ratio": lo_res.second_peak_ratio,
+                    "upper_refine_shift_px": up_res.shift_px,
+                    "lower_refine_shift_px": lo_res.shift_px,
+                }
+
+    # Re-flag MIN/MAX per cut using tolerance compare
+    for cut in cuts:
+        if len(cut.measurements) >= 2:
+            vals = [m.cd_px for m in cut.measurements]
+            mn, mx = min(vals), max(vals)
+            for m in cut.measurements:
+                m.flag = (
+                    "MIN" if abs(m.cd_px - mn) < _FLOAT_EPS else
+                    "MAX" if abs(m.cd_px - mx) < _FLOAT_EPS else ""
+                )
 
 
 # ── Coordinate helpers ────────────────────────────────────────────────────────
