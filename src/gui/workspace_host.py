@@ -65,16 +65,25 @@ class WorkspaceHost(QTabWidget):
             lambda _: self.setCurrentIndex(self.TAB_REVIEW)
         )
 
-        # Batch → Review (browse) + Report (stats/export); navigate to Review first
+        # Single-batch → Review + Report; navigate to Review
         self._batch.batch_completed.connect(self._review.load_batch_run)
         self._batch.batch_completed.connect(self._report.load_batch_run)
         self._batch.batch_completed.connect(
             lambda _: self.setCurrentIndex(self.TAB_REVIEW)
         )
 
+        # Multi-batch → Review + Report; navigate to Report (comparison view)
+        self._batch.multi_batch_completed.connect(self._review.load_multi_batch)
+        self._batch.multi_batch_completed.connect(self._report.load_multi_batch)
+        self._batch.multi_batch_completed.connect(
+            lambda _: self.setCurrentIndex(self.TAB_REPORT)
+        )
+
         # Recipe changes → refresh selectors
         self._recipe.recipe_saved.connect(self._measure.refresh_recipe_selector)
         self._recipe.recipe_saved.connect(self._batch.refresh_recipe_selector)
+        self._measure.recipe_saved.connect(self._batch.refresh_recipe_selector)
+        self._measure.recipe_saved.connect(lambda _: self._recipe.refresh_from_registry())
 
         # Bubble status messages up to MainWindow status bar
         for ws in (self._browse, self._recipe, self._measure,

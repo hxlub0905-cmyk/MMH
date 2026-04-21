@@ -10,13 +10,35 @@ Delegations:
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, NamedTuple
 
 import cv2
 import numpy as np
 
 from ..models import ImageRecord, MeasurementRecord
 from ..recipe_base import BaseRecipe, MeasurementRecipe, RecipeConfig
+
+# Tolerance for float equality in MIN/MAX comparisons (subpixel values are never
+# exact integers, so direct == is unsafe after refinement).
+_FLOAT_EPS = 1e-6
+
+
+class _SubpixelResult(NamedTuple):
+    """Return value from _refine_yedge_subpixel().
+
+    fallback_reason is "" on success; one of the reason codes below on failure:
+      "invalid_image"      – image is None or wrong ndim
+      "small_window"       – search window < 3 rows
+      "flat_profile"       – profile contrast < 1 DN
+      "weak_gradient"      – peak gradient below relative threshold
+      "ambiguous_peak"     – two comparable peaks detected
+      "proximity_violation"– refined position too far from y_guess
+    """
+    y_refined: float
+    fallback_reason: str
+    peak_strength: float       # peak_val / p_range  (0 on fallback)
+    second_peak_ratio: float   # second_val / peak_val  (0 on fallback)
+    shift_px: float            # y_refined - y_guess  (0 on fallback)
 
 
 class CMGRecipe(BaseRecipe):
@@ -154,6 +176,14 @@ class CMGRecipe(BaseRecipe):
                 filtered.append(b)
             blobs = filtered
 
+        # Border blob exclusion (edge_locator_config["border_margin_px"], 0 = disabled)
+        _border_px = int(self._descriptor.edge_locator_config.get("border_margin_px", 0))
+        if _border_px > 0:
+            _h, _w = mask_roi.shape[:2]
+            blobs = [b for b in blobs
+                     if b.x0 >= _border_px and b.y0 >= _border_px
+                     and b.x1 <= _w - _border_px and b.y1 <= _h - _border_px]
+
         # Pitch Grid Regularization: snap blobs onto layout grid, normalize X bounds
         if dc.get("col_mask_enabled", False) and dc.get("col_mask_regularize", False) and col_centers:
             tol    = int(dc.get("col_mask_pitch_tol_px", 5))
@@ -192,12 +222,15 @@ class CMGRecipe(BaseRecipe):
             y_cluster_tol=ec.get("y_cluster_tol", 10),
         )
 
-        # ── Subpixel Y-edge refinement (Y-CD only) ───────────────────────────
-        # Locally refines upper/lower blob bbox edges using raw-image gradients.
+        # ── Y-edge refinement (Y-CD only) ────────────────────────────────────
+        # ycd_edge_method controls which method is used:
+        #   "subpixel" (default) – gradient-based subpixel refinement on raw image
+        #   "bbox"               – keep original bounding-box integer edges
         # X-CD path is completely untouched.
         if axis == "Y":
             raw_img = context.get("raw")
-            if raw_img is not None:
+            _edge_method = str(ec.get("ycd_edge_method", "subpixel")).lower()
+            if raw_img is not None and _edge_method == "subpixel":
                 _sp          = ec   # edge_locator_config carries subpixel knobs
                 _half_col    = int  (_sp.get("subpixel_half_col",    3))
                 _search_half = int  (_sp.get("subpixel_search_half", 10))
@@ -208,55 +241,14 @@ class CMGRecipe(BaseRecipe):
                 # Stable X anchors from pitch-phase detection (may be empty)
                 _col_centers = context.get("mg_col_centers", [])
 
-                for cut in cuts:
-                    for m in cut.measurements:
-                        ub, lb = m.upper_blob, m.lower_blob
-
-                        # [1] x_center: prefer pitch-grid center over blob mean
-                        blob_cx = (ub.cx + lb.cx) / 2.0
-                        if _col_centers:
-                            x_ctr = float(
-                                min(_col_centers, key=lambda c, _b=blob_cx: abs(c - _b))
-                            )
-                        else:
-                            x_ctr = blob_cx
-
-                        # [2] y_guess: canonical bbox edges (matches Y-CD definition)
-                        y_up = float(ub.y1)   # bottom of upper blob = top of gap
-                        y_lo = float(lb.y0)   # top of lower blob   = bottom of gap
-
-                        # [3-5] refine each edge; helper falls back to y_guess on
-                        # any constraint failure (weak gradient, ambiguous peak,
-                        # proximity violation), which equals the original bbox edge
-                        up_ref = _refine_yedge_subpixel(
-                            raw_img, x_ctr, y_up,
-                            half_col=_half_col, search_half=_search_half,
-                            proximity=_proximity, smooth_k=_smooth_k,
-                            min_grad_frac=_grad_frac, peak_ratio_thr=_peak_ratio,
-                        )
-                        lo_ref = _refine_yedge_subpixel(
-                            raw_img, x_ctr, y_lo,
-                            half_col=_half_col, search_half=_search_half,
-                            proximity=_proximity, smooth_k=_smooth_k,
-                            min_grad_frac=_grad_frac, peak_ratio_thr=_peak_ratio,
-                        )
-
-                        cd_ref = lo_ref - up_ref
-                        if cd_ref > 0.0:    # [6] gap must remain positive
-                            m.cd_px = cd_ref
-                            m.cd_nm = cd_ref * nm_per_pixel
-                        # else: keep m.cd_px / m.cd_nm from analyze() unchanged
-
-                # [7] Re-flag MIN/MAX per cut based on (possibly refined) cd_px
-                for cut in cuts:
-                    if len(cut.measurements) >= 2:
-                        vals = [m.cd_px for m in cut.measurements]
-                        mn, mx = min(vals), max(vals)
-                        for m in cut.measurements:
-                            m.flag = (
-                                "MIN" if m.cd_px == mn else
-                                "MAX" if m.cd_px == mx else ""
-                            )
+                # Delegate refine + MIN/MAX re-flag to shared helper
+                apply_yedge_subpixel_to_cuts(
+                    cuts, raw_img, nm_per_pixel,
+                    half_col=_half_col, search_half=_search_half,
+                    proximity=_proximity, smooth_k=_smooth_k,
+                    min_grad_frac=_grad_frac, peak_ratio=_peak_ratio,
+                    col_centers=_col_centers, store_meta=True,
+                )
 
         # For X-CD: blobs were analyzed in rotated space; back-rotate blob
         # coordinates now so annotations are drawn in original image space.
@@ -284,12 +276,16 @@ class CMGRecipe(BaseRecipe):
                 if kept:
                     filtered.append(_CMGCut(cmg_id=cut.cmg_id, measurements=kept))
             cuts = filtered
-            all_m = [m for c in cuts for m in c.measurements]
-            if len(all_m) >= 2:
-                mn = min(m.cd_px for m in all_m)
-                mx = max(m.cd_px for m in all_m)
-                for m in all_m:
-                    m.flag = "MIN" if m.cd_px == mn else ("MAX" if m.cd_px == mx else "")
+            # Re-flag per cut (not global) to stay consistent with pre-filter semantics
+            for cut in cuts:
+                if len(cut.measurements) >= 2:
+                    mn = min(m.cd_px for m in cut.measurements)
+                    mx = max(m.cd_px for m in cut.measurements)
+                    for m in cut.measurements:
+                        m.flag = (
+                            "MIN" if abs(m.cd_px - mn) < _FLOAT_EPS else
+                            "MAX" if abs(m.cd_px - mx) < _FLOAT_EPS else ""
+                        )
 
         context["cmg_cuts"] = cuts
 
@@ -342,6 +338,7 @@ class CMGRecipe(BaseRecipe):
                     extra_metrics={
                         "upper_bbox": (int(ub.x0), int(ub.y0), int(ub.x1), int(ub.y1)),
                         "lower_bbox": (int(lb.x0), int(lb.y0), int(lb.x1), int(lb.y1)),
+                        **getattr(m, "_refine_meta", {}),
                     },
                 )
                 records.append(rec)
@@ -415,7 +412,122 @@ class CMGRecipe(BaseRecipe):
                 "min_line_px":           float(card.get("min_line_px", 0.0)),
                 "max_line_px":           float(card.get("max_line_px", 0.0)),
             }),
+            edge_locator_config=RecipeConfig(data={
+                "x_overlap_ratio":        float(card.get("x_overlap_ratio",        0.5)),
+                "y_cluster_tol":          int  (card.get("y_cluster_tol",          10)),
+                "ycd_edge_method":        str  (card.get("ycd_edge_method",        "subpixel")),
+                "subpixel_half_col":      int  (card.get("subpixel_half_col",      3)),
+                "subpixel_search_half":   int  (card.get("subpixel_search_half",   10)),
+                "subpixel_proximity":     int  (card.get("subpixel_proximity",     5)),
+                "subpixel_smooth_k":      int  (card.get("subpixel_smooth_k",      5)),
+                "subpixel_min_grad_frac": float(card.get("subpixel_min_grad_frac", 0.10)),
+                "subpixel_peak_ratio":    float(card.get("subpixel_peak_ratio",    0.60)),
+                "border_margin_px":       int  (card.get("border_margin_px",       0)),
+            }),
         )
+
+
+# ── Subpixel refinement helpers ──────────────────────────────────────────────
+
+
+def _build_fallback_reason(up: _SubpixelResult, lo: _SubpixelResult) -> str:
+    """Combine per-edge fallback reasons into one string for extra_metrics."""
+    parts = []
+    if up.fallback_reason:
+        parts.append(f"up:{up.fallback_reason}")
+    if lo.fallback_reason:
+        parts.append(f"lo:{lo.fallback_reason}")
+    return ",".join(parts)
+
+
+def apply_yedge_subpixel_to_cuts(
+    cuts: list,
+    raw_img,
+    nm_per_pixel: float,
+    half_col: int = 3,
+    search_half: int = 10,
+    proximity: int = 5,
+    smooth_k: int = 5,
+    min_grad_frac: float = 0.10,
+    peak_ratio: float = 0.60,
+    col_centers: list | None = None,
+    store_meta: bool = True,
+) -> None:
+    """Apply subpixel Y-edge refinement in place to a list of CMGCut objects.
+
+    Modifies m.cd_px / m.cd_nm on each YCDMeasurement and re-flags MIN/MAX per
+    cut with tolerance compare.  Optionally stores debug info as m._refine_meta
+    (used by CMGRecipe.compute_metrics() to populate MeasurementRecord.extra_metrics).
+
+    Safe to call from outside CMGRecipe — measure_workspace uses this for the
+    legacy-cards path so both paths share the same refinement logic.
+    """
+    _centers = col_centers or []
+
+    for cut in cuts:
+        for m in cut.measurements:
+            ub, lb = m.upper_blob, m.lower_blob
+            blob_cx = (ub.cx + lb.cx) / 2.0
+            if _centers:
+                x_ctr = float(min(_centers, key=lambda c, _b=blob_cx: abs(c - _b)))
+            else:
+                x_ctr = blob_cx
+
+            y_up = float(ub.y1)
+            y_lo = float(lb.y0)
+
+            up_res = _refine_yedge_subpixel(
+                raw_img, x_ctr, y_up,
+                half_col=half_col, search_half=search_half,
+                proximity=proximity, smooth_k=smooth_k,
+                min_grad_frac=min_grad_frac, peak_ratio_thr=peak_ratio,
+            )
+            lo_res = _refine_yedge_subpixel(
+                raw_img, x_ctr, y_lo,
+                half_col=half_col, search_half=search_half,
+                proximity=proximity, smooth_k=smooth_k,
+                min_grad_frac=min_grad_frac, peak_ratio_thr=peak_ratio,
+            )
+
+            cd_ref = lo_res.y_refined - up_res.y_refined
+            if cd_ref > 0.0:
+                m.cd_px = cd_ref
+                m.cd_nm = cd_ref * nm_per_pixel
+                _refine_used = True
+                _fallback_reason = _build_fallback_reason(up_res, lo_res)
+            else:
+                _refine_used = False
+                _both_ok = (not up_res.fallback_reason
+                            and not lo_res.fallback_reason)
+                _fallback_reason = (
+                    "non_positive_gap" if _both_ok
+                    else _build_fallback_reason(up_res, lo_res)
+                )
+
+            if store_meta:
+                m._refine_meta = {
+                    "upper_edge_refined": up_res.y_refined,
+                    "lower_edge_refined": lo_res.y_refined,
+                    "refine_used": _refine_used,
+                    "refine_fallback_reason": _fallback_reason,
+                    "upper_peak_strength": up_res.peak_strength,
+                    "lower_peak_strength": lo_res.peak_strength,
+                    "upper_second_peak_ratio": up_res.second_peak_ratio,
+                    "lower_second_peak_ratio": lo_res.second_peak_ratio,
+                    "upper_refine_shift_px": up_res.shift_px,
+                    "lower_refine_shift_px": lo_res.shift_px,
+                }
+
+    # Re-flag MIN/MAX per cut using tolerance compare
+    for cut in cuts:
+        if len(cut.measurements) >= 2:
+            vals = [m.cd_px for m in cut.measurements]
+            mn, mx = min(vals), max(vals)
+            for m in cut.measurements:
+                m.flag = (
+                    "MIN" if abs(m.cd_px - mn) < _FLOAT_EPS else
+                    "MAX" if abs(m.cd_px - mx) < _FLOAT_EPS else ""
+                )
 
 
 # ── Coordinate helpers ────────────────────────────────────────────────────────
@@ -430,7 +542,7 @@ def _refine_yedge_subpixel(
     smooth_k: int = 5,
     min_grad_frac: float = 0.10,
     peak_ratio_thr: float = 0.60,
-) -> float:
+) -> _SubpixelResult:
     """Refine a Y-edge position to subpixel precision using gradient-based detection.
 
     Extracts a narrow column profile from the raw grayscale image around
@@ -443,10 +555,13 @@ def _refine_yedge_subpixel(
     - Proximity: refined result must lie within ±proximity px of y_guess
     - Search window strictly bounded to ±search_half px of y_guess
 
-    Returns refined float Y position, or y_guess on any failure/fallback.
+    Returns _SubpixelResult with fallback_reason="" on success, or a reason
+    code string on failure (y_refined == y_guess in that case).
     """
+    _fallback = lambda reason: _SubpixelResult(y_guess, reason, 0.0, 0.0, 0.0)
+
     if image is None or image.ndim < 2:
-        return y_guess
+        return _fallback("invalid_image")
 
     img = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     h, w = img.shape
@@ -455,14 +570,14 @@ def _refine_yedge_subpixel(
     x0 = max(0, int(x_center) - half_col)
     x1 = min(w, int(x_center) + half_col + 1)
     if x1 - x0 < 1:
-        return y_guess
+        return _fallback("invalid_image")
 
     # Step 2: Y search window strictly bounded to ±search_half px
     y_lo = max(0, int(round(y_guess)) - search_half)
     y_hi = min(h, int(round(y_guess)) + search_half + 1)
     n = y_hi - y_lo
     if n < 3:
-        return y_guess
+        return _fallback("small_window")
 
     # Step 3: 1D profile — mean intensity over X strip
     profile = img[y_lo:y_hi, x0:x1].astype(np.float64).mean(axis=1)
@@ -470,7 +585,7 @@ def _refine_yedge_subpixel(
     # Step 4: relative gradient threshold — profile must have visible contrast
     p_range = float(profile.max() - profile.min())
     if p_range < 1.0:           # essentially flat region → no edge to find
-        return y_guess
+        return _fallback("flat_profile")
     min_grad_abs = min_grad_frac * p_range
 
     # Step 5: moving-average smoothing
@@ -482,11 +597,16 @@ def _refine_yedge_subpixel(
     # Step 6: absolute gradient
     abs_grad = np.abs(np.gradient(profile))
 
-    # Step 7: search interior only (avoid convolution boundary artefacts)
-    margin = max(1, k // 2)
+    # Step 7: search interior only (avoid convolution boundary artefacts).
+    # Margin must be k//2+1 so that abs_grad values that depend on zero-padded
+    # smoothed samples are excluded (np.convolve 'same' contaminates k//2 samples
+    # on each side, and np.gradient then propagates one more index outward).
+    margin = max(1, k // 2 + 1)
     lo_m = margin
-    hi_m = max(lo_m + 1, n - margin)
+    hi_m = min(max(lo_m + 1, n - margin), n)
     search_slice = abs_grad[lo_m:hi_m]
+    if len(search_slice) < 1:
+        return _fallback("small_window")
 
     peak_in_slice = int(np.argmax(search_slice))
     peak_local = peak_in_slice + lo_m
@@ -494,18 +614,20 @@ def _refine_yedge_subpixel(
 
     # Step 8: relative gradient threshold check
     if peak_val < min_grad_abs:
-        return y_guess
+        return _fallback("weak_gradient")
 
-    # Step 9: peak dominance check (simplified polarity / quality gate)
-    # Mask ±2 px around the primary peak and inspect residual
+    # Step 9: peak dominance check.
+    # A smoothed step edge creates a gradient plateau of width ≈ k-1 samples, so
+    # the exclusion zone must be wide enough to cover it: ±(k//2+1) from the peak.
+    _excl_r = k // 2 + 2   # half-width on the right (exclusive upper bound offset)
+    _excl_l = k // 2 + 1   # half-width on the left
     mask = np.ones(len(search_slice), dtype=bool)
-    excl_lo = max(0, peak_in_slice - 2)
-    excl_hi = min(len(search_slice), peak_in_slice + 3)
+    excl_lo = max(0, peak_in_slice - _excl_l)
+    excl_hi = min(len(search_slice), peak_in_slice + _excl_r)
     mask[excl_lo:excl_hi] = False
-    if mask.any():
-        second_val = float(search_slice[mask].max())
-        if second_val > peak_ratio_thr * peak_val:
-            return y_guess      # multiple peaks of similar height → ambiguous
+    second_val = float(search_slice[mask].max()) if mask.any() else 0.0
+    if mask.any() and second_val > peak_ratio_thr * peak_val:
+        return _fallback("ambiguous_peak")  # multiple peaks of similar height
 
     # Step 10: quadratic subpixel interpolation on gradient peak
     if 0 < peak_local < n - 1:
@@ -524,9 +646,11 @@ def _refine_yedge_subpixel(
 
     # Step 11: proximity constraint — refined must stay close to initial guess
     if abs(refined - y_guess) > proximity:
-        return y_guess
+        return _fallback("proximity_violation")
 
-    return refined
+    peak_strength = peak_val / (p_range + 1e-12)
+    ratio = second_val / peak_val if peak_val > 0 else 0.0
+    return _SubpixelResult(refined, "", peak_strength, ratio, refined - y_guess)
 
 
 def _rot_blob_to_ori(b: Any, orig_h: int) -> Any:

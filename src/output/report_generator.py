@@ -44,10 +44,17 @@ def _compute_stats(ok: list[float]) -> dict:
     mean_v   = _stats.mean(ok)
     median_v = _stats.median(ok)
     std_v    = _stats.stdev(ok) if n > 1 else 0.0
+    if n >= 2:
+        qs = _stats.quantiles(ok, n=4)
+        q25, q75 = qs[0], qs[2]
+    else:
+        q25 = q75 = ok[0]
     return {
         "Count":       n,
         "Mean (nm)":   f"{mean_v:.3f}",
         "Median (nm)": f"{median_v:.3f}",
+        "Q25 (nm)":    f"{q25:.3f}",
+        "Q75 (nm)":    f"{q75:.3f}",
         "Std Dev (nm)":f"{std_v:.3f}",
         "3-Sigma (nm)":f"{std_v * 3:.3f}",
         "Min (nm)":    f"{min(ok):.3f}",
@@ -76,6 +83,42 @@ def _histogram_b64(values: list[float]) -> str:
     ax.set_ylabel("Count")
     ax.set_title("CD Distribution")
     ax.legend(fontsize=8)
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png")
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _boxplot_b64(datasets: list[dict]) -> str:
+    """Render a side-by-side box plot. datasets=[{"label":str,"values":list[float]}].
+
+    Returns a base64-encoded PNG string, or "" if matplotlib is unavailable.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return ""
+    if not datasets or not any(d["values"] for d in datasets):
+        return ""
+    labels = [d["label"] for d in datasets]
+    data   = [d["values"] for d in datasets]
+    fig, ax = plt.subplots(figsize=(max(6, 2 + 1.5 * len(datasets)), 4), dpi=100)
+    bp = ax.boxplot(data, labels=labels, patch_artist=True,
+                    flierprops=dict(marker="o", markersize=3, alpha=0.5, linestyle="none"))
+    try:
+        colors = plt.colormaps["Set2"].colors
+    except AttributeError:
+        import matplotlib.cm as cm
+        colors = [cm.Set2(i / max(len(datasets), 1)) for i in range(len(datasets))]
+    for i, patch in enumerate(bp["boxes"]):
+        patch.set_facecolor(colors[i % len(colors)])
+        patch.set_alpha(0.75)
+    ax.set_ylabel("CD (nm)")
+    ax.set_title("CD Distribution by Dataset")
+    ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
     buf = io.BytesIO()
     fig.savefig(buf, format="png")
