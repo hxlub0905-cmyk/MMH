@@ -78,6 +78,10 @@ def records_to_legacy_cuts(records: list[MeasurementRecord]) -> list:
                 cy=float((y0 + y1) / 2),
             )
 
+        upper_edge = r.extra_metrics.get("upper_edge_refined")
+        lower_edge = r.extra_metrics.get("lower_edge_refined")
+        refine_used = r.extra_metrics.get("refine_used", False)
+
         m = YCDMeasurement(
             cmg_id=r.cmg_id,
             col_id=r.col_id,
@@ -89,6 +93,8 @@ def records_to_legacy_cuts(records: list[MeasurementRecord]) -> list:
             axis=r.axis,
             state_name=r.state_name,
             structure_name=getattr(r, "structure_name", ""),
+            y_upper_edge=float(upper_edge) if refine_used and upper_edge is not None else None,
+            y_lower_edge=float(lower_edge) if refine_used and lower_edge is not None else None,
         )
         cut_map[r.cmg_id].append(m)
 

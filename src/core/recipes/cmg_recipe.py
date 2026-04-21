@@ -229,24 +229,27 @@ class CMGRecipe(BaseRecipe):
         # X-CD path is completely untouched.
         if axis == "Y":
             raw_img = context.get("raw")
-            _edge_method = str(ec.get("ycd_edge_method", "subpixel")).lower()
-            if raw_img is not None and _edge_method == "subpixel":
-                _sp          = ec   # edge_locator_config carries subpixel knobs
-                _half_col    = int  (_sp.get("subpixel_half_col",    3))
-                _search_half = int  (_sp.get("subpixel_search_half", 10))
-                _proximity   = int  (_sp.get("subpixel_proximity",   5))
-                _smooth_k    = int  (_sp.get("subpixel_smooth_k",    5))
-                _grad_frac   = float(_sp.get("subpixel_min_grad_frac", 0.10))
-                _peak_ratio  = float(_sp.get("subpixel_peak_ratio",  0.60))
+            _edge_method = str(ec.get("ycd_edge_method", "threshold_crossing")).lower()
+            if raw_img is not None and _edge_method in ("subpixel", "threshold_crossing"):
+                _sp           = ec   # edge_locator_config carries all knobs
+                _half_col     = int  (_sp.get("subpixel_half_col",      3))
+                _search_half  = int  (_sp.get("subpixel_search_half",  10))
+                _proximity    = int  (_sp.get("subpixel_proximity",     5))
+                _smooth_k     = int  (_sp.get("subpixel_smooth_k",      5))
+                _grad_frac    = float(_sp.get("subpixel_min_grad_frac", 0.10))
+                _peak_ratio   = float(_sp.get("subpixel_peak_ratio",    0.60))
+                _threshold_frac = float(_sp.get("threshold_frac",       0.5))
                 # Stable X anchors from pitch-phase detection (may be empty)
-                _col_centers = context.get("mg_col_centers", [])
+                _col_centers  = context.get("mg_col_centers", [])
 
                 # Delegate refine + MIN/MAX re-flag to shared helper
                 apply_yedge_subpixel_to_cuts(
                     cuts, raw_img, nm_per_pixel,
+                    method=_edge_method,
                     half_col=_half_col, search_half=_search_half,
                     proximity=_proximity, smooth_k=_smooth_k,
                     min_grad_frac=_grad_frac, peak_ratio=_peak_ratio,
+                    threshold_frac=_threshold_frac,
                     col_centers=_col_centers, store_meta=True,
                 )
 
@@ -415,7 +418,8 @@ class CMGRecipe(BaseRecipe):
             edge_locator_config=RecipeConfig(data={
                 "x_overlap_ratio":        float(card.get("x_overlap_ratio",        0.5)),
                 "y_cluster_tol":          int  (card.get("y_cluster_tol",          10)),
-                "ycd_edge_method":        str  (card.get("ycd_edge_method",        "subpixel")),
+                "ycd_edge_method":        str  (card.get("ycd_edge_method",        "threshold_crossing")),
+                "threshold_frac":         float(card.get("threshold_frac",         0.5)),
                 "subpixel_half_col":      int  (card.get("subpixel_half_col",      3)),
                 "subpixel_search_half":   int  (card.get("subpixel_search_half",   10)),
                 "subpixel_proximity":     int  (card.get("subpixel_proximity",     5)),
@@ -444,20 +448,27 @@ def apply_yedge_subpixel_to_cuts(
     cuts: list,
     raw_img,
     nm_per_pixel: float,
+    method: str = "threshold_crossing",
     half_col: int = 3,
     search_half: int = 10,
     proximity: int = 5,
     smooth_k: int = 5,
     min_grad_frac: float = 0.10,
     peak_ratio: float = 0.60,
+    threshold_frac: float = 0.5,
     col_centers: list | None = None,
     store_meta: bool = True,
 ) -> None:
-    """Apply subpixel Y-edge refinement in place to a list of CMGCut objects.
+    """Apply Y-edge refinement in place to a list of CMGCut objects.
 
-    Modifies m.cd_px / m.cd_nm on each YCDMeasurement and re-flags MIN/MAX per
-    cut with tolerance compare.  Optionally stores debug info as m._refine_meta
-    (used by CMGRecipe.compute_metrics() to populate MeasurementRecord.extra_metrics).
+    method:
+      "threshold_crossing" (default) – intensity threshold at threshold_frac of
+                                        the local contrast range
+      "subpixel"                      – gradient peak + quadratic interpolation
+
+    Modifies m.cd_px / m.cd_nm and m.y_upper_edge / m.y_lower_edge on each
+    YCDMeasurement, then re-flags MIN/MAX per cut.
+    Optionally stores debug info as m._refine_meta (used by compute_metrics()).
 
     Safe to call from outside CMGRecipe — measure_workspace uses this for the
     legacy-cards path so both paths share the same refinement logic.
@@ -476,23 +487,39 @@ def apply_yedge_subpixel_to_cuts(
             y_up = float(ub.y1)
             y_lo = float(lb.y0)
 
-            up_res = _refine_yedge_subpixel(
-                raw_img, x_ctr, y_up,
-                half_col=half_col, search_half=search_half,
-                proximity=proximity, smooth_k=smooth_k,
-                min_grad_frac=min_grad_frac, peak_ratio_thr=peak_ratio,
-            )
-            lo_res = _refine_yedge_subpixel(
-                raw_img, x_ctr, y_lo,
-                half_col=half_col, search_half=search_half,
-                proximity=proximity, smooth_k=smooth_k,
-                min_grad_frac=min_grad_frac, peak_ratio_thr=peak_ratio,
-            )
+            if method == "threshold_crossing":
+                up_res = _refine_yedge_threshold_crossing(
+                    raw_img, x_ctr, y_up,
+                    half_col=half_col, search_half=search_half,
+                    proximity=proximity, smooth_k=smooth_k,
+                    threshold_frac=threshold_frac,
+                )
+                lo_res = _refine_yedge_threshold_crossing(
+                    raw_img, x_ctr, y_lo,
+                    half_col=half_col, search_half=search_half,
+                    proximity=proximity, smooth_k=smooth_k,
+                    threshold_frac=threshold_frac,
+                )
+            else:  # "subpixel" — gradient peak
+                up_res = _refine_yedge_subpixel(
+                    raw_img, x_ctr, y_up,
+                    half_col=half_col, search_half=search_half,
+                    proximity=proximity, smooth_k=smooth_k,
+                    min_grad_frac=min_grad_frac, peak_ratio_thr=peak_ratio,
+                )
+                lo_res = _refine_yedge_subpixel(
+                    raw_img, x_ctr, y_lo,
+                    half_col=half_col, search_half=search_half,
+                    proximity=proximity, smooth_k=smooth_k,
+                    min_grad_frac=min_grad_frac, peak_ratio_thr=peak_ratio,
+                )
 
             cd_ref = lo_res.y_refined - up_res.y_refined
             if cd_ref > 0.0:
                 m.cd_px = cd_ref
                 m.cd_nm = cd_ref * nm_per_pixel
+                m.y_upper_edge = up_res.y_refined
+                m.y_lower_edge = lo_res.y_refined
                 _refine_used = True
                 _fallback_reason = _build_fallback_reason(up_res, lo_res)
             else:
@@ -651,6 +678,98 @@ def _refine_yedge_subpixel(
     peak_strength = peak_val / (p_range + 1e-12)
     ratio = second_val / peak_val if peak_val > 0 else 0.0
     return _SubpixelResult(refined, "", peak_strength, ratio, refined - y_guess)
+
+
+def _refine_yedge_threshold_crossing(
+    image: np.ndarray,
+    x_center: float,
+    y_guess: float,
+    half_col: int = 3,
+    search_half: int = 10,
+    proximity: int = 8,
+    smooth_k: int = 3,
+    threshold_frac: float = 0.5,
+) -> _SubpixelResult:
+    """Refine a Y-edge by finding where intensity crosses a threshold level.
+
+    threshold = I_min + (I_max - I_min) * threshold_frac
+
+    I_max and I_min are the extrema of the smoothed 1D profile within the
+    search window.  The crossing closest to y_guess is returned.  Industry
+    standard uses threshold_frac=0.5 (50 % of the local contrast range).
+
+    Fallback reasons (y_refined == y_guess on failure):
+      "invalid_image"      – image None or wrong ndim
+      "small_window"       – search window < 3 rows
+      "flat_profile"       – profile contrast < 1 DN
+      "no_crossing"        – threshold not crossed anywhere in window
+      "proximity_violation"– closest crossing too far from y_guess
+    """
+    _fallback = lambda reason: _SubpixelResult(y_guess, reason, 0.0, 0.0, 0.0)
+
+    if image is None or image.ndim < 2:
+        return _fallback("invalid_image")
+
+    img = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    h, w = img.shape
+
+    # Step 1: narrow column strip
+    x0 = max(0, int(x_center) - half_col)
+    x1 = min(w, int(x_center) + half_col + 1)
+    if x1 - x0 < 1:
+        return _fallback("invalid_image")
+
+    # Step 2: Y search window
+    y_lo = max(0, int(round(y_guess)) - search_half)
+    y_hi = min(h, int(round(y_guess)) + search_half + 1)
+    n = y_hi - y_lo
+    if n < 3:
+        return _fallback("small_window")
+
+    # Step 3: 1D profile — mean intensity over X strip
+    profile = img[y_lo:y_hi, x0:x1].astype(np.float64).mean(axis=1)
+
+    # Step 4: contrast check
+    p_range = float(profile.max() - profile.min())
+    if p_range < 1.0:
+        return _fallback("flat_profile")
+
+    # Step 5: moving-average smoothing
+    k = smooth_k | 1
+    if n >= k:
+        kernel = np.ones(k, dtype=np.float64) / k
+        profile = np.convolve(profile, kernel, mode='same')
+
+    # Step 6: threshold level from smoothed profile extrema
+    i_max = float(profile.max())
+    i_min = float(profile.min())
+    threshold = i_min + (i_max - i_min) * threshold_frac
+
+    # Step 7: find all crossings, keep the one closest to y_guess
+    best_crossing: float | None = None
+    best_dist = float('inf')
+    for i in range(n - 1):
+        a, b_val = profile[i], profile[i + 1]
+        # Crossed when the two samples straddle the threshold (or one equals it)
+        if (a - threshold) * (b_val - threshold) <= 0:
+            denom = b_val - a
+            t = (threshold - a) / denom if abs(denom) > 1e-12 else 0.5
+            t = max(0.0, min(1.0, t))
+            crossing = float(y_lo) + i + t
+            dist = abs(crossing - y_guess)
+            if dist < best_dist:
+                best_dist = dist
+                best_crossing = crossing
+
+    if best_crossing is None:
+        return _fallback("no_crossing")
+
+    # Step 8: proximity constraint
+    if abs(best_crossing - y_guess) > proximity:
+        return _fallback("proximity_violation")
+
+    contrast = (i_max - i_min) / (i_max + 1e-12)
+    return _SubpixelResult(best_crossing, "", contrast, 0.0, best_crossing - y_guess)
 
 
 def _rot_blob_to_ori(b: Any, orig_h: int) -> Any:

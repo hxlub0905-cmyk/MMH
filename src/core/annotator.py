@@ -138,8 +138,10 @@ def _draw_measurement(
             cv2.line(canvas, (x_r, y_mid - _TICK_HALF),
                      (x_r, y_mid + _TICK_HALF), line_col, line_w, cv2.LINE_AA)
         else:
-            y_top = ub.y1
-            y_bot = lb.y0
+            # Prefer subpixel-refined edge positions when available so the
+            # measurement line spans exactly the gap being reported.
+            y_top = int(round(m.y_upper_edge)) if m.y_upper_edge is not None else ub.y1
+            y_bot = int(round(m.y_lower_edge)) if m.y_lower_edge is not None else lb.y0
             if y_bot <= y_top:
                 return
             x_mid = int((max(ub.x0, lb.x0) + min(ub.x1, lb.x1)) / 2)
@@ -162,8 +164,8 @@ def _draw_measurement(
             x_lbl = int((x_l + x_r) / 2) - tw // 2
             y_lbl = y_mid - _TICK_HALF - 3
         else:
-            y_top = ub.y1
-            y_bot = lb.y0
+            y_top = int(round(m.y_upper_edge)) if m.y_upper_edge is not None else ub.y1
+            y_bot = int(round(m.y_lower_edge)) if m.y_lower_edge is not None else lb.y0
             x_mid = int((max(ub.x0, lb.x0) + min(ub.x1, lb.x1)) / 2)
             x_lbl = x_mid + _TICK_HALF + 2
             y_lbl = int((y_top + y_bot) / 2) + th_px // 2

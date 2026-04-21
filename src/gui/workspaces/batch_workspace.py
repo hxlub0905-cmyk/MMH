@@ -261,7 +261,6 @@ class BatchWorkspace(QWidget):
         total_images = sum(len(r["image_records"]) for r in valid_rows)
         self._progress.setMaximum(total_images)
         self._progress.setValue(0)
-        self._progress_offset = 0
 
         if len(valid_rows) == 1:
             # Single-dataset path — backward compatible
@@ -299,7 +298,7 @@ class BatchWorkspace(QWidget):
 
     @pyqtSlot(int, int, str, str)
     def _on_progress(self, done: int, total: int, name: str, status: str) -> None:
-        self._progress.setValue(self._progress_offset + done)
+        self._progress.setValue(done)
         self._log_text.append(f"[{done}/{total}] {name}")
         item = QListWidgetItem(f"[{status}]  {name}")
         item.setForeground(Qt.GlobalColor.red if status != "OK" else Qt.GlobalColor.darkGreen)

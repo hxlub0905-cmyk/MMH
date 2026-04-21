@@ -216,8 +216,20 @@ class MeasureWorkspace(QWidget):
         form.setContentsMargins(8, 6, 8, 6)
 
         self._ec_method = QComboBox()
+        self._ec_method.addItem("Threshold Crossing (50%)",    "threshold_crossing")
         self._ec_method.addItem("Subpixel (gradient refined)", "subpixel")
         self._ec_method.addItem("BBox (original integer edge)", "bbox")
+
+        self._ec_threshold_frac = QDoubleSpinBox()
+        self._ec_threshold_frac.setRange(0.01, 0.99)
+        self._ec_threshold_frac.setSingleStep(0.05)
+        self._ec_threshold_frac.setValue(0.5)
+        self._ec_threshold_frac.setDecimals(2)
+        self._ec_method.currentIndexChanged.connect(
+            lambda: self._ec_threshold_frac.setEnabled(
+                self._ec_method.currentData() == "threshold_crossing"
+            )
+        )
 
         self._ec_overlap = QDoubleSpinBox()
         self._ec_overlap.setRange(0.0, 1.0)
@@ -236,8 +248,9 @@ class MeasureWorkspace(QWidget):
         self._ec_border.setSuffix(" px")
         self._ec_border.setSpecialValueText("off")
 
-        form.addRow("Y-CD method:", self._ec_method)
-        form.addRow("X overlap:", self._ec_overlap)
+        form.addRow("Y-CD method:",     self._ec_method)
+        form.addRow("Threshold level:", self._ec_threshold_frac)
+        form.addRow("X overlap:",       self._ec_overlap)
         form.addRow("Cluster tol:", self._ec_cluster_tol)
         form.addRow("Border exclusion:", self._ec_border)
         return box
@@ -251,9 +264,11 @@ class MeasureWorkspace(QWidget):
         if desc is None:
             return
         ec = desc.edge_locator_config
-        _method = str(ec.get("ycd_edge_method", "subpixel")).lower()
+        _method = str(ec.get("ycd_edge_method", "threshold_crossing")).lower()
         idx = self._ec_method.findData(_method)
         self._ec_method.setCurrentIndex(idx if idx >= 0 else 0)
+        self._ec_threshold_frac.setValue(float(ec.get("threshold_frac", 0.5)))
+        self._ec_threshold_frac.setEnabled(_method == "threshold_crossing")
         self._ec_overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
         self._ec_cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
         self._ec_border.setValue(int(ec.get("border_margin_px", 0)))
@@ -376,6 +391,7 @@ class MeasureWorkspace(QWidget):
             edge_locator_config=RecipeConfig(data={
                 **_existing_ec,
                 "ycd_edge_method":  self._ec_method.currentData(),
+                "threshold_frac":   self._ec_threshold_frac.value(),
                 "x_overlap_ratio":  self._ec_overlap.value(),
                 "y_cluster_tol":    self._ec_cluster_tol.value(),
                 "border_margin_px": self._ec_border.value(),
@@ -485,9 +501,10 @@ class MeasureWorkspace(QWidget):
         nm_px = self._ctrl.get_nm_per_pixel()
 
         # Edge-locator panel values (shared with recipe mode)
-        _ec_method      = self._ec_method.currentData()
-        _ec_overlap     = self._ec_overlap.value()
-        _ec_cluster_tol = self._ec_cluster_tol.value()
+        _ec_method          = self._ec_method.currentData()
+        _ec_threshold_frac  = self._ec_threshold_frac.value()
+        _ec_overlap         = self._ec_overlap.value()
+        _ec_cluster_tol     = self._ec_cluster_tol.value()
 
         full_mask = np.zeros_like(raw, dtype=np.uint8)
         cuts_all: list = []
@@ -588,10 +605,12 @@ class MeasureWorkspace(QWidget):
                         m.upper_blob = _rot_blob_to_ori(m.upper_blob, orig_h)
                         m.lower_blob = _rot_blob_to_ori(m.lower_blob, orig_h)
 
-            # Apply subpixel refinement for Y-CD if method is "subpixel"
-            if axis == "Y" and _ec_method == "subpixel":
+            # Apply Y-edge refinement for threshold_crossing or subpixel methods
+            if axis == "Y" and _ec_method in ("subpixel", "threshold_crossing"):
                 apply_yedge_subpixel_to_cuts(
                     cuts, roi, nm_px,
+                    method=_ec_method,
+                    threshold_frac=_ec_threshold_frac,
                     col_centers=col_centers,
                     store_meta=False,  # legacy-cuts path doesn't use MeasurementRecord
                 )

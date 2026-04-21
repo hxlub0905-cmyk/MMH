@@ -205,8 +205,19 @@ class RecipeWorkspace(QWidget):
         self._cluster_tol = QSpinBox();       self._cluster_tol.setRange(1, 100);  self._cluster_tol.setValue(10)
         self._border_margin = QSpinBox();     self._border_margin.setRange(0, 200); self._border_margin.setValue(0); self._border_margin.setSuffix(" px"); self._border_margin.setSpecialValueText("off")
         self._edge_method = QComboBox()
+        self._edge_method.addItem("Threshold Crossing (50%)",    "threshold_crossing")
         self._edge_method.addItem("Subpixel (gradient refined)", "subpixel")
         self._edge_method.addItem("BBox (original integer edge)", "bbox")
+        self._threshold_frac = QDoubleSpinBox()
+        self._threshold_frac.setRange(0.01, 0.99)
+        self._threshold_frac.setSingleStep(0.05)
+        self._threshold_frac.setValue(0.5)
+        self._threshold_frac.setDecimals(2)
+        self._edge_method.currentIndexChanged.connect(
+            lambda: self._threshold_frac.setEnabled(
+                self._edge_method.currentData() == "threshold_crossing"
+            )
+        )
         self._range_enabled = QCheckBox("Enable range filter"); self._range_enabled.setChecked(False)
         self._min_line_px = QDoubleSpinBox(); self._min_line_px.setRange(0, 9999); self._min_line_px.setValue(0); self._min_line_px.setSuffix(" px"); self._min_line_px.setSpecialValueText("off")
         self._max_line_px = QDoubleSpinBox(); self._max_line_px.setRange(0, 9999); self._max_line_px.setValue(0); self._max_line_px.setSuffix(" px"); self._max_line_px.setSpecialValueText("off")
@@ -218,6 +229,7 @@ class RecipeWorkspace(QWidget):
         edge_lbl.setStyleSheet("color:#666; font-size:11px;")
         af.addRow(edge_lbl)
         af.addRow("Y-CD edge method:", self._edge_method)
+        af.addRow("Threshold level:", self._threshold_frac)
         af.addRow("X overlap ratio:", self._overlap)
         af.addRow("Cluster tol (px):", self._cluster_tol)
         af.addRow("Border exclusion:", self._border_margin)
@@ -297,9 +309,11 @@ class RecipeWorkspace(QWidget):
         self._strip_normalize_x.setChecked(bool(dc.get("col_mask_normalize_x", True)))
 
         ec = desc.edge_locator_config
-        _method = str(ec.get("ycd_edge_method", "subpixel")).lower()
+        _method = str(ec.get("ycd_edge_method", "threshold_crossing")).lower()
         _method_idx = self._edge_method.findData(_method)
         self._edge_method.setCurrentIndex(_method_idx if _method_idx >= 0 else 0)
+        self._threshold_frac.setValue(float(ec.get("threshold_frac", 0.5)))
+        self._threshold_frac.setEnabled(_method == "threshold_crossing")
         self._overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
         self._cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
         self._border_margin.setValue(int(ec.get("border_margin_px", 0)))
@@ -444,6 +458,7 @@ class RecipeWorkspace(QWidget):
                 # then override the ones the UI explicitly controls.
                 **(desc.edge_locator_config.to_dict() if desc else {}),
                 "ycd_edge_method":  self._edge_method.currentData(),
+                "threshold_frac":   self._threshold_frac.value(),
                 "x_overlap_ratio":  self._overlap.value(),
                 "y_cluster_tol":    self._cluster_tol.value(),
                 "border_margin_px": self._border_margin.value(),

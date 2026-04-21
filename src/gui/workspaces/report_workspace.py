@@ -296,9 +296,25 @@ class ReportWorkspace(QWidget):
 
         if dlg.export_html:
             try:
-                from ...output.report_generator import generate_report_from_records
-                generate_report_from_records(self._records, out / f"report_{ts}.html",
-                                             self._image_records, self._batch_run)
+                if self._multi_batch_run:
+                    from ...output.report_generator import generate_multi_dataset_report
+                    datasets_data = []
+                    for ds in self._multi_batch_run.datasets:
+                        vals = _collect_vals_from_results(ds.output_manifest.get("results", []))
+                        vals = self._apply_outlier_filter(vals)
+                        nm_pp = _infer_nm_per_pixel(ds.output_manifest.get("results", []))
+                        datasets_data.append({
+                            "label":        ds.dataset_label or "Dataset",
+                            "values":       vals,
+                            "total_images": ds.total_images,
+                            "fail_count":   ds.fail_count,
+                            "nm_per_pixel": nm_pp,
+                        })
+                    generate_multi_dataset_report(datasets_data, out / f"report_{ts}.html")
+                else:
+                    from ...output.report_generator import generate_report_from_records
+                    generate_report_from_records(self._records, out / f"report_{ts}.html",
+                                                 self._image_records, self._batch_run)
             except Exception as exc:
                 errors.append(f"HTML: {exc}")
 
@@ -449,6 +465,17 @@ def _clear_vbox(layout) -> None:
         item = layout.takeAt(0)
         if item and item.widget():
             item.widget().deleteLater()
+
+
+def _infer_nm_per_pixel(results: list[dict]) -> float:
+    """Infer nm/pixel from the first measurement that has both raw_px and calibrated_nm."""
+    for r in results:
+        for m_dict in r.get("measurements", []):
+            raw_px = float(m_dict.get("raw_px", 0.0))
+            cal_nm = float(m_dict.get("calibrated_nm", 0.0))
+            if raw_px > 0 and cal_nm > 0:
+                return cal_nm / raw_px
+    return 1.0
 
 
 def _check_pandas() -> bool:
