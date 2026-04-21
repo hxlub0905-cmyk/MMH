@@ -126,6 +126,124 @@ def _boxplot_b64(datasets: list[dict]) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def generate_multi_dataset_report(
+    datasets_data: list[dict],
+    out_path: "Path",
+) -> None:
+    """Generate an HTML report with separate statistics and histogram per dataset,
+    plus a combined boxplot.
+
+    Each entry in datasets_data must have:
+        "label"        : str
+        "values"       : list[float]   — filtered CD values in nm
+        "total_images" : int
+        "fail_count"   : int
+        "nm_per_pixel" : float
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    total_images = sum(d.get("total_images", 0) for d in datasets_data)
+    total_fail   = sum(d.get("fail_count",   0) for d in datasets_data)
+    total_ok     = total_images - total_fail
+
+    # Combined boxplot
+    boxplot_b64 = _boxplot_b64([
+        {"label": d["label"], "values": d["values"]} for d in datasets_data
+    ])
+
+    # Per-dataset sections
+    dataset_sections = ""
+    for d in datasets_data:
+        label   = d["label"]
+        vals    = d["values"]
+        n_total = d.get("total_images", len(vals))
+        n_fail  = d.get("fail_count", 0)
+        n_ok    = n_total - n_fail
+        nm_pp   = d.get("nm_per_pixel", 1.0)
+
+        stats      = _compute_stats(vals)
+        hist_b64   = _histogram_b64(vals) if vals else ""
+        stat_rows  = "".join(
+            f"<tr><td>{k}</td><td><b>{v}</b></td></tr>" for k, v in stats.items()
+        )
+        hist_tag = (
+            f'<img src="data:image/png;base64,{hist_b64}" '
+            f'alt="histogram" style="max-width:680px;display:block;margin:8px 0">'
+            if hist_b64 else
+            '<p style="color:#888">Histogram unavailable (install matplotlib).</p>'
+        )
+        dataset_sections += f"""
+<div class="dataset-section">
+  <h2>{label}</h2>
+  <p style="color:#666;font-size:13px">nm/pixel: {nm_pp}</p>
+  <div class="summary">
+    <div class="card"><div class="val">{n_total}</div>Total</div>
+    <div class="card"><div class="val" style="color:#2a7a2a">{n_ok}</div>OK</div>
+    <div class="card"><div class="val fail">{n_fail}</div>Failed</div>
+  </div>
+  <h3>Y-CD Statistics</h3>
+  <table>
+    <tr><th>Metric</th><th>Value</th></tr>
+    {stat_rows}
+  </table>
+  <h3>Y-CD Distribution</h3>
+  {hist_tag}
+</div>
+<hr class="ds-sep">
+"""
+
+    boxplot_tag = (
+        f'<img src="data:image/png;base64,{boxplot_b64}" '
+        f'alt="boxplot" style="max-width:800px;display:block;margin:8px auto">'
+        if boxplot_b64 else
+        '<p style="color:#888">Boxplot unavailable (install matplotlib).</p>'
+    )
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SEM MM Multi-Dataset Report</title>
+<style>
+  body {{ font-family: Arial, sans-serif; margin: 32px; color: #222; }}
+  h1 {{ color: #2c5f8a; }}
+  h2 {{ color: #2c5f8a; border-bottom: 2px solid #2c5f8a; padding-bottom: 4px; margin-top: 32px; }}
+  h3 {{ color: #444; border-bottom: 1px solid #ddd; padding-bottom: 3px; }}
+  table {{ border-collapse: collapse; margin-bottom: 16px; }}
+  td, th {{ border: 1px solid #ccc; padding: 6px 14px; }}
+  th {{ background: #eaf0f8; }}
+  .summary {{ display: flex; gap: 16px; margin: 12px 0; }}
+  .card {{ background: #f5f8fc; border: 1px solid #d0dcea; border-radius: 6px;
+           padding: 10px 18px; min-width: 100px; text-align: center; }}
+  .card .val {{ font-size: 1.8em; font-weight: bold; color: #2c5f8a; }}
+  .fail {{ color: #c00; }}
+  .dataset-section {{ margin-bottom: 16px; }}
+  hr.ds-sep {{ border: none; border-top: 1px dashed #ccc; margin: 24px 0; }}
+  .overview {{ background:#f0f5ff; border:1px solid #c0d0ee; border-radius:6px;
+               padding:14px 20px; margin-bottom:24px; }}
+</style>
+</head>
+<body>
+<h1>SEM MM — Multi-Dataset Batch Report</h1>
+<p>Generated: {timestamp}</p>
+
+<div class="overview">
+  <strong>Overall Summary</strong>&nbsp;&nbsp;
+  Total datasets: <b>{len(datasets_data)}</b> &nbsp;|&nbsp;
+  Total images: <b>{total_images}</b> &nbsp;|&nbsp;
+  OK: <b style="color:#2a7a2a">{total_ok}</b> &nbsp;|&nbsp;
+  Failed: <b class="fail">{total_fail}</b>
+</div>
+
+<h2>CD Distribution Comparison</h2>
+{boxplot_tag}
+
+<h2>Per-Dataset Results</h2>
+{dataset_sections}
+</body>
+</html>"""
+    out_path.write_text(html, encoding="utf-8")
+
+
 def generate_report_from_records(
     records: list,
     out_path: Path,

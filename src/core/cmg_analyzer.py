@@ -28,6 +28,11 @@ class YCDMeasurement:
     axis: str = "Y"
     state_name: str = ""
     structure_name: str = ""
+    # Subpixel-refined edge positions (set by apply_yedge_subpixel_to_cuts).
+    # When both are set the annotator uses these instead of blob bbox edges so
+    # the measurement line matches the reported CD value exactly.
+    y_upper_edge: "float | None" = None
+    y_lower_edge: "float | None" = None
 
 
 @dataclass

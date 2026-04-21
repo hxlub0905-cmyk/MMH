@@ -493,6 +493,8 @@ def apply_yedge_subpixel_to_cuts(
             if cd_ref > 0.0:
                 m.cd_px = cd_ref
                 m.cd_nm = cd_ref * nm_per_pixel
+                m.y_upper_edge = up_res.y_refined
+                m.y_lower_edge = lo_res.y_refined
                 _refine_used = True
                 _fallback_reason = _build_fallback_reason(up_res, lo_res)
             else:

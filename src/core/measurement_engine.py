@@ -115,18 +115,31 @@ class MeasurementEngine:
             start_time=datetime.now(timezone.utc).isoformat(),
             worker_count=max_workers or max(1, (os.cpu_count() or 2) - 1),
         )
+        total_all = sum(len(ds["image_records"]) for ds in datasets)
+        offset = 0
         for i, ds in enumerate(datasets):
             label = ds.get("label", f"Dataset {i+1}")
             if on_dataset_start:
                 on_dataset_start(i + 1, len(datasets), label)
+
+            # Wrap the progress callback so `done` is global across all datasets
+            # and `total` reflects the overall image count — preventing the bar
+            # from resetting at the start of each dataset.
+            ds_offset = offset
+            def _wrapped(done, _total, name, status,
+                         _off=ds_offset, _tot=total_all):
+                if on_progress:
+                    on_progress(done + _off, _tot, name, status)
+
             br = self.run_batch(
                 image_records=ds["image_records"],
                 recipe_ids=ds["recipe_ids"],
-                on_progress=on_progress,
+                on_progress=_wrapped if on_progress else None,
                 max_workers=max_workers,
             )
             br.dataset_label = label
             mbr.datasets.append(br)
+            offset += len(ds["image_records"])
         mbr.end_time = datetime.now(timezone.utc).isoformat()
         return mbr
 
