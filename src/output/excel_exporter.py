@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 from pathlib import Path
-import pandas as pd
+
+try:
+    import pandas as pd
+except ImportError as _e:
+    raise ImportError(
+        "pandas is required for Excel export. Run: pip install \"pandas>=2.0\" openpyxl"
+    ) from _e
+
 from ._common import results_to_dataframe
 
 
@@ -11,12 +18,14 @@ def export_excel(results: list[dict], out_path: Path, nm_per_pixel: float) -> No
     ok = df[df["status"] == "OK"]["y_cd_nm"].dropna()
 
     stats = {
-        "Metric": ["Count", "Mean (nm)", "Median (nm)", "Std Dev (nm)",
-                   "3-Sigma (nm)", "Min (nm)", "Max (nm)"],
+        "Metric": ["Count", "Mean (nm)", "Median (nm)", "Q25 (nm)", "Q75 (nm)",
+                   "Std Dev (nm)", "3-Sigma (nm)", "Min (nm)", "Max (nm)"],
         "Value": [
             len(ok),
             round(ok.mean(), 3) if len(ok) else "N/A",
             round(ok.median(), 3) if len(ok) else "N/A",
+            round(ok.quantile(0.25), 3) if len(ok) else "N/A",
+            round(ok.quantile(0.75), 3) if len(ok) else "N/A",
             round(ok.std(), 3) if len(ok) else "N/A",
             round(ok.std() * 3, 3) if len(ok) else "N/A",
             round(ok.min(), 3) if len(ok) else "N/A",
@@ -55,12 +64,14 @@ def export_excel_from_records(
     df = records_to_dataframe(records, image_records)
     ok = df[df["status"] == "OK"]["y_cd_nm"].dropna()
     stats = {
-        "Metric": ["Count", "Mean (nm)", "Median (nm)", "Std Dev (nm)",
-                   "3-Sigma (nm)", "Min (nm)", "Max (nm)"],
+        "Metric": ["Count", "Mean (nm)", "Median (nm)", "Q25 (nm)", "Q75 (nm)",
+                   "Std Dev (nm)", "3-Sigma (nm)", "Min (nm)", "Max (nm)"],
         "Value": [
             len(ok),
             round(ok.mean(), 3) if len(ok) else "N/A",
             round(ok.median(), 3) if len(ok) else "N/A",
+            round(ok.quantile(0.25), 3) if len(ok) else "N/A",
+            round(ok.quantile(0.75), 3) if len(ok) else "N/A",
             round(ok.std(), 3) if len(ok) else "N/A",
             round(ok.std() * 3, 3) if len(ok) else "N/A",
             round(ok.min(), 3) if len(ok) else "N/A",

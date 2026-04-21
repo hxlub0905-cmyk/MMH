@@ -75,6 +75,8 @@ class WorkspaceHost(QTabWidget):
         # Recipe changes → refresh selectors
         self._recipe.recipe_saved.connect(self._measure.refresh_recipe_selector)
         self._recipe.recipe_saved.connect(self._batch.refresh_recipe_selector)
+        self._measure.recipe_saved.connect(self._batch.refresh_recipe_selector)
+        self._measure.recipe_saved.connect(lambda _: self._recipe.refresh_from_registry())
 
         # Bubble status messages up to MainWindow status bar
         for ws in (self._browse, self._recipe, self._measure,

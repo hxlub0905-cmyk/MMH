@@ -31,7 +31,7 @@ class ReviewWorkspace(QWidget):
 
         # Batch mode state
         self._batch_entries: list[dict] = []
-        self._batch_records: list[list[MeasurementRecord]] = []
+        self._batch_records: dict[int, list[MeasurementRecord]] = {}  # lazy cache
 
         # Cached current view (for overlay re-render without re-loading image)
         self._cur_raw   = None
@@ -205,7 +205,7 @@ class ReviewWorkspace(QWidget):
             return
 
         self._batch_entries = results
-        self._batch_records = []
+        self._batch_records = {}  # reset lazy cache
 
         self._img_list.clear()
         for entry in results:
@@ -216,14 +216,6 @@ class ReviewWorkspace(QWidget):
                 Qt.GlobalColor.darkRed if status != "OK" else Qt.GlobalColor.darkGreen
             )
             self._img_list.addItem(item)
-
-            records = []
-            for m_dict in entry.get("measurements", []):
-                try:
-                    records.append(MeasurementRecord.from_dict(m_dict))
-                except Exception:
-                    pass
-            self._batch_records.append(records)
 
         self._list_panel.setVisible(True)
         self._batch_nav.setVisible(True)
@@ -241,7 +233,7 @@ class ReviewWorkspace(QWidget):
         self._result = None
         self._focused = None
         self._batch_entries = []
-        self._batch_records = []
+        self._batch_records = {}
         self._cur_raw  = None
         self._cur_mask = None
         self._cur_cuts = []
@@ -273,6 +265,14 @@ class ReviewWorkspace(QWidget):
 
     def _load_batch_entry(self, idx: int) -> None:
         entry = self._batch_entries[idx]
+        if idx not in self._batch_records:
+            recs = []
+            for m_dict in entry.get("measurements", []):
+                try:
+                    recs.append(MeasurementRecord.from_dict(m_dict))
+                except Exception:
+                    pass
+            self._batch_records[idx] = recs
         records = self._batch_records[idx]
         image_path = entry.get("image_path", "")
         name = Path(image_path).name

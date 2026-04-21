@@ -29,6 +29,7 @@ from ..._compat import records_to_legacy_cuts
 
 class MeasureWorkspace(QWidget):
     run_completed  = pyqtSignal(object)   # PipelineResult
+    recipe_saved   = pyqtSignal(object)   # MeasurementRecipe descriptor
     status_message = pyqtSignal(str)
 
     def __init__(
@@ -322,16 +323,20 @@ class MeasureWorkspace(QWidget):
         if not cards:
             QMessageBox.information(self, "No profiles", "Add at least one measurement profile first.")
             return
-        saved = []
+        saved_names = []
+        saved_descs = []
         for card in cards:
             try:
                 desc = self._registry.import_from_card(card)
-                saved.append(desc.recipe_name)
+                saved_names.append(desc.recipe_name)
+                saved_descs.append(desc)
             except Exception as exc:
                 QMessageBox.warning(self, "Save failed", f"Card '{card.get('name','')}': {exc}")
-        if saved:
+        if saved_names:
             self._refresh_recipe_selector_internal()
-            self.status_message.emit(f"Saved recipe(s): {', '.join(saved)}")
+            self.status_message.emit(f"Saved recipe(s): {', '.join(saved_names)}")
+            for desc in saved_descs:
+                self.recipe_saved.emit(desc)
 
     # ── Run logic ─────────────────────────────────────────────────────────────
 

@@ -44,10 +44,17 @@ def _compute_stats(ok: list[float]) -> dict:
     mean_v   = _stats.mean(ok)
     median_v = _stats.median(ok)
     std_v    = _stats.stdev(ok) if n > 1 else 0.0
+    if n >= 2:
+        qs = _stats.quantiles(ok, n=4)
+        q25, q75 = qs[0], qs[2]
+    else:
+        q25 = q75 = ok[0]
     return {
         "Count":       n,
         "Mean (nm)":   f"{mean_v:.3f}",
         "Median (nm)": f"{median_v:.3f}",
+        "Q25 (nm)":    f"{q25:.3f}",
+        "Q75 (nm)":    f"{q75:.3f}",
         "Std Dev (nm)":f"{std_v:.3f}",
         "3-Sigma (nm)":f"{std_v * 3:.3f}",
         "Min (nm)":    f"{min(ok):.3f}",

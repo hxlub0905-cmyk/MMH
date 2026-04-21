@@ -156,25 +156,18 @@ class BatchWorkspace(QWidget):
         self._worker.start()
         self.status_message.emit(f"Batch started — {len(image_records)} images")
 
-    @pyqtSlot(int, int, str)
-    def _on_progress(self, done: int, total: int, name: str) -> None:
+    @pyqtSlot(int, int, str, str)
+    def _on_progress(self, done: int, total: int, name: str, status: str) -> None:
         self._progress.setValue(done)
         self._log_text.append(f"[{done}/{total}] {name}")
+        item = QListWidgetItem(f"[{status}]  {name}")
+        item.setForeground(Qt.GlobalColor.red if status != "OK" else Qt.GlobalColor.darkGreen)
+        self._image_list.addItem(item)
 
     @pyqtSlot(object)
     def _on_batch_finished(self, batch_run: BatchRunRecord) -> None:
         self._last_batch = batch_run
         self._progress.setValue(batch_run.total_images)
-
-        for entry in batch_run.output_manifest.get("results", []):
-            status = entry.get("status", "?")
-            name = Path(entry.get("image_path", "?")).name
-            item = QListWidgetItem(f"[{status}]  {name}")
-            item.setForeground(
-                Qt.GlobalColor.red if status != "OK" else Qt.GlobalColor.darkGreen
-            )
-            self._image_list.addItem(item)
-
         msg = (f"Batch complete  ·  {batch_run.success_count} OK  "
                f"·  {batch_run.fail_count} failed  —  Results sent to Review tab")
         self._log_text.append(msg)
@@ -188,7 +181,7 @@ class BatchWorkspace(QWidget):
 
 
 class _BatchWorker(QThread):
-    progress = pyqtSignal(int, int, str)
+    progress = pyqtSignal(int, int, str, str)  # done, total, name, status
     finished = pyqtSignal(object)
     error    = pyqtSignal(str)
 
@@ -210,7 +203,7 @@ class _BatchWorker(QThread):
             batch_run = self._engine.run_batch(
                 image_records=self._image_records,
                 recipe_ids=self._recipe_ids,
-                on_progress=lambda done, total, name: self.progress.emit(done, total, name),
+                on_progress=lambda done, total, name, status: self.progress.emit(done, total, name, status),
                 max_workers=self._max_workers,
             )
             self.finished.emit(batch_run)

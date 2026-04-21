@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 from pathlib import Path
-import pandas as pd
+
+try:
+    import pandas as pd
+except ImportError as _e:
+    raise ImportError(
+        "pandas is required for CSV export. Run: pip install \"pandas>=2.0\" openpyxl"
+    ) from _e
+
 from ._common import results_to_dataframe
 
 

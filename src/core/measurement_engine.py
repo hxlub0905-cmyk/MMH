@@ -38,7 +38,7 @@ class MeasurementEngine:
         self,
         image_records: list[ImageRecord],
         recipe_ids: list[str],
-        on_progress: Callable[[int, int, str], None] | None = None,
+        on_progress: Callable[[int, int, str, str], None] | None = None,
         max_workers: int | None = None,
     ) -> BatchRunRecord:
         """Run all recipe_ids against all image_records in parallel.
@@ -82,7 +82,8 @@ class MeasurementEngine:
                 result_dict = future.result()
                 results.append(result_dict)
                 if on_progress:
-                    on_progress(done, total, Path(result_dict["image_path"]).name)
+                    on_progress(done, total, Path(result_dict["image_path"]).name,
+                                result_dict["status"])
                 if result_dict["status"] == "OK":
                     batch.success_count += 1
                 else:
