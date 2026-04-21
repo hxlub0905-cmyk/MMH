@@ -84,7 +84,8 @@ class BatchWorkspace(QWidget):
         # Scroll area for rows
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setMaximumHeight(200)
+        scroll.setMinimumHeight(120)
+        scroll.setMaximumHeight(340)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._rows_container = QWidget()
         self._rows_layout = QVBoxLayout(self._rows_container)
@@ -244,7 +245,7 @@ class BatchWorkspace(QWidget):
             valid_rows.append({
                 "label": dr.label_edit.text().strip() or f"Dataset {len(valid_rows)+1}",
                 "folder": folder,
-                "recipe_id": recipe_id,
+                "recipe_ids": [recipe_id],
                 "image_records": [
                     ImageRecord.from_path(p, pixel_size_nm=cal.nm_per_pixel) for p in paths
                 ],
@@ -268,7 +269,7 @@ class BatchWorkspace(QWidget):
             self._worker = _BatchWorker(
                 engine=self._engine,
                 image_records=r["image_records"],
-                recipe_ids=[r["recipe_id"]],
+                recipe_ids=r["recipe_ids"],
                 max_workers=self._worker_spin.value(),
             )
             self._worker.progress.connect(self._on_progress)
