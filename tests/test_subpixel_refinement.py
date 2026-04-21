@@ -282,3 +282,71 @@ class TestMinMaxToleranceCompare:
         if len(result.records) >= 2:
             assert "MIN" in flags
             assert "MAX" in flags
+
+
+# ── Test 9: ycd_edge_method selection ────────────────────────────────────────
+
+class TestEdgeMethodSelection:
+    """Verify that ycd_edge_method="bbox" skips subpixel and produces integer-exact CDs."""
+
+    def _run_pipeline(self, tmp_path, method: str):
+        import cv2
+        from src.core.recipes.cmg_recipe import CMGRecipe
+        from src.core.recipe_base import RecipeConfig
+        from src.core.models import ImageRecord
+
+        img = np.zeros((200, 100), dtype=np.uint8)
+        img[20:60, 10:90] = 180    # upper blob  (y1 = 60)
+        img[100:140, 10:90] = 180  # lower blob  (y0 = 100)  → gap = 40 px (integer)
+
+        img_path = tmp_path / f"edge_{method}.tif"
+        cv2.imwrite(str(img_path), img)
+
+        ir = ImageRecord.from_path(str(img_path), pixel_size_nm=1.0)
+        recipe = CMGRecipe(legacy_card={
+            "name": "t", "axis": "Y",
+            "gl_min": 100, "gl_max": 220,
+            "ycd_edge_method": method,
+        })
+        result = recipe.run_pipeline(ir)
+        return result
+
+    def test_bbox_method_default_is_subpixel(self):
+        from src.core.recipes.cmg_recipe import CMGRecipe
+        recipe = CMGRecipe(legacy_card={"name": "x", "axis": "Y"})
+        ec = recipe.recipe_descriptor.edge_locator_config
+        assert ec.get("ycd_edge_method", "subpixel") == "subpixel"
+
+    def test_bbox_method_card_override(self):
+        from src.core.recipes.cmg_recipe import CMGRecipe
+        recipe = CMGRecipe(legacy_card={"name": "x", "axis": "Y",
+                                        "ycd_edge_method": "bbox"})
+        ec = recipe.recipe_descriptor.edge_locator_config
+        assert ec.get("ycd_edge_method") == "bbox"
+
+    def test_bbox_cd_is_integer(self, tmp_path):
+        result = self._run_pipeline(tmp_path, "bbox")
+        assert result.records, "Expected measurements"
+        for rec in result.records:
+            assert rec.raw_px == pytest.approx(round(rec.raw_px), abs=1e-9), \
+                f"BBox mode should yield integer cd_px, got {rec.raw_px}"
+
+    def test_bbox_has_no_refine_fields(self, tmp_path):
+        result = self._run_pipeline(tmp_path, "bbox")
+        assert result.records
+        for rec in result.records:
+            assert "refine_used" not in rec.extra_metrics, \
+                "BBox mode must not populate refine_used"
+
+    def test_subpixel_has_refine_fields(self, tmp_path):
+        result = self._run_pipeline(tmp_path, "subpixel")
+        assert result.records
+        for rec in result.records:
+            assert "refine_used" in rec.extra_metrics, \
+                "Subpixel mode must populate refine_used"
+
+    def test_both_methods_produce_positive_cd(self, tmp_path):
+        for method in ("bbox", "subpixel"):
+            result = self._run_pipeline(tmp_path, method)
+            for rec in result.records:
+                assert rec.raw_px > 0, f"{method} produced non-positive cd_px"

@@ -214,12 +214,15 @@ class CMGRecipe(BaseRecipe):
             y_cluster_tol=ec.get("y_cluster_tol", 10),
         )
 
-        # ── Subpixel Y-edge refinement (Y-CD only) ───────────────────────────
-        # Locally refines upper/lower blob bbox edges using raw-image gradients.
+        # ── Y-edge refinement (Y-CD only) ────────────────────────────────────
+        # ycd_edge_method controls which method is used:
+        #   "subpixel" (default) – gradient-based subpixel refinement on raw image
+        #   "bbox"               – keep original bounding-box integer edges
         # X-CD path is completely untouched.
         if axis == "Y":
             raw_img = context.get("raw")
-            if raw_img is not None:
+            _edge_method = str(ec.get("ycd_edge_method", "subpixel")).lower()
+            if raw_img is not None and _edge_method == "subpixel":
                 _sp          = ec   # edge_locator_config carries subpixel knobs
                 _half_col    = int  (_sp.get("subpixel_half_col",    3))
                 _search_half = int  (_sp.get("subpixel_search_half", 10))
@@ -469,6 +472,7 @@ class CMGRecipe(BaseRecipe):
             edge_locator_config=RecipeConfig(data={
                 "x_overlap_ratio":        float(card.get("x_overlap_ratio",        0.5)),
                 "y_cluster_tol":          int  (card.get("y_cluster_tol",          10)),
+                "ycd_edge_method":        str  (card.get("ycd_edge_method",        "subpixel")),
                 "subpixel_half_col":      int  (card.get("subpixel_half_col",      3)),
                 "subpixel_search_half":   int  (card.get("subpixel_search_half",   10)),
                 "subpixel_proximity":     int  (card.get("subpixel_proximity",     5)),
