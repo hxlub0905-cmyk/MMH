@@ -56,20 +56,34 @@ class TestAnalyze:
             assert m.cd_nm == pytest.approx(20.0)
 
     def test_min_max_flagging(self):
-        """MIN and MAX should be correctly flagged across columns."""
+        """top-3 MIN and top-3 MAX flagged per CMGCut (6-column scenario, no overlap)."""
+        # 6 columns → gaps 10,11,12,13,14,15 px; bottom-3 → MIN, top-3 → MAX
+        blobs = []
+        gaps = [10, 11, 12, 13, 14, 15]
+        for i, g in enumerate(gaps):
+            x0, x1 = i * 30, i * 30 + 20
+            blobs.append(_blob(i * 2,     x0,  0,  x1,  40))   # upper
+            blobs.append(_blob(i * 2 + 1, x0, 40 + g, x1, 40 + g + 40))  # lower
+        cuts = analyze(blobs, nm_per_pixel=1.0)
+        assert len(cuts) == 1
+        by_gap = {m.cd_px: m.flag for m in cuts[0].measurements}
+        for g in gaps[:3]:
+            assert by_gap[float(g)] == "MIN", f"gap={g} expected MIN"
+        for g in gaps[3:]:
+            assert by_gap[float(g)] == "MAX", f"gap={g} expected MAX"
+
+    def test_min_max_flagging_two_meas(self):
+        """With only 2 measurements both unique values fall in bottom-3 → both MIN."""
         blobs = [
-            _blob(0, 0,   0, 20, 40),   # col0 upper
-            _blob(1, 0,  50, 20, 90),   # col0 lower  gap=10px  → MIN
-            _blob(2, 30,  0, 50, 40),   # col1 upper
-            _blob(3, 30, 55, 50, 90),   # col1 lower  gap=15px  → MAX
+            _blob(0, 0,   0, 20, 40),
+            _blob(1, 0,  50, 20, 90),   # gap=10px
+            _blob(2, 30,  0, 50, 40),
+            _blob(3, 30, 55, 50, 90),   # gap=15px
         ]
         cuts = analyze(blobs, nm_per_pixel=1.0)
         assert len(cuts) == 1
-        flags = {m.col_id: m.flag for m in cuts[0].measurements}
-        min_col = min(flags, key=lambda c: [m.cd_px for m in cuts[0].measurements if m.col_id == c][0])
-        max_col = max(flags, key=lambda c: [m.cd_px for m in cuts[0].measurements if m.col_id == c][0])
-        assert flags[min_col] == "MIN"
-        assert flags[max_col] == "MAX"
+        flags = [m.flag for m in cuts[0].measurements]
+        assert all(f == "MIN" for f in flags), "2-measurement cut: both values → MIN"
 
     def test_two_cmg_cuts(self):
         """Single column with 3 blobs → 2 CMG cuts."""

@@ -701,7 +701,7 @@ class MeasureWorkspace(QWidget):
 
 def _filter_by_range(cuts: list, min_px: float, max_px: float) -> list:
     """Remove measurements outside [min_px, max_px] and re-flag MIN/MAX."""
-    from ...core.cmg_analyzer import CMGCut
+    from ...core.cmg_analyzer import CMGCut, _flag_top3
     filtered = []
     for cut in cuts:
         kept = [m for m in cut.measurements
@@ -709,13 +709,8 @@ def _filter_by_range(cuts: list, min_px: float, max_px: float) -> list:
                 and (max_px <= 0 or m.cd_px <= max_px)]
         if kept:
             filtered.append(CMGCut(cmg_id=cut.cmg_id, measurements=kept))
-    # Re-compute MIN/MAX flags on remaining measurements
-    all_m = [m for c in filtered for m in c.measurements]
-    if len(all_m) >= 2:
-        mn = min(m.cd_px for m in all_m)
-        mx = max(m.cd_px for m in all_m)
-        for m in all_m:
-            m.flag = "MIN" if m.cd_px == mn else ("MAX" if m.cd_px == mx else "")
+    for cut in filtered:
+        _flag_top3(cut.measurements)
     return filtered
 
 

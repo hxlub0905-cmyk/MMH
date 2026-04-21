@@ -204,6 +204,49 @@ class BatchRunRecord:
 
 
 @dataclass
+class GoldenSampleEntry:
+    """單張 golden sample 的參考資料。"""
+    file_path: str
+    reference_nm: float
+    cmg_id: int = 0
+    col_id: int = 0
+    notes: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "file_path": self.file_path,
+            "reference_nm": float(self.reference_nm),
+            "cmg_id": self.cmg_id,
+            "col_id": self.col_id,
+            "notes": self.notes,
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> "GoldenSampleEntry":
+        return GoldenSampleEntry(
+            file_path=d["file_path"],
+            reference_nm=float(d["reference_nm"]),
+            cmg_id=int(d.get("cmg_id", 0)),
+            col_id=int(d.get("col_id", 0)),
+            notes=d.get("notes", ""),
+        )
+
+
+@dataclass
+class ValidationResult:
+    """Recipe 驗證的單筆結果。"""
+    file_path: str
+    reference_nm: float
+    measured_nm: float | None
+    bias_nm: float | None
+    error: str = ""
+
+    @property
+    def success(self) -> bool:
+        return self.measured_nm is not None
+
+
+@dataclass
 class MultiDatasetBatchRun:
     """Aggregated result from running multiple (folder, recipe) dataset pairs."""
     run_id: str

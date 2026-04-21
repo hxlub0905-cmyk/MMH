@@ -311,11 +311,12 @@ class TestEdgeMethodSelection:
         result = recipe.run_pipeline(ir)
         return result
 
-    def test_bbox_method_default_is_subpixel(self):
+    def test_bbox_method_default_is_threshold_crossing(self):
+        """Default ycd_edge_method is threshold_crossing (set in _card_to_descriptor)."""
         from src.core.recipes.cmg_recipe import CMGRecipe
         recipe = CMGRecipe(legacy_card={"name": "x", "axis": "Y"})
         ec = recipe.recipe_descriptor.edge_locator_config
-        assert ec.get("ycd_edge_method", "subpixel") == "subpixel"
+        assert ec.get("ycd_edge_method") == "threshold_crossing"
 
     def test_bbox_method_card_override(self):
         from src.core.recipes.cmg_recipe import CMGRecipe

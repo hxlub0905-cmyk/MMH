@@ -1,7 +1,7 @@
 # AGENTS.md — SEM MM 開發指南
 
 本文件供 AI Agent 或開發者快速掌握 SEM MM 專案的架構、慣例與開發方式。
-最後更新：2026-04-20（Phase G2 六項新功能）
+最後更新：2026-04-21（Phase B 完成）
 
 ---
 
@@ -19,12 +19,13 @@
 
 | 項目 | 說明 |
 |------|------|
-| 版本階段 | **Phase A + F2 + G2 已完成** |
+| 版本階段 | **Phase A + F2 + G2 + B 已完成** |
 | 核心演算法 | CMG Y-CD / X-CD 量測（完整保留，以 Recipe 包裝） |
 | X-Proj 偵測 | Pitch-anchored 相位偵測（`detect_mg_column_centers_pitch_phase()`） |
 | 架構模型 | Recipe-driven SEM Metrology Platform |
-| 測試數量 | 36 項全數通過 |
-| 未完成 Phase | B（體驗升級）、C（能力升級）、D（平台化） |
+| 測試數量 | 77 項全數通過 |
+| Phase B 完成 | Bug 修復 5 項 + 批次持久化 + Recipe 驗證模式 + 歷史趨勢 Run Chart |
+| 未完成 Phase | C（能力升級）、D（平台化） |
 
 ---
 
@@ -43,6 +44,8 @@
 | 新增 Recipe 類型 | 繼承 `BaseRecipe`，放入 `src/core/recipes/` |
 | Recipe 持久化管理 | `src/core/recipe_registry.py` |
 | Batch / 單張執行引擎 | `src/core/measurement_engine.py` |
+| **批次結果持久化** | **`src/core/batch_run_store.py`** |
+| **Recipe 驗證邏輯** | **`src/core/recipe_validator.py`** |
 | 相容層（舊格式橋接） | `src/_compat.py` |
 | 修改 CMG 偵測演算法 | `src/core/cmg_analyzer.py`（⚠️ 核心演算法，謹慎修改） |
 | 修改影像前處理 | `src/core/preprocessor.py` |
@@ -50,6 +53,8 @@
 | 新匯出路徑 | `src/output/`（`_from_records` 系列函式） |
 | 舊匯出路徑（相容保留） | `src/output/`（原始函式，不建議新功能使用） |
 | UI 主題 | `src/gui/styles.py` |
+| **Recipe 驗證 Workspace** | **`src/gui/workspaces/validation_workspace.py`** |
+| **歷史趨勢 Workspace** | **`src/gui/workspaces/history_workspace.py`** |
 | 所有測試 | `tests/` 目錄 |
 | 開發歷程記錄 | `SESSION_LOG.md` |
 
@@ -61,24 +66,31 @@
 main.py
   └─ MainWindow (src/gui/main_window.py)  ← ~70 行殼層
        └─ WorkspaceHost (src/gui/workspace_host.py)  ← QTabWidget + 信號匯流
-            ├─ BrowseWorkspace   (workspaces/browse_workspace.py)
+            ├─ BrowseWorkspace      (workspaces/browse_workspace.py)
             │    ← FileTreePanel + ImageViewer（預覽）+ CalibrationManager
-            ├─ RecipeWorkspace   (workspaces/recipe_workspace.py)
+            ├─ RecipeWorkspace      (workspaces/recipe_workspace.py)
             │    ← Recipe CRUD 編輯器，存至 ~/.mmh/recipes/*.json
-            ├─ MeasureWorkspace  (workspaces/measure_workspace.py)
+            ├─ ValidationWorkspace  (workspaces/validation_workspace.py)  ← Phase B 新增
+            │    ← Golden Sample 驗證，Bias / Precision 統計，Export CSV
+            ├─ MeasureWorkspace     (workspaces/measure_workspace.py)
             │    ← ImageViewer + ResultsPanel + ControlPanel（舊版 cards）
             │       + Recipe 選擇器（新路徑）
-            ├─ ReviewWorkspace   (workspaces/review_workspace.py)
+            ├─ ReviewWorkspace      (workspaces/review_workspace.py)
             │    ← 單張影像 Review（Phase A 基礎版）
-            ├─ BatchWorkspace    (workspaces/batch_workspace.py)
+            ├─ BatchWorkspace       (workspaces/batch_workspace.py)
             │    ← Batch 執行 + _BatchWorker(QThread) + ProcessPoolExecutor
-            └─ ReportWorkspace   (workspaces/report_workspace.py)
-                 ← 統計 + 匯出按鈕（使用 _from_records 路徑）
+            │       + Load History 按鈕（_HistoryDialog）
+            ├─ ReportWorkspace      (workspaces/report_workspace.py)
+            │    ← 統計 + 匯出按鈕（使用 _from_records 路徑）
+            │       + Load from History 按鈕
+            └─ HistoryWorkspace     (workspaces/history_workspace.py)  ← Phase B 新增
+                 ← Run Chart 趨勢圖（matplotlib），批次清單，雙擊載入至 Report
 
 共用服務（由 WorkspaceHost 持有，各 Workspace 透過建構子注入）：
   RecipeRegistry      src/core/recipe_registry.py   → ~/.mmh/recipes/*.json
   CalibrationManager  src/core/calibration.py        → ~/.mmh/calibrations/*.json
   MeasurementEngine   src/core/measurement_engine.py → 執行 Recipe pipeline
+  BatchRunStore       src/core/batch_run_store.py    → ~/.mmh/runs/*.json  ← Phase B 新增
 ```
 
 ### 工作區信號流
@@ -448,9 +460,13 @@ pytest tests/ -v
 | 已修復 | mg_detector.py | Two-pass X-proj 受 PEPI 偏向，Auto-detect 失效 | ✅ F2 |
 | 已修復 | report_generator.py | matplotlib 未安裝時 HTML 匯出崩潰 | ✅ G2-4 |
 | 已修復 | cmg_recipe.py | `_card_to_descriptor()` 缺 17 個 col_mask/range 欄位 | ✅ G2-1 |
-| Phase B | batch_workspace.py | Batch 結果尚未加入 cache，大批次重新匯出效率低 | 待修 |
-| Phase B | review_workspace.py | Review 工作流程為基礎版，缺 Accept/Reject 操作 | 待修 |
-| Phase B | annotator.py | X-CD 標注 overlay 座標對齊待驗證 | 待修 |
+| 已修復 | cmg_analyzer.py | MIN/MAX 只標 1 筆，未標前 3 小 / 前 3 大 | ✅ B-Bug1 |
+| 已修復 | measurement_engine.py | 空 cuts 時 cmg_id_offset 不累加，造成衝突 | ✅ B-Bug2 |
+| 已修復 | review_workspace.py | 批次導航卡在 separator 列 | ✅ B-Bug3 |
+| 已修復 | results_panel.py | feature_id 解析靜默失敗 | ✅ B-Bug4 |
+| 已修復 | csv/excel_exporter.py | 頂層 pandas import 造成啟動崩潰 | ✅ B-Bug5 |
+| 待修 | review_workspace.py | Review 工作流程為基礎版，缺 Accept/Reject 操作 | 待修 |
+| 待修 | annotator.py | X-CD 標注 overlay 座標對齊待驗證 | 待修 |
 | Phase C | measure/batch | Worker 數可調已實作，但無上限保護 | 待改善 |
 | Phase D | recipe_registry.py | Recipe 以 JSON 檔案儲存，Phase D 遷移至 SQLite | 規劃中 |
 

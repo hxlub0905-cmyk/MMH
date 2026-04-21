@@ -19,12 +19,13 @@ from ...core.models import BatchRunRecord, ImageRecord, MeasurementRecord, Multi
 class ReportWorkspace(QWidget):
     status_message = pyqtSignal(str)
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, run_store=None, parent: QWidget | None = None):
         super().__init__(parent)
         self._batch_run: BatchRunRecord | None = None
         self._multi_batch_run: MultiDatasetBatchRun | None = None
         self._records:   list[MeasurementRecord] = []
         self._image_records: list[ImageRecord] = []
+        self._run_store = run_store
         self._build_ui()
 
     # ── Construction ──────────────────────────────────────────────────────────
@@ -76,9 +77,15 @@ class ReportWorkspace(QWidget):
         # Export button
         export_box = QGroupBox("Export")
         ev = QVBoxLayout(export_box)
+        btn_row = QHBoxLayout()
         btn_export = QPushButton("Export…")
         btn_export.clicked.connect(self._export_dialog_clicked)
-        ev.addWidget(btn_export)
+        btn_load_hist = QPushButton("Load from History…")
+        btn_load_hist.clicked.connect(self._load_from_history_clicked)
+        btn_row.addWidget(btn_export)
+        btn_row.addWidget(btn_load_hist)
+        btn_row.addStretch()
+        ev.addLayout(btn_row)
         iv.addWidget(export_box)
         iv.addStretch()
 
@@ -150,6 +157,30 @@ class ReportWorkspace(QWidget):
             f"Multi-batch report: {mbr.success_count}/{mbr.total_images} OK  "
             f"·  {len(mbr.datasets)} datasets"
         )
+
+    def load_from_file(self, file_path: str) -> None:
+        """Load a batch run from a persisted JSON file."""
+        if not self._run_store:
+            return
+        try:
+            result = self._run_store.load(file_path)
+        except Exception as exc:
+            self.status_message.emit(f"Failed to load: {exc}")
+            return
+        from ...core.models import MultiDatasetBatchRun
+        if isinstance(result, MultiDatasetBatchRun):
+            self.load_multi_batch(result)
+        else:
+            self.load_batch_run(result)
+
+    def _load_from_history_clicked(self) -> None:
+        if not self._run_store:
+            QMessageBox.information(self, "Not available", "No run store configured.")
+            return
+        from ..workspaces.batch_workspace import _HistoryDialog
+        dlg = _HistoryDialog(self._run_store, self)
+        dlg.run_selected.connect(self.load_from_file)
+        dlg.exec()
 
     # ── Filter / refresh ──────────────────────────────────────────────────────
 

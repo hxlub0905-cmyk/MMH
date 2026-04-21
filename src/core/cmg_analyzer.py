@@ -76,6 +76,23 @@ def _x_overlap_ratio(a: Blob, b: Blob) -> float:
     return overlap / min(a.width, b.width)
 
 
+def _flag_top3(measurements: list) -> None:
+    """Flag bottom-3 as MIN, top-3 as MAX within a single CMGCut. No overlap."""
+    if not measurements:
+        return
+    vals = [m.cd_px for m in measurements]
+    sorted_asc = sorted(set(vals))
+    min_vals = set(sorted_asc[:3])
+    max_vals = set(sorted(set(vals), reverse=True)[:3]) - min_vals  # MIN priority
+    for m in measurements:
+        if m.cd_px in min_vals:
+            m.flag = "MIN"
+        elif m.cd_px in max_vals:
+            m.flag = "MAX"
+        else:
+            m.flag = ""
+
+
 # ── main API ──────────────────────────────────────────────────────────────────
 
 def analyze(
@@ -170,14 +187,6 @@ def analyze(
     # ── Step 5: flag MIN / MAX per CMG cut ───────────────────────────────────
     cuts = sorted(cmg_map.values(), key=lambda c: c.cmg_id)
     for cut in cuts:
-        if len(cut.measurements) < 2:
-            continue
-        vals = [m.cd_nm for m in cut.measurements]
-        min_val, max_val = min(vals), max(vals)
-        for m in cut.measurements:
-            if m.cd_nm == min_val:
-                m.flag = "MIN"
-            elif m.cd_nm == max_val:
-                m.flag = "MAX"
+        _flag_top3(cut.measurements)
 
     return cuts

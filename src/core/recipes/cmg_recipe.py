@@ -17,6 +17,7 @@ import numpy as np
 
 from ..models import ImageRecord, MeasurementRecord
 from ..recipe_base import BaseRecipe, MeasurementRecipe, RecipeConfig
+from ..cmg_analyzer import _flag_top3
 
 # Tolerance for float equality in MIN/MAX comparisons (subpixel values are never
 # exact integers, so direct == is unsafe after refinement).
@@ -279,16 +280,9 @@ class CMGRecipe(BaseRecipe):
                 if kept:
                     filtered.append(_CMGCut(cmg_id=cut.cmg_id, measurements=kept))
             cuts = filtered
-            # Re-flag per cut (not global) to stay consistent with pre-filter semantics
+            # Re-flag per cut using top-3 logic
             for cut in cuts:
-                if len(cut.measurements) >= 2:
-                    mn = min(m.cd_px for m in cut.measurements)
-                    mx = max(m.cd_px for m in cut.measurements)
-                    for m in cut.measurements:
-                        m.flag = (
-                            "MIN" if abs(m.cd_px - mn) < _FLOAT_EPS else
-                            "MAX" if abs(m.cd_px - mx) < _FLOAT_EPS else ""
-                        )
+                _flag_top3(cut.measurements)
 
         context["cmg_cuts"] = cuts
 
@@ -545,16 +539,9 @@ def apply_yedge_subpixel_to_cuts(
                     "lower_refine_shift_px": lo_res.shift_px,
                 }
 
-    # Re-flag MIN/MAX per cut using tolerance compare
+    # Re-flag MIN/MAX per cut using top-3 logic
     for cut in cuts:
-        if len(cut.measurements) >= 2:
-            vals = [m.cd_px for m in cut.measurements]
-            mn, mx = min(vals), max(vals)
-            for m in cut.measurements:
-                m.flag = (
-                    "MIN" if abs(m.cd_px - mn) < _FLOAT_EPS else
-                    "MAX" if abs(m.cd_px - mx) < _FLOAT_EPS else ""
-                )
+        _flag_top3(cut.measurements)
 
 
 # ── Coordinate helpers ────────────────────────────────────────────────────────

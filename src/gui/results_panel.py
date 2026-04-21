@@ -135,12 +135,14 @@ class ResultsPanel(QWidget):
         if row < 0:
             return
         try:
-            # Column 3 = feature_id, format "cmg_id:col_id"
             feat = self._table.item(row, 3).text()
-            cmg_id, col_id = (int(v) for v in feat.split(":"))
+            parts = feat.split(":")
+            if len(parts) != 2:
+                raise ValueError(f"Unexpected feature_id format: {feat!r}")
+            cmg_id, col_id = int(parts[0]), int(parts[1])
             self.row_selected.emit(cmg_id, col_id)
-        except (AttributeError, ValueError):
-            pass
+        except (AttributeError, ValueError) as e:
+            print(f"[ResultsPanel] selection parse error: {e}")
 
     def _sync_state_filter(self) -> None:
         states = sorted({r["state_name"] for r in self._rows})
