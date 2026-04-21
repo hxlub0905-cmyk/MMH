@@ -15,7 +15,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 
 from ..image_viewer import ImageViewer
 from ..results_panel import ResultsPanel
-from ...core.models import BatchRunRecord, MeasurementRecord
+from ...core.models import BatchRunRecord, MeasurementRecord, MultiDatasetBatchRun
 from ...core.recipe_base import PipelineResult
 from ...core.annotator import OverlayOptions, draw_overlays
 from ..._compat import records_to_legacy_cuts
@@ -229,6 +229,45 @@ class ReviewWorkspace(QWidget):
             f"Review: batch loaded  ·  {ok}/{total} OK  —  click image to inspect"
         )
 
+    def load_multi_batch(self, mbr: MultiDatasetBatchRun) -> None:
+        """Load combined results from a multi-dataset batch run for browsing."""
+        combined: list[dict] = []
+        for ds in mbr.datasets:
+            combined.append({"_separator": True, "label": ds.dataset_label or "Dataset"})
+            combined.extend(ds.output_manifest.get("results", []))
+
+        self._batch_entries = combined
+        self._batch_records = {}
+
+        self._img_list.clear()
+        for entry in combined:
+            if entry.get("_separator"):
+                item = QListWidgetItem(f"── {entry['label']} ──")
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                item.setForeground(Qt.GlobalColor.gray)
+                font = item.font(); font.setBold(True); item.setFont(font)
+            else:
+                status = entry.get("status", "?")
+                name = Path(entry.get("image_path", "?")).name
+                item = QListWidgetItem(f"[{status}]  {name}")
+                item.setForeground(
+                    Qt.GlobalColor.darkRed if status != "OK" else Qt.GlobalColor.darkGreen
+                )
+            self._img_list.addItem(item)
+
+        self._list_panel.setVisible(True)
+        self._batch_nav.setVisible(True)
+
+        # Select first non-separator entry
+        for i, entry in enumerate(combined):
+            if not entry.get("_separator"):
+                self._img_list.setCurrentRow(i)
+                break
+
+        self.status_message.emit(
+            f"Review: multi-batch loaded  ·  {mbr.success_count}/{mbr.total_images} OK"
+        )
+
     def clear(self) -> None:
         self._result = None
         self._focused = None
@@ -249,6 +288,8 @@ class ReviewWorkspace(QWidget):
     def _on_batch_row_changed(self, row: int) -> None:
         if row < 0 or row >= len(self._batch_entries):
             return
+        if self._batch_entries[row].get("_separator"):
+            return  # skip separator header rows
         self._load_batch_entry(row)
         total = len(self._batch_entries)
         self._nav_label.setText(f"{row + 1} / {total}")

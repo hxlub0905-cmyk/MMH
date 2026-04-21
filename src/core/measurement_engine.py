@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from .models import ImageRecord, MeasurementRecord, BatchRunRecord
+from .models import ImageRecord, MeasurementRecord, BatchRunRecord, MultiDatasetBatchRun
 from .recipe_base import BaseRecipe, PipelineResult
 from .recipe_registry import RecipeRegistry
 
@@ -96,6 +96,39 @@ class MeasurementEngine:
         batch.end_time = datetime.now(timezone.utc).isoformat()
         batch.output_manifest["results"] = results
         return batch
+
+
+    def run_multi_batch(
+        self,
+        datasets: list[dict],
+        on_dataset_start: Callable[[int, int, str], None] | None = None,
+        on_progress: Callable[[int, int, str, str], None] | None = None,
+        max_workers: int | None = None,
+    ) -> MultiDatasetBatchRun:
+        """Run run_batch() sequentially for each dataset and aggregate results.
+
+        Each dataset dict must have keys: "label" (str), "image_records" (list),
+        "recipe_ids" (list[str]).
+        """
+        mbr = MultiDatasetBatchRun(
+            run_id=str(uuid.uuid4()),
+            start_time=datetime.now(timezone.utc).isoformat(),
+            worker_count=max_workers or max(1, (os.cpu_count() or 2) - 1),
+        )
+        for i, ds in enumerate(datasets):
+            label = ds.get("label", f"Dataset {i+1}")
+            if on_dataset_start:
+                on_dataset_start(i + 1, len(datasets), label)
+            br = self.run_batch(
+                image_records=ds["image_records"],
+                recipe_ids=ds["recipe_ids"],
+                on_progress=on_progress,
+                max_workers=max_workers,
+            )
+            br.dataset_label = label
+            mbr.datasets.append(br)
+        mbr.end_time = datetime.now(timezone.utc).isoformat()
+        return mbr
 
 
 # ── Top-level picklable worker functions ──────────────────────────────────────

@@ -203,6 +203,7 @@ class RecipeWorkspace(QWidget):
         # ── Tab 4: Analysis ───────────────────────────────────────────────────
         self._overlap     = QDoubleSpinBox(); self._overlap.setRange(0.0, 1.0);    self._overlap.setValue(0.5);   self._overlap.setSingleStep(0.05)
         self._cluster_tol = QSpinBox();       self._cluster_tol.setRange(1, 100);  self._cluster_tol.setValue(10)
+        self._border_margin = QSpinBox();     self._border_margin.setRange(0, 200); self._border_margin.setValue(0); self._border_margin.setSuffix(" px"); self._border_margin.setSpecialValueText("off")
         self._edge_method = QComboBox()
         self._edge_method.addItem("Subpixel (gradient refined)", "subpixel")
         self._edge_method.addItem("BBox (original integer edge)", "bbox")
@@ -219,6 +220,7 @@ class RecipeWorkspace(QWidget):
         af.addRow("Y-CD edge method:", self._edge_method)
         af.addRow("X overlap ratio:", self._overlap)
         af.addRow("Cluster tol (px):", self._cluster_tol)
+        af.addRow("Border exclusion:", self._border_margin)
         range_lbl = QLabel("─── Range Filter ───")
         range_lbl.setStyleSheet("color:#666; font-size:11px;")
         af.addRow(range_lbl)
@@ -300,6 +302,7 @@ class RecipeWorkspace(QWidget):
         self._edge_method.setCurrentIndex(_method_idx if _method_idx >= 0 else 0)
         self._overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
         self._cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
+        self._border_margin.setValue(int(ec.get("border_margin_px", 0)))
 
         self._range_enabled.setChecked(bool(dc.get("range_enabled", False)))
         self._min_line_px.setValue(float(dc.get("min_line_px", 0)))
@@ -440,9 +443,10 @@ class RecipeWorkspace(QWidget):
                 # Carry forward all existing keys (e.g. subpixel_* set via JSON),
                 # then override the ones the UI explicitly controls.
                 **(desc.edge_locator_config.to_dict() if desc else {}),
-                "ycd_edge_method": self._edge_method.currentData(),
-                "x_overlap_ratio": self._overlap.value(),
-                "y_cluster_tol": self._cluster_tol.value(),
+                "ycd_edge_method":  self._edge_method.currentData(),
+                "x_overlap_ratio":  self._overlap.value(),
+                "y_cluster_tol":    self._cluster_tol.value(),
+                "border_margin_px": self._border_margin.value(),
             }),
             version=((desc.version + 1) if desc else 1),
             created_at=created,

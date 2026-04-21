@@ -230,9 +230,16 @@ class MeasureWorkspace(QWidget):
         self._ec_cluster_tol.setValue(10)
         self._ec_cluster_tol.setSuffix(" px")
 
+        self._ec_border = QSpinBox()
+        self._ec_border.setRange(0, 200)
+        self._ec_border.setValue(0)
+        self._ec_border.setSuffix(" px")
+        self._ec_border.setSpecialValueText("off")
+
         form.addRow("Y-CD method:", self._ec_method)
         form.addRow("X overlap:", self._ec_overlap)
         form.addRow("Cluster tol:", self._ec_cluster_tol)
+        form.addRow("Border exclusion:", self._ec_border)
         return box
 
     def _on_recipe_combo_changed(self) -> None:
@@ -249,6 +256,7 @@ class MeasureWorkspace(QWidget):
         self._ec_method.setCurrentIndex(idx if idx >= 0 else 0)
         self._ec_overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
         self._ec_cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
+        self._ec_border.setValue(int(ec.get("border_margin_px", 0)))
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -367,9 +375,10 @@ class MeasureWorkspace(QWidget):
             recipe.recipe_descriptor,
             edge_locator_config=RecipeConfig(data={
                 **_existing_ec,
-                "ycd_edge_method": self._ec_method.currentData(),
-                "x_overlap_ratio": self._ec_overlap.value(),
-                "y_cluster_tol":   self._ec_cluster_tol.value(),
+                "ycd_edge_method":  self._ec_method.currentData(),
+                "x_overlap_ratio":  self._ec_overlap.value(),
+                "y_cluster_tol":    self._ec_cluster_tol.value(),
+                "border_margin_px": self._ec_border.value(),
             }),
         )
         recipe = _CMGRecipe(descriptor=_patched_desc)
@@ -552,6 +561,14 @@ class MeasureWorkspace(QWidget):
                     if _min_h and b.height < _min_h: continue
                     filtered.append(b)
                 blobs = filtered
+
+            # Border blob exclusion
+            _border_px = int(card.get("border_margin_px", self._ec_border.value()))
+            if _border_px > 0:
+                _bh, _bw = mask_local.shape[:2]
+                blobs = [b for b in blobs
+                         if b.x0 >= _border_px and b.y0 >= _border_px
+                         and b.x1 <= _bw - _border_px and b.y1 <= _bh - _border_px]
 
             # Pitch Grid Regularization: snap blobs onto layout grid, normalize X bounds
             if card.get("col_mask_enabled", False) and card.get("col_mask_regularize", False) and col_centers:

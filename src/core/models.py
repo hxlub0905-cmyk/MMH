@@ -165,6 +165,7 @@ class BatchRunRecord:
     start_time: str = ""
     end_time: str = ""
     worker_count: int = 1
+    dataset_label: str = ""
     error_log: list[dict] = field(default_factory=list)
     output_manifest: dict = field(default_factory=dict)
 
@@ -179,6 +180,7 @@ class BatchRunRecord:
             "start_time": self.start_time,
             "end_time": self.end_time,
             "worker_count": self.worker_count,
+            "dataset_label": self.dataset_label,
             "error_log": self.error_log,
             "output_manifest": self.output_manifest,
         }
@@ -195,6 +197,29 @@ class BatchRunRecord:
             start_time=d.get("start_time", ""),
             end_time=d.get("end_time", ""),
             worker_count=int(d.get("worker_count", 1)),
+            dataset_label=d.get("dataset_label", ""),
             error_log=d.get("error_log", []),
             output_manifest=d.get("output_manifest", {}),
         )
+
+
+@dataclass
+class MultiDatasetBatchRun:
+    """Aggregated result from running multiple (folder, recipe) dataset pairs."""
+    run_id: str
+    datasets: list[BatchRunRecord] = field(default_factory=list)
+    start_time: str = ""
+    end_time: str = ""
+    worker_count: int = 1
+
+    @property
+    def total_images(self) -> int:
+        return sum(d.total_images for d in self.datasets)
+
+    @property
+    def success_count(self) -> int:
+        return sum(d.success_count for d in self.datasets)
+
+    @property
+    def fail_count(self) -> int:
+        return sum(d.fail_count for d in self.datasets)

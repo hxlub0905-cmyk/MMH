@@ -176,6 +176,14 @@ class CMGRecipe(BaseRecipe):
                 filtered.append(b)
             blobs = filtered
 
+        # Border blob exclusion (edge_locator_config["border_margin_px"], 0 = disabled)
+        _border_px = int(self._descriptor.edge_locator_config.get("border_margin_px", 0))
+        if _border_px > 0:
+            _h, _w = mask_roi.shape[:2]
+            blobs = [b for b in blobs
+                     if b.x0 >= _border_px and b.y0 >= _border_px
+                     and b.x1 <= _w - _border_px and b.y1 <= _h - _border_px]
+
         # Pitch Grid Regularization: snap blobs onto layout grid, normalize X bounds
         if dc.get("col_mask_enabled", False) and dc.get("col_mask_regularize", False) and col_centers:
             tol    = int(dc.get("col_mask_pitch_tol_px", 5))
@@ -414,6 +422,7 @@ class CMGRecipe(BaseRecipe):
                 "subpixel_smooth_k":      int  (card.get("subpixel_smooth_k",      5)),
                 "subpixel_min_grad_frac": float(card.get("subpixel_min_grad_frac", 0.10)),
                 "subpixel_peak_ratio":    float(card.get("subpixel_peak_ratio",    0.60)),
+                "border_margin_px":       int  (card.get("border_margin_px",       0)),
             }),
         )
 
