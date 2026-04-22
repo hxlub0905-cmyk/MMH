@@ -9,6 +9,12 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from ..core.preprocessor import PreprocessParams
+from .collapsible import CollapsibleSection
+
+
+def _set_expanding(w) -> None:
+    """Make a form-field widget expand horizontally to fill available space."""
+    w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
 
 class ControlPanel(QWidget):
@@ -17,7 +23,10 @@ class ControlPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        # Preferred (not Expanding) so the panel only takes as much height as
+        # its content needs; the parent layout can add a stretch below it.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self.setMinimumHeight(160)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -25,6 +34,8 @@ class ControlPanel(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Don't force a vertical scrollbar; let it appear only on overflow.
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         inner = QWidget()
         self._layout = QVBoxLayout(inner)
@@ -35,7 +46,8 @@ class ControlPanel(QWidget):
         self._build_preprocess()
         self._build_measurement_profiles()
         self._build_actions()
-        self._layout.addStretch()
+        # No addStretch() here — it would create visual empty space inside the
+        # scroll area when content is shorter than the widget height.
 
         scroll.setWidget(inner)
         outer.addWidget(scroll)
@@ -43,6 +55,7 @@ class ControlPanel(QWidget):
     def _build_scale(self) -> None:
         box = QGroupBox("Scale")
         form = QFormLayout(box)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self._nm_px = QDoubleSpinBox()
         self._nm_px.setRange(0.0001, 10000.0)
@@ -50,12 +63,14 @@ class ControlPanel(QWidget):
         self._nm_px.setDecimals(4)
         self._nm_px.setSuffix(" nm/px")
         self._nm_px.valueChanged.connect(self._emit)
+        _set_expanding(self._nm_px)
         form.addRow(_lbl("nm / pixel"), self._nm_px)
         self._layout.addWidget(box)
 
     def _build_preprocess(self) -> None:
         box = QGroupBox("Pre-processing")
         form = QFormLayout(box)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self._gauss_k = QSpinBox(); self._gauss_k.setRange(1, 31); self._gauss_k.setSingleStep(2); self._gauss_k.setValue(3)
         self._morph_open_k = QSpinBox(); self._morph_open_k.setRange(1, 31); self._morph_open_k.setSingleStep(2); self._morph_open_k.setValue(3)
@@ -67,9 +82,9 @@ class ControlPanel(QWidget):
         self._morph_close_k.valueChanged.connect(self._emit)
         self._use_clahe.stateChanged.connect(self._emit)
 
-        self._gauss_k.setSuffix(" px")
-        self._morph_open_k.setSuffix(" px")
-        self._morph_close_k.setSuffix(" px")
+        self._gauss_k.setSuffix(" px");       _set_expanding(self._gauss_k)
+        self._morph_open_k.setSuffix(" px");  _set_expanding(self._morph_open_k)
+        self._morph_close_k.setSuffix(" px"); _set_expanding(self._morph_close_k)
 
         form.addRow(_lbl("Gaussian"), self._gauss_k)
         form.addRow(_lbl("Morph open"), self._morph_open_k)
@@ -100,11 +115,9 @@ class ControlPanel(QWidget):
         self._profiles: list[dict] = []
 
     def _build_actions(self) -> None:
-        btn_single = QPushButton("▶  Run Single Image")
-        btn_single.setObjectName("runSingle")
-        btn_single.clicked.connect(self.run_single)
-        btn_single.setMinimumHeight(38)
-        self._layout.addWidget(btn_single)
+        # Run Single Image button removed — MeasureWorkspace already provides
+        # "Run Single (F5)" to avoid duplicate run buttons in the UI.
+        pass
 
     def _on_add_profile(self) -> None:
         name, ok = QInputDialog.getText(self, "Add Measurement", "Profile name:", text=f"Measure {len(self._profiles)+1}")
@@ -113,34 +126,107 @@ class ControlPanel(QWidget):
         self._add_profile(name.strip() or f"Measure {len(self._profiles)+1}")
 
     def _add_profile(self, name: str) -> None:
-        box = QGroupBox(name)
-        form = QFormLayout(box)
+        outer = QWidget()
+        outer.setStyleSheet(
+            "QWidget { background:#fff9f2; border:1px solid #e6dccf; border-radius:8px; }"
+        )
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 6)
+        outer_layout.setSpacing(0)
 
+        # Card header: title + delete button (Tier 1 colour)
+        header_row = QWidget()
+        header_row.setStyleSheet(
+            "QWidget { background:#fff4e8; border:none; border-radius:0; border-top-left-radius:8px; border-top-right-radius:8px; border-bottom:1px solid #efd8b8; }"
+        )
+        header_hl = QHBoxLayout(header_row)
+        header_hl.setContentsMargins(10, 5, 6, 5)
+        header_hl.setSpacing(4)
+        card_title = QLabel(name)
+        card_title.setStyleSheet("color:#c97028; font-weight:700; font-size:10px; letter-spacing:0.8px; background:transparent; border:none;")
+        btn_del = QPushButton("×")
+        btn_del.setFixedSize(18, 18)
+        btn_del.setToolTip(f"Remove measurement '{name}'")
+        btn_del.setStyleSheet(
+            "QPushButton { background:#fff0eb; border:1px solid #efb6a0; border-radius:4px;"
+            "  color:#b04030; font-weight:700; padding:0; font-size:13px; }"
+            "QPushButton:hover { background:#f4d0c8; border-color:#d07060; }"
+        )
+        header_hl.addWidget(card_title)
+        header_hl.addStretch()
+        header_hl.addWidget(btn_del)
+        outer_layout.addWidget(header_row)
+
+        # Tier 1 params: always visible
+        t1_widget = QWidget()
+        t1_widget.setStyleSheet("QWidget { background:transparent; border:none; }")
+        t1_form = QFormLayout(t1_widget)
+        t1_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        t1_form.setContentsMargins(8, 6, 8, 4)
+        t1_form.setSpacing(5)
+
+        enabled = QCheckBox("Enabled"); enabled.setChecked(True)
         axis = QComboBox(); axis.addItems(["Y-CD", "X-CD"])
+        _set_expanding(axis)
+
         min_val = QLabel("100"); min_val.setObjectName("thresholdValue"); min_val.setFixedWidth(34)
         max_val = QLabel("220"); max_val.setObjectName("thresholdValue"); max_val.setFixedWidth(34)
         gl_min = QSlider(Qt.Orientation.Horizontal); gl_min.setRange(0, 255); gl_min.setValue(100)
         gl_max = QSlider(Qt.Orientation.Horizontal); gl_max.setRange(0, 255); gl_max.setValue(220)
 
-        min_row = QHBoxLayout(); min_row.addWidget(_lbl("Min")); min_row.addWidget(gl_min); min_row.addWidget(min_val)
-        max_row = QHBoxLayout(); max_row.addWidget(_lbl("Max")); max_row.addWidget(gl_max); max_row.addWidget(max_val)
-        min_wrap = QWidget(); min_wrap.setLayout(min_row)
-        max_wrap = QWidget(); max_wrap.setLayout(max_row)
+        min_row = QHBoxLayout(); min_row.setSpacing(4)
+        min_row.addWidget(_lbl("Min")); min_row.addWidget(gl_min); min_row.addWidget(min_val)
+        max_row = QHBoxLayout(); max_row.setSpacing(4)
+        max_row.addWidget(_lbl("Max")); max_row.addWidget(gl_max); max_row.addWidget(max_val)
+        min_wrap = QWidget(); min_wrap.setStyleSheet("border:none;"); min_wrap.setLayout(min_row)
+        max_wrap = QWidget(); max_wrap.setStyleSheet("border:none;"); max_wrap.setLayout(max_row)
 
-        min_area = QSpinBox(); min_area.setRange(1, 500_000); min_area.setValue(50); min_area.setSuffix(" px²")
+        min_area = QSpinBox(); min_area.setRange(1, 500_000); min_area.setValue(50); min_area.setSuffix(" px²"); _set_expanding(min_area)
 
-        # Geometric filters (0 = disabled)
-        min_ar  = QDoubleSpinBox(); min_ar.setRange(0.0, 100.0);  min_ar.setValue(0.0);  min_ar.setSingleStep(0.1);  min_ar.setSpecialValueText("off")
-        max_ar  = QDoubleSpinBox(); max_ar.setRange(0.0, 100.0);  max_ar.setValue(0.0);  max_ar.setSingleStep(0.1);  max_ar.setSpecialValueText("off")
-        min_w   = QSpinBox();        min_w.setRange(0, 9999);      min_w.setValue(0);     min_w.setSuffix(" px");     min_w.setSpecialValueText("off")
-        max_w   = QSpinBox();        max_w.setRange(0, 9999);      max_w.setValue(0);     max_w.setSuffix(" px");     max_w.setSpecialValueText("off")
-        min_h   = QSpinBox();        min_h.setRange(0, 9999);      min_h.setValue(0);     min_h.setSuffix(" px");     min_h.setSpecialValueText("off")
+        t1_form.addRow("Enable", enabled)
+        t1_form.addRow("Axis", axis)
+        t1_form.addRow("GL Min", min_wrap)
+        t1_form.addRow("GL Max", max_wrap)
+        t1_form.addRow("Min blob area", min_area)
+        outer_layout.addWidget(t1_widget)
 
-        # Vertical erosion (Strategy 2b): trims MG tips at EPI boundary
+        # Tier 2: Filters (collapsed=False, visible but collapsible)
+        sec_filters = CollapsibleSection("Filters", tier=2, collapsed=False,
+                                         content_margins=(8, 4, 8, 6))
+        sec_filters.setStyleSheet("background:transparent;")
+        f2_form_w = QWidget(); f2_form_w.setStyleSheet("border:none;")
+        f2_form = QFormLayout(f2_form_w)
+        f2_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        f2_form.setContentsMargins(0, 2, 0, 2)
+        f2_form.setSpacing(4)
+
+        min_ar  = QDoubleSpinBox(); min_ar.setRange(0.0, 100.0);  min_ar.setValue(0.0);  min_ar.setSingleStep(0.1);  min_ar.setSpecialValueText("off"); _set_expanding(min_ar)
+        max_ar  = QDoubleSpinBox(); max_ar.setRange(0.0, 100.0);  max_ar.setValue(0.0);  max_ar.setSingleStep(0.1);  max_ar.setSpecialValueText("off"); _set_expanding(max_ar)
+        min_w   = QSpinBox();        min_w.setRange(0, 9999);      min_w.setValue(0);     min_w.setSuffix(" px");     min_w.setSpecialValueText("off");  _set_expanding(min_w)
+        max_w   = QSpinBox();        max_w.setRange(0, 9999);      max_w.setValue(0);     max_w.setSuffix(" px");     max_w.setSpecialValueText("off");  _set_expanding(max_w)
+        min_h   = QSpinBox();        min_h.setRange(0, 9999);      min_h.setValue(0);     min_h.setSuffix(" px");     min_h.setSpecialValueText("off");  _set_expanding(min_h)
+
+        f2_form.addRow("Min aspect (h/w)", min_ar)
+        f2_form.addRow("Max aspect (h/w)", max_ar)
+        f2_form.addRow("Min width", min_w)
+        f2_form.addRow("Max width", max_w)
+        f2_form.addRow("Min height", min_h)
+        sec_filters.add_widget(f2_form_w)
+        outer_layout.addWidget(sec_filters)
+
+        # Tier 3: Advanced (collapsed by default)
+        sec_adv = CollapsibleSection("Advanced", tier=3, collapsed=True,
+                                      content_margins=(8, 4, 8, 6))
+        sec_adv.setStyleSheet("background:transparent;")
+        f3_form_w = QWidget(); f3_form_w.setStyleSheet("border:none;")
+        f3_form = QFormLayout(f3_form_w)
+        f3_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        f3_form.setContentsMargins(0, 2, 0, 2)
+        f3_form.setSpacing(4)
+
         vert_erode_k    = QSpinBox(); vert_erode_k.setRange(0, 99); vert_erode_k.setValue(0); vert_erode_k.setSuffix(" px"); vert_erode_k.setSpecialValueText("off")
         vert_erode_iter = QSpinBox(); vert_erode_iter.setRange(1, 10); vert_erode_iter.setValue(1)
 
-        # Column strip masking + auto X-projection (Strategy 1+2a)
         strip_enabled  = QCheckBox("Enable strip mask"); strip_enabled.setChecked(False)
         strip_auto     = QCheckBox("Auto-detect centers (X-proj)"); strip_auto.setChecked(False)
         xproj_smooth   = QSpinBox(); xproj_smooth.setRange(1, 51); xproj_smooth.setValue(5); xproj_smooth.setSuffix(" px")
@@ -155,17 +241,35 @@ class ControlPanel(QWidget):
         strip_pitch_tol   = QSpinBox(); strip_pitch_tol.setRange(1, 99); strip_pitch_tol.setValue(5); strip_pitch_tol.setSuffix(" px")
         strip_normalize_x = QCheckBox("Normalize X bounds"); strip_normalize_x.setChecked(True)
 
+        range_enabled  = QCheckBox("Enable range filter"); range_enabled.setChecked(False)
+        min_line_px    = QDoubleSpinBox(); min_line_px.setRange(0, 9999); min_line_px.setValue(0); min_line_px.setSuffix(" px"); min_line_px.setSpecialValueText("off")
+        max_line_px    = QDoubleSpinBox(); max_line_px.setRange(0, 9999); max_line_px.setValue(0); max_line_px.setSuffix(" px"); max_line_px.setSpecialValueText("off")
+
         def _on_strip_auto(checked: int) -> None:
             strip_start_x.setEnabled(not bool(checked))
             self._emit()
         strip_auto.stateChanged.connect(_on_strip_auto)
 
-        # Range filter (G1)
-        range_enabled  = QCheckBox("Enable range filter"); range_enabled.setChecked(False)
-        min_line_px    = QDoubleSpinBox(); min_line_px.setRange(0, 9999); min_line_px.setValue(0); min_line_px.setSuffix(" px"); min_line_px.setSpecialValueText("off")
-        max_line_px    = QDoubleSpinBox(); max_line_px.setRange(0, 9999); max_line_px.setValue(0); max_line_px.setSuffix(" px"); max_line_px.setSpecialValueText("off")
-
-        enabled = QCheckBox("Enabled"); enabled.setChecked(True)
+        f3_form.addRow("Vert erode", vert_erode_k)
+        f3_form.addRow("Vert erode iter", vert_erode_iter)
+        f3_form.addRow(strip_enabled)
+        f3_form.addRow(strip_auto)
+        f3_form.addRow("X-proj smooth", xproj_smooth)
+        f3_form.addRow("X-proj min pitch", xproj_pitch)
+        f3_form.addRow("X-proj min frac", xproj_frac)
+        f3_form.addRow("Strip start X", strip_start_x)
+        f3_form.addRow("Strip pitch", strip_pitch)
+        f3_form.addRow("Strip width", strip_width)
+        f3_form.addRow("Strip margin ±", strip_margin)
+        f3_form.addRow("Edge margin", strip_edge_margin)
+        f3_form.addRow(strip_regularize)
+        f3_form.addRow("Pitch tolerance", strip_pitch_tol)
+        f3_form.addRow(strip_normalize_x)
+        f3_form.addRow(range_enabled)
+        f3_form.addRow("Min line (px)", min_line_px)
+        f3_form.addRow("Max line (px)", max_line_px)
+        sec_adv.add_widget(f3_form_w)
+        outer_layout.addWidget(sec_adv)
 
         def on_min(v: int) -> None:
             if v > gl_max.value():
@@ -183,59 +287,22 @@ class ControlPanel(QWidget):
         gl_max.valueChanged.connect(on_max)
         axis.currentIndexChanged.connect(self._emit)
         min_area.valueChanged.connect(self._emit)
-        for w in (min_ar, max_ar, min_w, max_w, min_h, vert_erode_k, vert_erode_iter,
-                  xproj_smooth, xproj_pitch, xproj_frac,
-                  strip_start_x, strip_pitch, strip_width, strip_margin,
-                  strip_edge_margin, strip_pitch_tol,
-                  min_line_px, max_line_px):
-            w.valueChanged.connect(self._emit)
+        for _w in (min_ar, max_ar, min_w, max_w, min_h, vert_erode_k, vert_erode_iter,
+                   xproj_smooth, xproj_pitch, xproj_frac,
+                   strip_start_x, strip_pitch, strip_width, strip_margin,
+                   strip_edge_margin, strip_pitch_tol,
+                   min_line_px, max_line_px):
+            _w.valueChanged.connect(self._emit)
         strip_enabled.stateChanged.connect(self._emit)
         strip_regularize.stateChanged.connect(self._emit)
         strip_normalize_x.stateChanged.connect(self._emit)
         range_enabled.stateChanged.connect(self._emit)
         enabled.stateChanged.connect(self._emit)
 
-        form.addRow("Enable", enabled)
-        form.addRow("Axis", axis)
-        form.addRow("GL Min", min_wrap)
-        form.addRow("GL Max", max_wrap)
-        form.addRow("Min blob area", min_area)
-
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine); sep.setStyleSheet("color:#d0c8bc")
-        form.addRow(sep)
-        form.addRow("Min aspect (h/w)", min_ar)
-        form.addRow("Max aspect (h/w)", max_ar)
-        form.addRow("Min width", min_w)
-        form.addRow("Max width", max_w)
-        form.addRow("Min height", min_h)
-
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine); sep2.setStyleSheet("color:#d0c8bc")
-        form.addRow(sep2)
-        form.addRow("Vert erode", vert_erode_k)
-        form.addRow("Vert erode iter", vert_erode_iter)
-        form.addRow(strip_enabled)
-        form.addRow(strip_auto)
-        form.addRow("X-proj smooth", xproj_smooth)
-        form.addRow("X-proj min pitch", xproj_pitch)
-        form.addRow("X-proj min frac", xproj_frac)
-        form.addRow("Strip start X", strip_start_x)
-        form.addRow("Strip pitch", strip_pitch)
-        form.addRow("Strip width", strip_width)
-        form.addRow("Strip margin ±", strip_margin)
-        form.addRow("Edge margin", strip_edge_margin)
-        form.addRow(strip_regularize)
-        form.addRow("Pitch tolerance", strip_pitch_tol)
-        form.addRow(strip_normalize_x)
-
-        sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine); sep3.setStyleSheet("color:#d0c8bc")
-        form.addRow(sep3)
-        form.addRow(range_enabled)
-        form.addRow("Min line (px)", min_line_px)
-        form.addRow("Max line (px)", max_line_px)
-
-        self._profiles_layout.addWidget(box)
-        self._profiles.append({
+        self._profiles_layout.addWidget(outer)
+        profile_dict = {
             "name": name,
+            "_widget": outer,
             "enabled": enabled,
             "axis": axis,
             "gl_min": gl_min,
@@ -264,7 +331,18 @@ class ControlPanel(QWidget):
             "range_enabled": range_enabled,
             "min_line_px": min_line_px,
             "max_line_px": max_line_px,
-        })
+        }
+        self._profiles.append(profile_dict)
+
+        def _on_delete() -> None:
+            self._profiles_layout.removeWidget(outer)
+            outer.setParent(None)
+            outer.deleteLater()
+            if profile_dict in self._profiles:
+                self._profiles.remove(profile_dict)
+            self._emit()
+
+        btn_del.clicked.connect(_on_delete)
         self._emit()
 
     # ── public API ────────────────────────────────────────────────────────────

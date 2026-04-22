@@ -23,9 +23,12 @@ _COL = {
     "MAX": (207, 168, 110),   # sky
     "":   (166, 202, 140),    # mint
 }
-_TICK_HALF = 5
-_LINE_W    = 1
-_BOX_W     = 1
+# Detail CD individual sample lines use a distinct cyan-teal color so they
+# are visually differentiated from the aggregate measurement line.
+_COL_DETAIL_NORMAL = (200, 170, 80)   # steel-blue (BGR) for non-flagged detail lines
+_TICK_HALF    = 5
+_LINE_W       = 1
+_BOX_W        = 1
 _LABEL_MIN_DY = 6
 
 
@@ -70,7 +73,7 @@ def draw_overlays(
                 _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
 
     if opts.show_legend:
-        _draw_legend(canvas, fs)
+        _draw_legend(canvas, fs, show_detail=opts.show_detail)
 
     return canvas
 
@@ -106,7 +109,7 @@ def draw_overlays_multi(
                     _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
 
     if opts.show_legend:
-        _draw_legend(canvas, fs)
+        _draw_legend(canvas, fs, show_detail=opts.show_detail)
 
     return canvas
 
@@ -228,8 +231,28 @@ def _draw_detail_measurements(
     lower_ys      = meta.get("lower_sample_ys", [])
     nm_per_pixel  = m.cd_nm / m.cd_px if (m.cd_px and m.cd_px > 0) else 1.0
 
+    # Use a distinct color for detail lines when the measurement is not MIN/MAX,
+    # so individual sample lines are visually differentiated from the aggregate.
+    detail_col = _COL.get(m.flag) if m.flag else _COL_DETAIL_NORMAL
+
     font = cv2.FONT_HERSHEY_SIMPLEX
     H, W = canvas.shape[:2]
+
+    # Pre-compute label width to decide label density (avoid horizontal overlap).
+    # Use a representative text width for spacing decisions.
+    _sample_text = f"{m.cd_nm:.1f}"
+    (tw_sample, th_px_sample), _ = cv2.getTextSize(_sample_text, font, fs * 0.85, th)
+    # Minimum pixel gap between adjacent labeled samples; at least text-height + 3px vertical,
+    # and only print a label if the sample column is spaced enough horizontally.
+    _detail_min_dy = max(_LABEL_MIN_DY, th_px_sample + 3)
+
+    # Determine label stride: skip labels when samples are densely packed.
+    n_samples = len(sample_xs)
+    if n_samples >= 2:
+        avg_spacing = (sample_xs[-1] - sample_xs[0]) / max(1, n_samples - 1) if n_samples > 1 else 999
+        label_stride = max(1, int((tw_sample + 6) / max(1, avg_spacing)))
+    else:
+        label_stride = 1
 
     for i, x in enumerate(sample_xs):
         if i >= len(upper_ys) or i >= len(lower_ys):
@@ -244,9 +267,10 @@ def _draw_detail_measurements(
             continue
 
         if opts.show_lines:
-            cv2.line(canvas, (x, y_top), (x, y_bot), col, _LINE_W, cv2.LINE_AA)
+            cv2.line(canvas, (x, y_top), (x, y_bot), detail_col, _LINE_W, cv2.LINE_AA)
 
-        if opts.show_labels:
+        # Only label every label_stride-th sample to avoid horizontal crowding.
+        if opts.show_labels and (i % label_stride == 0):
             cd_i = (lo_y_i - up_y_i) * nm_per_pixel
             text = f"{cd_i:.1f}"
             (tw, th_px), _ = cv2.getTextSize(text, font, fs * 0.85, th)
@@ -254,17 +278,17 @@ def _draw_detail_measurements(
             y_lbl = int((y_top + y_bot) / 2) + th_px // 2
             lane = x_lbl // 30
             prev_y = last_label_y.get(lane)
-            if prev_y is not None and abs(y_lbl - prev_y) < _LABEL_MIN_DY:
-                y_lbl = min(H - 2, prev_y + _LABEL_MIN_DY)
+            if prev_y is not None and abs(y_lbl - prev_y) < _detail_min_dy:
+                y_lbl = min(H - 2, prev_y + _detail_min_dy)
             if 0 <= x_lbl + tw < W and 0 <= y_lbl < H:
                 cv2.putText(canvas, text, (x_lbl, y_lbl),
                             font, fs * 0.85, (0, 0, 0), th + 1, cv2.LINE_AA)
                 cv2.putText(canvas, text, (x_lbl, y_lbl),
-                            font, fs * 0.85, col, th, cv2.LINE_AA)
+                            font, fs * 0.85, detail_col, th, cv2.LINE_AA)
                 last_label_y[lane] = y_lbl
 
 
-def _draw_legend(canvas: np.ndarray, fs: float) -> None:
+def _draw_legend(canvas: np.ndarray, fs: float, show_detail: bool = False) -> None:
     H, W = canvas.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
     items = [
@@ -272,6 +296,8 @@ def _draw_legend(canvas: np.ndarray, fs: float) -> None:
         ("MAX Y-CD", _COL["MAX"]),
         ("NORMAL", _COL[""]),
     ]
+    if show_detail:
+        items.append(("DETAIL LINE", _COL_DETAIL_NORMAL))
     pad = 5
     lh = 12                            # reduced from 16 → tighter line spacing
     box_w = 118

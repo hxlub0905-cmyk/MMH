@@ -112,7 +112,8 @@ class MeasureWorkspace(QWidget):
         self._ctrl.setMaximumWidth(320)
         self._ctrl.params_changed.connect(self._on_params_changed)
         self._ctrl.run_single.connect(self._run_single)
-        rv.addWidget(self._ctrl, stretch=1)
+        rv.addWidget(self._ctrl)
+        rv.addStretch()   # pushes all sections up; prevents ControlPanel from over-expanding
 
         splitter.addWidget(right)
         splitter.setSizes([1000, 270])
@@ -179,7 +180,8 @@ class MeasureWorkspace(QWidget):
         ov.addWidget(sep_detail)
         self._btn_detail_cd = QPushButton("Detail CD")
         self._btn_detail_cd.setCheckable(True)
-        self._btn_detail_cd.setFixedHeight(22)
+        self._btn_detail_cd.setFixedHeight(26)
+        self._btn_detail_cd.setObjectName("detailCD")
         self._btn_detail_cd.setToolTip("Show individual per-sample CD lines instead of single aggregate line")
         self._btn_detail_cd.toggled.connect(self._refresh_annotated)
         ov.addWidget(self._btn_detail_cd)
@@ -307,6 +309,18 @@ class MeasureWorkspace(QWidget):
 
         self._ec_method.currentIndexChanged.connect(self._on_ec_method_changed)
         self._on_ec_method_changed()  # set initial state
+
+        # Wire all EC controls to debounced preview (500 ms) so edge overlay
+        # updates live as the user adjusts parameters.
+        for _ec_w in (self._ec_method, self._ec_sample_mode_combo, self._ec_aggregate_combo):
+            _ec_w.currentIndexChanged.connect(self._schedule_preview)
+        for _ec_s in (self._ec_threshold_frac, self._ec_lpf_sigma,
+                      self._ec_overlap):
+            _ec_s.valueChanged.connect(self._schedule_preview)
+        for _ec_i in (self._ec_sample_n, self._ec_cluster_tol, self._ec_border):
+            _ec_i.valueChanged.connect(self._schedule_preview)
+        self._ec_lpf_cb.toggled.connect(self._schedule_preview)
+
         return box
 
     def _on_ec_method_changed(self) -> None:
@@ -425,11 +439,30 @@ class MeasureWorkspace(QWidget):
         if not cards:
             QMessageBox.information(self, "No profiles", "Add at least one measurement profile first.")
             return
+
+        # Capture current Edge Locator panel values so they are persisted in the recipe.
+        ec_overrides = {
+            "ycd_edge_method":      self._ec_method.currentData(),
+            "threshold_frac":       self._ec_threshold_frac.value(),
+            "sample_lines_mode":    (
+                self._ec_sample_n.value()
+                if self._ec_sample_mode_combo.currentData() == "n"
+                else "all"
+            ),
+            "aggregate_method":     self._ec_aggregate_combo.currentData(),
+            "profile_lpf_enabled":  self._ec_lpf_cb.isChecked(),
+            "profile_lpf_sigma":    self._ec_lpf_sigma.value(),
+            "x_overlap_ratio":      self._ec_overlap.value(),
+            "y_cluster_tol":        self._ec_cluster_tol.value(),
+            "border_margin_px":     self._ec_border.value(),
+        }
+
         saved_names = []
         saved_descs = []
         for card in cards:
+            card_with_ec = {**card, **ec_overrides}
             try:
-                desc = self._registry.import_from_card(card)
+                desc = self._registry.import_from_card(card_with_ec)
                 saved_names.append(desc.recipe_name)
                 saved_descs.append(desc)
             except Exception as exc:
@@ -571,6 +604,27 @@ class MeasureWorkspace(QWidget):
             self._viewer.set_mode("annotated")
         else:
             self._results.show_fail(name, "No structures detected")
+
+        # Build minimal MeasurementRecord list so Compare to Reference works in cards mode too
+        from ...core.models import MeasurementRecord as _MRec
+        _img_id = self._current_ir.image_id if self._current_ir else ""
+        self._current_records = []
+        for _cut in cuts:
+            for _m in _cut.measurements:
+                _status = {"MIN": "min", "MAX": "max"}.get(_m.flag or "", "normal")
+                self._current_records.append(_MRec(
+                    recipe_id="",
+                    image_id=_img_id,
+                    structure_name=getattr(_m, "structure_name", ""),
+                    axis=getattr(_m, "axis", "Y"),
+                    raw_px=float(_m.cd_px),
+                    calibrated_nm=float(_m.cd_nm),
+                    cmg_id=_m.cmg_id,
+                    col_id=_m.col_id,
+                    flag=_m.flag or "",
+                    status=_status,
+                ))
+        self._btn_compare.setEnabled(bool(self._current_records))
 
         n_meas = sum(len(c.measurements) for c in cuts)
         self.status_message.emit(f"{name}  ·  {len(cuts)} cut(s)  ·  {n_meas} measurement(s)")

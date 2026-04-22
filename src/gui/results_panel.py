@@ -1,6 +1,7 @@
 """Bottom results panel: per-structure, per-feature CD measurement table."""
 
 from __future__ import annotations
+import statistics as _stats
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
     QLabel, QHeaderView, QAbstractItemView, QFrame, QHBoxLayout, QComboBox,
@@ -57,6 +58,34 @@ class ResultsPanel(QWidget):
 
         layout.addWidget(header)
 
+        # ── summary stats bar ─────────────────────────────────────────────────
+        self._stats_bar = QFrame()
+        self._stats_bar.setObjectName("statsBar")
+        self._stats_bar.setStyleSheet(
+            "QFrame#statsBar { background:#fdf8f2; border-bottom:1px solid #ede4d8; }"
+        )
+        self._stats_bar.setVisible(False)
+        stats_hl = QHBoxLayout(self._stats_bar)
+        stats_hl.setContentsMargins(10, 5, 10, 5)
+        stats_hl.setSpacing(8)
+
+        self._chip_mean    = _chip("—")
+        self._chip_sigma   = _chip("—")
+        self._chip_min     = _chip("—")
+        self._chip_max     = _chip("—")
+        self._chip_outlier = _chip("—", alert=False)
+
+        for label, chip in (("Mean", self._chip_mean), ("σ", self._chip_sigma),
+                            ("Min", self._chip_min),  ("Max", self._chip_max),
+                            ("Outliers", self._chip_outlier)):
+            lbl = QLabel(label)
+            lbl.setStyleSheet("color:#9f8f7b; font-size:10px; font-weight:600;")
+            stats_hl.addWidget(lbl)
+            stats_hl.addWidget(chip)
+
+        stats_hl.addStretch()
+        layout.addWidget(self._stats_bar)
+
         # ── table ─────────────────────────────────────────────────────────────
         self._table = QTableWidget(0, len(_COLUMNS))
         self._table.setHorizontalHeaderLabels(_COLUMNS)
@@ -99,9 +128,11 @@ class ResultsPanel(QWidget):
                 })
         self._sync_state_filter()
         self._render_table()
+        self._update_stats_bar()
 
     def show_fail(self, image_name: str, reason: str = "") -> None:
         self._rows = []
+        self._stats_bar.setVisible(False)
         self._status_label.setText(
             f"{image_name}  ·  FAIL{('  — ' + reason) if reason else ''}"
         )
@@ -115,6 +146,7 @@ class ResultsPanel(QWidget):
 
     def clear(self) -> None:
         self._rows = []
+        self._stats_bar.setVisible(False)
         self._table.setRowCount(0)
         self._status_label.setText("Select an image and press  ▶ Run Single  to measure.")
         self._state_filter.blockSignals(True)
@@ -178,7 +210,35 @@ class ResultsPanel(QWidget):
                 self._table.setItem(row, col, item)
         self._table.setSortingEnabled(True)
 
+    def _update_stats_bar(self) -> None:
+        vals = [r["cd_nm"] for r in self._rows if r.get("cd_nm") is not None]
+        if not vals:
+            self._stats_bar.setVisible(False)
+            return
+        mean_v = _stats.mean(vals)
+        sigma_v = _stats.stdev(vals) if len(vals) > 1 else 0.0
+        min_v = min(vals)
+        max_v = max(vals)
+        # Outliers = rows where |cd_nm - mean| > 3σ  (or flagged MIN/MAX)
+        flagged = sum(1 for r in self._rows if r.get("flag", "—") in ("MIN", "MAX"))
+        self._chip_mean.setText(f"{mean_v:.2f} nm")
+        self._chip_sigma.setText(f"{sigma_v:.2f} nm")
+        self._chip_min.setText(f"{min_v:.2f} nm")
+        self._chip_max.setText(f"{max_v:.2f} nm")
+        has_outliers = flagged > 0
+        self._chip_outlier.setText(str(flagged))
+        self._chip_outlier.setObjectName("statChipAlert" if has_outliers else "statChip")
+        self._chip_outlier.style().unpolish(self._chip_outlier)
+        self._chip_outlier.style().polish(self._chip_outlier)
+        self._stats_bar.setVisible(True)
+
     def _on_state_filter_changed(self) -> None:
         self._render_table()
         txt = self._state_filter.currentText()
         self.state_filter_changed.emit("" if txt == "All states" else txt)
+
+
+def _chip(text: str, alert: bool = False) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setObjectName("statChipAlert" if alert else "statChip")
+    return lbl
