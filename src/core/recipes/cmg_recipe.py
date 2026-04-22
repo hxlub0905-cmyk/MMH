@@ -15,6 +15,15 @@ from typing import Any, NamedTuple
 import cv2
 import numpy as np
 
+
+def _gaussian_filter1d(profile: np.ndarray, sigma: float) -> np.ndarray:
+    """Apply a 1-D Gaussian LPF using numpy convolution (no scipy dependency)."""
+    k = max(3, int(6 * sigma) | 1)          # odd kernel, at least 3 wide
+    x = np.arange(k, dtype=np.float64) - k // 2
+    kernel = np.exp(-0.5 * (x / sigma) ** 2)
+    kernel /= kernel.sum()
+    return np.convolve(profile, kernel, mode='same')
+
 from ..models import ImageRecord, MeasurementRecord
 from ..recipe_base import BaseRecipe, MeasurementRecipe, RecipeConfig
 from ..cmg_analyzer import _flag_global_minmax
@@ -776,8 +785,7 @@ def _refine_yedge_subpixel(
 
     # Step 3b: optional Gaussian LPF pre-filter (applied before moving-average)
     if profile_lpf_sigma > 0.0:
-        from scipy.ndimage import gaussian_filter1d
-        profile = gaussian_filter1d(profile, sigma=profile_lpf_sigma)
+        profile = _gaussian_filter1d(profile, profile_lpf_sigma)
 
     # Step 4: relative gradient threshold — profile must have visible contrast
     p_range = float(profile.max() - profile.min())
@@ -902,8 +910,7 @@ def _refine_yedge_threshold_crossing(
 
     # Step 3b: optional Gaussian LPF pre-filter (applied before moving-average)
     if profile_lpf_sigma > 0.0:
-        from scipy.ndimage import gaussian_filter1d
-        profile = gaussian_filter1d(profile, sigma=profile_lpf_sigma)
+        profile = _gaussian_filter1d(profile, profile_lpf_sigma)
 
     # Step 4: contrast check
     p_range = float(profile.max() - profile.min())
