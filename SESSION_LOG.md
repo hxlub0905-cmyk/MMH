@@ -5,6 +5,110 @@
 
 ---
 
+## [2026-04-22] Profile Gaussian LPF 濾波功能 + Detail CD Bug 修復
+
+**變更類型：** 功能新增 / Bug 修復
+
+**變更摘要：**
+
+### Bug 修復：Detail CD 按鈕無效
+- **根本原因**：`records_to_legacy_cuts()`（`src/_compat.py`）在將 `MeasurementRecord` 轉回 `YCDMeasurement` 時，只重建了基本欄位，未將 `extra_metrics` 中的取樣資料（`sample_xs`、`upper_sample_ys`、`lower_sample_ys`、`individual_cds_nm`）還原回 `_refine_meta`，導致 `_draw_detail_measurements()` 取得 `None` 並直接 fallback 至普通繪圖
+- **修法**：建完 `YCDMeasurement` 後，從 `r.extra_metrics` 取出 5 個已知 key，寫回 `m._refine_meta`
+
+### 功能新增：1D Profile Gaussian LPF 預濾波
+- **業界背景**：主流 CDSEM 工具（KLA、ASML）在邊緣偵測前對 1D 強度 profile 施以 Gaussian LPF，頻率響應優於現有的 Moving Average（無旁瓣、不失真邊緣形狀）
+- **核心實作**（`cmg_recipe.py`）：
+  - 新增 `_gaussian_filter1d(profile, sigma)` — 純 numpy 實作（Gaussian kernel + `np.convolve`），不依賴 scipy
+  - `_refine_yedge_subpixel()` 和 `_refine_yedge_threshold_crossing()` 各增加 `profile_lpf_sigma: float = 0.0` 參數；sigma > 0 時在 Step 3b 套用 Gaussian LPF，置於原有 Moving Average 之前
+  - `_collect_edge_by_columns()` 透傳 `profile_lpf_sigma`
+  - `apply_yedge_subpixel_to_cuts()` 新增 `profile_lpf_enabled: bool` 和 `profile_lpf_sigma: float`；由此統一計算 `_lpf_sigma` 傳入所有內部呼叫
+  - `compute_metrics()` 從 `edge_locator_config` 讀取 `profile_lpf_enabled` / `profile_lpf_sigma` 並傳遞
+- **UI 實作**：
+  - Recipe workspace（Analysis tab）與 Measure workspace（Edge Locator panel）的進階參數區塊底部各新增「─── Profile Filter ───」區段
+  - 包含 `[✓ Gaussian LPF]` checkbox + sigma spinbox（0.1–10.0 px，預設 1.0）
+  - 勾選 checkbox 才啟用 spinbox；預設 **關閉**，不影響既有行為
+  - Recipe workspace：儲存/載入於 `edge_locator_config` key `profile_lpf_enabled` / `profile_lpf_sigma`
+  - Measure workspace：Recipe 路徑與 Cards 路徑均套用
+
+**影響範圍：**
+- `src/_compat.py`（Detail CD bug fix — 還原 `_refine_meta`）
+- `src/core/recipes/cmg_recipe.py`（新增 `_gaussian_filter1d`，修改 4 個函式簽名）
+- `src/gui/workspaces/recipe_workspace.py`（Profile LPF 控件 + 儲存/載入）
+- `src/gui/workspaces/measure_workspace.py`（Profile LPF 控件 + 兩條執行路徑）
+
+**測試結果：**
+- `python3 -m py_compile` 對所有修改檔案均通過
+- 手動確認：Gaussian LPF checkbox 不再報 `no module named scipy`；Detail CD 按鈕切換後可見個別取樣線
+
+**備註：**
+- scipy 未安裝於此環境，故以純 numpy 自建 Gaussian kernel（效果相同）
+- 處理順序：原始像素列 → X strip 平均 → **[Gaussian LPF σ]** → Moving Average (smooth_k) → 梯度/門檻偵測
+- BBox 方法不呼叫 `apply_yedge_subpixel_to_cuts()`，Profile LPF 對其無效（符合預期）
+
+---
+
+## [2026-04-22] 五項 UI/功能改善（History 移除、Gradient 更名、Ruler、取樣策略、Detail CD）
+
+**變更類型：** 功能新增 / 重構
+
+**變更摘要：**
+
+### T1：刪除 History Tab（UI freeze 修復）
+- **原因**：`_render_chart()` 在主執行緒呼叫 matplotlib + 讀取全部 JSON，造成 UI 凍結
+- 刪除整檔 `src/gui/workspaces/history_workspace.py`
+- `workspace_host.py` 移除 History 相關 6 處（import、TAB_HISTORY、addTab、signal 連線、status broadcast）
+
+### T2：Subpixel → Gradient 更名
+- UI 標籤與內部 data key 統一為 `"gradient"`（原為 `"subpixel"`）
+- `cmg_recipe.py` 加入向後相容轉換：讀到 `"subpixel"` 時自動對應至 `"gradient"`，舊 recipe 檔案不受影響
+- 同步修改 `recipe_workspace.py`、`measure_workspace.py`
+
+### T3：Review Workspace 加入 Ruler 按鈕
+- `review_workspace.py` Header 區新增 `📏 Ruler` checkable 按鈕
+- 切換時呼叫 `self._viewer.set_ruler_mode(on)`（`ImageViewer` 現有實作）
+
+### T4：Y-CD 取樣策略可設定 + Detail CD 細節檢視
+
+**核心演算法（`cmg_recipe.py`）：**
+- 新增 `_compute_sample_xs(x_start, x_end, mode)` — 依 `"all"` 或整數 N 回傳 x 位置列表
+- 新增 `_aggregate_values(vals, method)` — 支援 median / mean / min / max 聚合
+- `apply_yedge_subpixel_to_cuts()` 改為**配對取樣**（Paired Sampling）：在上下 blob 的 X 重疊區間同步取樣，計算 `individual_cds_nm`；新增 `sample_lines_mode`、`aggregate_method` 參數；在 `_refine_meta` 中儲存 `sample_xs`、`upper_sample_ys`、`lower_sample_ys`、`individual_cds_nm`
+
+**UI 取樣設定（`recipe_workspace.py` + `measure_workspace.py`）：**
+- 進階參數區塊新增「─── Sampling Strategy ───」區段
+- 「Vertical lines」：`[All columns ▼]` ComboBox + `[N ↕]` SpinBox（選 N 時啟用）
+- 「Aggregation」：Median / Mean / Min / Max ComboBox
+
+### T5：方法動態分群 UI
+- Y-CD method 下拉切換時動態顯示/隱藏參數：
+  - **BBox**：隱藏全部進階設定
+  - **Gradient**：顯示 Sampling Strategy
+  - **Threshold Crossing**：額外顯示 Threshold level
+
+**Detail CD 功能（`annotator.py` + `measure_workspace.py` + `review_workspace.py`）：**
+- `OverlayOptions` 新增 `show_detail: bool = False`
+- `annotator.py` 新增 `_draw_detail_measurements()`：讀取 `m._refine_meta` 中的取樣資料，為每個有效取樣點畫獨立垂直線 + 各自 CD 值；無 `_refine_meta` 時（BBox 或舊資料）fallback 至普通繪圖
+- Measure 和 Review workspace Header 各增加「Detail CD」checkable 按鈕，切換後觸發重新繪製
+
+**影響範圍：**
+- `src/gui/workspaces/history_workspace.py`（**刪除**）
+- `src/gui/workspace_host.py`（移除 History 6 處）
+- `src/core/recipes/cmg_recipe.py`（新增 2 helper 函式、修改 `apply_yedge_subpixel_to_cuts()`）
+- `src/core/annotator.py`（`OverlayOptions.show_detail`、`_draw_detail_measurements()`）
+- `src/gui/workspaces/recipe_workspace.py`（更名、取樣 UI、動態分群）
+- `src/gui/workspaces/measure_workspace.py`（更名、取樣 UI、動態分群、Detail CD 按鈕）
+- `src/gui/workspaces/review_workspace.py`（Ruler 按鈕、Detail CD 按鈕）
+
+**測試結果：**
+- `python3 -m py_compile` 對所有修改檔案均通過
+- 手動 smoke test：Ruler 可切換、Detail CD 切換顯示多條取樣線、BBox 方法隱藏進階參數
+
+**備註：**
+- `_refine_meta` 在 Cards 路徑下 `store_meta=False`，Detail CD 無法顯示（需改用 Recipe 路徑）
+- 舊 recipe 含 `"subpixel"` key 可正常讀取（向後相容）
+
+---
+
 <!-- ===== 記錄範本（複製後填寫） =====
 
 ## [YYYY-MM-DD] 標題

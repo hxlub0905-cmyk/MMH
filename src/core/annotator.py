@@ -35,6 +35,7 @@ class OverlayOptions:
     show_labels: bool = True
     show_boxes:  bool = True
     show_legend: bool = True
+    show_detail: bool = False   # when True, show individual sampling lines instead of single line
     focus: tuple[int, int] | None = None
 
 
@@ -63,7 +64,10 @@ def draw_overlays(
     for cut in cuts:
         for m in cut.measurements:
             col = _COL.get(m.flag) if m.flag else (color_override if color_override is not None else _COL[""])
-            _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
+            if opts.show_detail:
+                _draw_detail_measurements(canvas, m, col, fs, th, opts, last_label_y)
+            else:
+                _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
 
     if opts.show_legend:
         _draw_legend(canvas, fs)
@@ -96,7 +100,10 @@ def draw_overlays_multi(
         for cut in cuts:
             for m in cut.measurements:
                 col = _COL.get(m.flag) if m.flag else color
-                _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
+                if opts.show_detail:
+                    _draw_detail_measurements(canvas, m, col, fs, th, opts, last_label_y)
+                else:
+                    _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
 
     if opts.show_legend:
         _draw_legend(canvas, fs)
@@ -180,6 +187,81 @@ def _draw_measurement(
             cv2.putText(canvas, text, (x_lbl, y_lbl),
                         font, fs, col, th, cv2.LINE_AA)
             last_label_y[lane] = y_lbl
+
+
+def _draw_detail_measurements(
+    canvas: np.ndarray,
+    m: YCDMeasurement,
+    col: tuple,
+    fs: float,
+    th: int,
+    opts: OverlayOptions,
+    last_label_y: dict[int, int],
+) -> None:
+    """Draw individual per-sample CD lines for Detail CD mode.
+
+    Falls back to _draw_measurement when no _refine_meta is available
+    (BBox mode or old data loaded from JSON without sample info).
+    """
+    meta = getattr(m, "_refine_meta", None)
+    if (meta is None
+            or "sample_xs" not in meta
+            or not meta.get("sample_xs")
+            or not meta.get("individual_cds_nm")):
+        _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
+        return
+
+    ub, lb = m.upper_blob, m.lower_blob
+    axis = getattr(m, "axis", "Y")
+
+    # Bounding boxes (same as normal mode)
+    if opts.show_boxes:
+        cv2.rectangle(canvas, (ub.x0, ub.y0), (ub.x1 - 1, ub.y1 - 1), col, _BOX_W)
+        cv2.rectangle(canvas, (lb.x0, lb.y0), (lb.x1 - 1, lb.y1 - 1), col, _BOX_W)
+
+    if axis != "Y":
+        _draw_measurement(canvas, m, col, fs, th, opts, last_label_y)
+        return
+
+    sample_xs     = meta["sample_xs"]
+    upper_ys      = meta.get("upper_sample_ys", [])
+    lower_ys      = meta.get("lower_sample_ys", [])
+    nm_per_pixel  = m.cd_nm / m.cd_px if (m.cd_px and m.cd_px > 0) else 1.0
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    H, W = canvas.shape[:2]
+
+    for i, x in enumerate(sample_xs):
+        if i >= len(upper_ys) or i >= len(lower_ys):
+            break
+        up_y_i = upper_ys[i]
+        lo_y_i = lower_ys[i]
+        if up_y_i is None or lo_y_i is None:
+            continue
+        y_top = int(round(up_y_i))
+        y_bot = int(round(lo_y_i))
+        if y_bot <= y_top:
+            continue
+
+        if opts.show_lines:
+            cv2.line(canvas, (x, y_top), (x, y_bot), col, _LINE_W, cv2.LINE_AA)
+
+        if opts.show_labels:
+            cd_i = (lo_y_i - up_y_i) * nm_per_pixel
+            text = f"{cd_i:.1f}"
+            (tw, th_px), _ = cv2.getTextSize(text, font, fs * 0.85, th)
+            x_lbl = x + 2
+            y_lbl = int((y_top + y_bot) / 2) + th_px // 2
+            lane = x_lbl // 30
+            prev_y = last_label_y.get(lane)
+            if prev_y is not None and abs(y_lbl - prev_y) < _LABEL_MIN_DY:
+                y_lbl = min(H - 2, prev_y + _LABEL_MIN_DY)
+            if 0 <= x_lbl + tw < W and 0 <= y_lbl < H:
+                cv2.putText(canvas, text, (x_lbl, y_lbl),
+                            font, fs * 0.85, (0, 0, 0), th + 1, cv2.LINE_AA)
+                cv2.putText(canvas, text, (x_lbl, y_lbl),
+                            font, fs * 0.85, col, th, cv2.LINE_AA)
+                last_label_y[lane] = y_lbl
 
 
 def _draw_legend(canvas: np.ndarray, fs: float) -> None:

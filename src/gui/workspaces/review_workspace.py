@@ -119,6 +119,17 @@ class ReviewWorkspace(QWidget):
         hbox.addWidget(self._btn_mask)
         hbox.addWidget(self._btn_ann)
 
+        sep_ruler = QLabel("  |  ")
+        sep_ruler.setStyleSheet("color:#d8cbb8;")
+        hbox.addWidget(sep_ruler)
+
+        self._btn_ruler = QPushButton("📏 Ruler")
+        self._btn_ruler.setCheckable(True)
+        self._btn_ruler.setFixedHeight(26)
+        self._btn_ruler.setToolTip("Toggle ruler (or Shift+Click on image)")
+        self._btn_ruler.toggled.connect(lambda on: self._viewer.set_ruler_mode(on))
+        hbox.addWidget(self._btn_ruler)
+
         sep = QLabel("  |  ")
         sep.setStyleSheet("color:#d8cbb8;")
         hbox.addWidget(sep)
@@ -135,6 +146,15 @@ class ReviewWorkspace(QWidget):
         for chk in (self._chk_lines, self._chk_labels, self._chk_boxes, self._chk_legend):
             chk.stateChanged.connect(self._refresh_annotated)
             ov.addWidget(chk)
+        sep_detail = QLabel("  |  ")
+        sep_detail.setStyleSheet("color:#d8cbb8;")
+        ov.addWidget(sep_detail)
+        self._btn_detail_cd = QPushButton("Detail CD")
+        self._btn_detail_cd.setCheckable(True)
+        self._btn_detail_cd.setFixedHeight(22)
+        self._btn_detail_cd.setToolTip("Show individual per-sample CD lines instead of single aggregate line")
+        self._btn_detail_cd.toggled.connect(self._refresh_annotated)
+        ov.addWidget(self._btn_detail_cd)
         hbox.addWidget(self._overlay_widget)
 
         # Batch navigation
@@ -392,6 +412,7 @@ class ReviewWorkspace(QWidget):
             show_labels=self._chk_labels.isChecked(),
             show_boxes=self._chk_boxes.isChecked(),
             show_legend=self._chk_legend.isChecked(),
+            show_detail=self._btn_detail_cd.isChecked(),
             focus=self._focused,
         )
 
