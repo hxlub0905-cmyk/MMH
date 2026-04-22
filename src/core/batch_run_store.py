@@ -102,7 +102,11 @@ class BatchRunStore:
             return True
         return False
 
-    def get_stats_for_recipe(self, recipe_id: str | None = None) -> list[dict]:
+    def get_stats_for_recipe(
+        self,
+        recipe_id: str | None = None,
+        _summaries: list[dict] | None = None,
+    ) -> list[dict]:
         """Extract CD stats per batch run, optionally filtered by recipe_id.
 
         Returns list of dicts (sorted by start_time ascending):
@@ -110,7 +114,8 @@ class BatchRunStore:
         """
         import statistics as _stats
         results = []
-        for summary in reversed(self.list_runs()):  # list_runs is desc, reverse for asc
+        base = _summaries if _summaries is not None else self.list_runs()
+        for summary in reversed(base):  # list_runs is desc, reverse → asc for chart
             fp = summary["file_path"]
             try:
                 d = json.loads(Path(fp).read_text(encoding="utf-8"))

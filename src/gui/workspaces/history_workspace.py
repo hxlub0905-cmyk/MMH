@@ -22,7 +22,14 @@ class HistoryWorkspace(QWidget):
         super().__init__(parent)
         self._run_store = run_store
         self._summaries: list[dict] = []
+        self._first_shown = False
         self._build_ui()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._first_shown:
+            self._first_shown = True
+            self._refresh()
 
     # ── Construction ──────────────────────────────────────────────────────────
 
@@ -80,20 +87,24 @@ class HistoryWorkspace(QWidget):
         lv.addWidget(load_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         root.addWidget(list_box, stretch=1)
 
-        self._refresh()
+        # _refresh() is NOT called here — deferred to first showEvent
 
     # ── Public / Internal ─────────────────────────────────────────────────────
 
     def _refresh(self) -> None:
-        recipe_text = self._recipe_combo.currentText()
         recipe_id: str | None = self._recipe_combo.currentData() or None
 
-        # Build per-batch stats
-        stats_list = self._run_store.get_stats_for_recipe(recipe_id)
+        # list_runs() called ONCE; result shared with all downstream methods
+        all_summaries = self._run_store.list_runs()
+        summary_by_path = {s["file_path"]: s for s in all_summaries}
+
+        stats_list = self._run_store.get_stats_for_recipe(
+            recipe_id, _summaries=all_summaries
+        )
         stats_list = self._apply_time_filter(stats_list)
 
-        self._populate_recipe_combo()  # refresh without losing selection
-        self._render_table(stats_list)
+        self._populate_recipe_combo(all_summaries)
+        self._render_table(stats_list, summary_by_path)
         self._render_chart(stats_list)
 
     def _apply_time_filter(self, stats_list: list[dict]) -> list[dict]:
@@ -117,14 +128,13 @@ class HistoryWorkspace(QWidget):
                 result.append(s)
         return result
 
-    def _populate_recipe_combo(self) -> None:
+    def _populate_recipe_combo(self, all_summaries: list[dict]) -> None:
         cur_id = self._recipe_combo.currentData()
         self._recipe_combo.blockSignals(True)
         self._recipe_combo.clear()
         self._recipe_combo.addItem("All Recipes", None)
-        # Gather recipe ids from all summaries
         seen: set[str] = set()
-        for s in self._run_store.list_runs():
+        for s in all_summaries:
             fp = s.get("file_path", "")
             try:
                 import json
@@ -145,11 +155,13 @@ class HistoryWorkspace(QWidget):
                     break
         self._recipe_combo.blockSignals(False)
 
-    def _render_table(self, stats_list: list[dict]) -> None:
+    def _render_table(self, stats_list: list[dict], summary_by_path: dict) -> None:
         self._summaries = []
         self._batch_table.setRowCount(0)
         for s in reversed(stats_list):  # most recent first
-            run_summary = self._get_run_summary_for_stat(s)
+            run_summary = summary_by_path.get(
+                s.get("file_path", ""), {"file_path": s.get("file_path", "")}
+            )
             self._summaries.append(run_summary)
             row = self._batch_table.rowCount()
             self._batch_table.insertRow(row)
@@ -168,13 +180,6 @@ class HistoryWorkspace(QWidget):
                 item = QTableWidgetItem(v)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._batch_table.setItem(row, col, item)
-
-    def _get_run_summary_for_stat(self, stat: dict) -> dict:
-        fp = stat.get("file_path", "")
-        for s in self._run_store.list_runs():
-            if s.get("file_path") == fp:
-                return s
-        return {"file_path": fp}
 
     def _render_chart(self, stats_list: list[dict]) -> None:
         if not stats_list:
