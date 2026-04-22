@@ -10,7 +10,6 @@ from .workspaces.measure_workspace     import MeasureWorkspace
 from .workspaces.review_workspace      import ReviewWorkspace
 from .workspaces.batch_workspace       import BatchWorkspace
 from .workspaces.report_workspace      import ReportWorkspace
-from .workspaces.validation_workspace  import ValidationWorkspace
 from .workspaces.history_workspace     import HistoryWorkspace
 from ..core.recipe_registry    import RecipeRegistry
 from ..core.calibration        import CalibrationManager
@@ -25,12 +24,11 @@ class WorkspaceHost(QTabWidget):
 
     TAB_BROWSE   = 0
     TAB_RECIPE   = 1
-    TAB_VALIDATE = 2
-    TAB_MEASURE  = 3
-    TAB_BATCH    = 4
-    TAB_REVIEW   = 5
-    TAB_REPORT   = 6
-    TAB_HISTORY  = 7
+    TAB_MEASURE  = 2
+    TAB_BATCH    = 3
+    TAB_REVIEW   = 4
+    TAB_REPORT   = 5
+    TAB_HISTORY  = 6
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -44,7 +42,6 @@ class WorkspaceHost(QTabWidget):
         # Workspaces
         self._browse    = BrowseWorkspace(self._cal_manager)
         self._recipe    = RecipeWorkspace(self._registry)
-        self._validate  = ValidationWorkspace(self._engine, self._registry)
         self._measure   = MeasureWorkspace(self._engine, self._registry, self._cal_manager)
         self._review    = ReviewWorkspace()
         self._batch     = BatchWorkspace(self._engine, self._registry, self._cal_manager,
@@ -54,7 +51,6 @@ class WorkspaceHost(QTabWidget):
 
         self.addTab(self._browse,   "Browse")
         self.addTab(self._recipe,   "Recipe")
-        self.addTab(self._validate, "Validate")
         self.addTab(self._measure,  "Measure")
         self.addTab(self._batch,    "Batch")
         self.addTab(self._review,   "Review")
@@ -93,9 +89,7 @@ class WorkspaceHost(QTabWidget):
         # Recipe changes → refresh selectors
         self._recipe.recipe_saved.connect(self._measure.refresh_recipe_selector)
         self._recipe.recipe_saved.connect(self._batch.refresh_recipe_selector)
-        self._recipe.recipe_saved.connect(self._validate.refresh_recipe_selector)
         self._measure.recipe_saved.connect(self._batch.refresh_recipe_selector)
-        self._measure.recipe_saved.connect(self._validate.refresh_recipe_selector)
         self._measure.recipe_saved.connect(lambda _: self._recipe.refresh_from_registry())
 
         # History → load in Report
@@ -105,7 +99,7 @@ class WorkspaceHost(QTabWidget):
         )
 
         # Bubble status messages up to MainWindow status bar
-        for ws in (self._browse, self._recipe, self._validate, self._measure,
+        for ws in (self._browse, self._recipe, self._measure,
                    self._review, self._batch, self._report, self._history):
             ws.status_message.connect(self.status_message)
 
