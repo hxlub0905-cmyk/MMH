@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QGroupBox, QFormLayout, QComboBox, QPushButton,
     QLabel, QCheckBox, QButtonGroup, QFrame, QMessageBox,
-    QSizePolicy, QDoubleSpinBox, QSpinBox,
+    QSizePolicy, QDoubleSpinBox, QSpinBox, QScrollArea, QStackedWidget,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 
@@ -18,6 +18,7 @@ from ..control_panel import ControlPanel
 from ..image_viewer import ImageViewer
 from ..results_panel import ResultsPanel
 from ..layer_control_panel import LayerControlPanel
+from ..collapsible import CollapsibleSection
 from ...core.models import ImageRecord
 from ...core.recipe_base import PipelineResult
 from ...core.recipe_registry import RecipeRegistry
@@ -70,7 +71,7 @@ class MeasureWorkspace(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
 
-        # Center: viewer header + viewer + results
+        # ── Center: viewer header + viewer/empty-state + results ──────────────
         center = QWidget()
         cv = QVBoxLayout(center)
         cv.setContentsMargins(0, 0, 0, 0)
@@ -81,7 +82,13 @@ class MeasureWorkspace(QWidget):
         v_split.setChildrenCollapsible(False)
 
         self._viewer = ImageViewer()
-        v_split.addWidget(self._viewer)
+
+        # Stack: empty-state placeholder (0) / actual viewer (1)
+        self._viewer_stack = QStackedWidget()
+        self._viewer_stack.addWidget(self._build_empty_state())
+        self._viewer_stack.addWidget(self._viewer)
+        self._viewer_stack.setCurrentIndex(0)
+        v_split.addWidget(self._viewer_stack)
 
         self._results = ResultsPanel()
         self._results.setMinimumHeight(100)
@@ -93,30 +100,42 @@ class MeasureWorkspace(QWidget):
         cv.addWidget(v_split, stretch=1)
         splitter.addWidget(center)
 
-        # Right: recipe selector + layer panel + legacy ControlPanel
-        right = QWidget()
+        # ── Right: single unified scroll area ─────────────────────────────────
+        right = QFrame()
+        right.setObjectName("rightPanel")
         rv = QVBoxLayout(right)
-        rv.setContentsMargins(4, 4, 4, 4)
-        rv.setSpacing(6)
-        rv.addWidget(self._build_recipe_selector())
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(0)
 
-        rv.addWidget(self._build_edge_locator_panel())
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        inner = QWidget()
+        il = QVBoxLayout(inner)
+        il.setContentsMargins(0, 0, 0, 12)
+        il.setSpacing(0)
+
+        il.addWidget(self._build_recipe_section())
+        il.addWidget(self._build_edge_locator_panel())
 
         self._layer_panel = LayerControlPanel()
         self._layer_panel.setVisible(False)
         self._layer_panel.layers_changed.connect(self._refresh_annotated)
-        rv.addWidget(self._layer_panel)
+        il.addWidget(self._layer_panel)
 
         self._ctrl = ControlPanel()
-        self._ctrl.setMinimumWidth(230)
-        self._ctrl.setMaximumWidth(320)
         self._ctrl.params_changed.connect(self._on_params_changed)
         self._ctrl.run_single.connect(self._run_single)
-        rv.addWidget(self._ctrl)
-        rv.addStretch()   # pushes all sections up; prevents ControlPanel from over-expanding
+        il.addWidget(self._ctrl)
+        il.addStretch()
+
+        scroll.setWidget(inner)
+        rv.addWidget(scroll)
 
         splitter.addWidget(right)
-        splitter.setSizes([1000, 270])
+        splitter.setSizes([1000, 295])
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
 
@@ -125,6 +144,24 @@ class MeasureWorkspace(QWidget):
         self._results.row_selected.connect(self._on_result_selected)
         self._results.state_filter_changed.connect(self._on_state_filter_changed)
         self._viewer.measure_updated.connect(lambda t: self.status_message.emit(t))
+
+    def _build_empty_state(self) -> QWidget:
+        w = QWidget()
+        w.setStyleSheet("background:#fbf8f3;")
+        l = QVBoxLayout(w)
+        l.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        l.setSpacing(14)
+        icon = QLabel("◎")
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet("font-size:52px; color:#e0d4c4; background:transparent;")
+        msg = QLabel("Browse → select an image\nto begin measurement")
+        msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        msg.setStyleSheet("color:#c0b0a0; font-size:13px; background:transparent;")
+        l.addStretch()
+        l.addWidget(icon)
+        l.addWidget(msg)
+        l.addStretch()
+        return w
 
     def _build_viewer_header(self) -> QFrame:
         header = QFrame()
@@ -195,54 +232,91 @@ class MeasureWorkspace(QWidget):
 
         return header
 
-    def _build_recipe_selector(self) -> QGroupBox:
-        box = QGroupBox("Recipe (optional)")
-        form = QFormLayout(box)
+    def _build_recipe_section(self) -> CollapsibleSection:
+        sec = CollapsibleSection("Recipe", tier=1, collapsed=False)
 
+        body = QWidget()
+        body.setStyleSheet("background:transparent; border:none;")
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(8, 6, 8, 10)
+        bl.setSpacing(6)
+
+        # Recipe selector row
+        combo_row = QWidget(); combo_row.setStyleSheet("border:none; background:transparent;")
+        cr = QHBoxLayout(combo_row); cr.setContentsMargins(0, 0, 0, 0); cr.setSpacing(6)
+        lbl_r = QLabel("Recipe")
+        lbl_r.setStyleSheet("color:#9f8f7b; font-size:11px; font-weight:600; background:transparent;")
         self._recipe_combo = QComboBox()
         self._recipe_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        form.addRow("Recipe:", self._recipe_combo)
+        cr.addWidget(lbl_r); cr.addWidget(self._recipe_combo)
+        bl.addWidget(combo_row)
 
-        run_btn = QPushButton("Run Single (F5)")
+        # Primary action: Run Single — full width, green accent
+        run_btn = QPushButton("▶   Run Single  (F5)")
+        run_btn.setObjectName("runSingle")
         run_btn.setShortcut("F5")
+        run_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         run_btn.clicked.connect(self._run_single)
+        bl.addWidget(run_btn)
 
+        # Secondary actions side-by-side
+        sec_row = QHBoxLayout(); sec_row.setSpacing(4)
         save_btn = QPushButton("Save Cards as Recipe…")
         save_btn.setToolTip("Convert current ControlPanel profiles to Recipe(s) and save")
         save_btn.clicked.connect(self._save_cards_as_recipe)
-
         self._btn_compare = QPushButton("Compare to Reference…")
-        self._btn_compare.setToolTip("Compare each measured position against a Reference CD value")
+        self._btn_compare.setToolTip("Compare measured CDs against a Reference value")
         self._btn_compare.setEnabled(False)
         self._btn_compare.clicked.connect(self._open_compare_dialog)
+        sec_row.addWidget(save_btn); sec_row.addWidget(self._btn_compare)
+        bl.addLayout(sec_row)
 
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(run_btn)
-        btn_row.addWidget(save_btn)
-        form.addRow(btn_row)
-        form.addRow(self._btn_compare)
-
+        sec.add_widget(body)
         self._refresh_recipe_selector_internal()
         self._recipe_combo.currentIndexChanged.connect(self._on_recipe_combo_changed)
-        return box
+        return sec
 
-    def _build_edge_locator_panel(self) -> QGroupBox:
+    def _build_edge_locator_panel(self) -> CollapsibleSection:
         """Controls that mirror Recipe workspace's Analysis tab edge-locator section."""
-        box = QGroupBox("Edge Locator")
-        form = QFormLayout(box)
-        form.setSpacing(6)
-        form.setContentsMargins(8, 6, 8, 6)
+        sec = CollapsibleSection("Edge Locator", tier=1, collapsed=False)
 
+        body = QWidget(); body.setStyleSheet("background:transparent; border:none;")
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(8, 4, 8, 6)
+        bl.setSpacing(0)
+
+        # ── Y-CD method (always visible) ──────────────────────────────────────
+        method_w = QWidget(); method_w.setStyleSheet("border:none; background:transparent;")
+        mf = QFormLayout(method_w)
+        mf.setContentsMargins(0, 4, 0, 4); mf.setSpacing(5)
+        mf.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         self._ec_method = QComboBox()
         self._ec_method.addItem("Threshold Crossing", "threshold_crossing")
         self._ec_method.addItem("Gradient",           "gradient")
         self._ec_method.addItem("BBox",               "bbox")
+        mf.addRow("Y-CD method:", self._ec_method)
+        bl.addWidget(method_w)
+
+        # ── Sampling (tier=2, expanded by default) ────────────────────────────
+        self._ec_sampling_sec = CollapsibleSection("Sampling", tier=2, collapsed=False,
+                                                    content_margins=(8, 4, 8, 6))
+        samp_fw = QWidget(); samp_fw.setStyleSheet("border:none; background:transparent;")
+        sf = QFormLayout(samp_fw)
+        sf.setContentsMargins(0, 2, 0, 2); sf.setSpacing(4)
+        sf.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self._ec_threshold_frac = QDoubleSpinBox()
         self._ec_threshold_frac.setRange(0.01, 0.99); self._ec_threshold_frac.setSingleStep(0.05)
         self._ec_threshold_frac.setValue(0.5); self._ec_threshold_frac.setDecimals(2)
 
-        # Sampling strategy
+        # TC-specific threshold row (hidden for non-TC methods)
+        self._ec_tc_widget = QWidget(); self._ec_tc_widget.setStyleSheet("border:none; background:transparent;")
+        tc_form = QFormLayout(self._ec_tc_widget)
+        tc_form.setSpacing(4); tc_form.setContentsMargins(0, 0, 0, 0)
+        tc_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        tc_form.addRow("Threshold:", self._ec_threshold_frac)
+        sf.addRow(self._ec_tc_widget)
+
         self._ec_sample_mode_combo = QComboBox()
         self._ec_sample_mode_combo.addItem("All columns", "all")
         self._ec_sample_mode_combo.addItem("N evenly spaced", "n")
@@ -251,9 +325,26 @@ class MeasureWorkspace(QWidget):
         self._ec_sample_mode_combo.currentIndexChanged.connect(
             lambda: self._ec_sample_n.setEnabled(
                 self._ec_sample_mode_combo.currentData() == "n"))
+        samp_row_w = QWidget(); samp_row_w.setStyleSheet("border:none; background:transparent;")
+        samp_hl = QHBoxLayout(samp_row_w); samp_hl.setContentsMargins(0,0,0,0); samp_hl.setSpacing(4)
+        samp_hl.addWidget(self._ec_sample_mode_combo); samp_hl.addWidget(self._ec_sample_n)
+        sf.addRow("Vert. lines:", samp_row_w)
+
         self._ec_aggregate_combo = QComboBox()
-        for _lbl, _key in (("Median","median"),("Mean","mean"),("Min","min"),("Max","max")):
-            self._ec_aggregate_combo.addItem(_lbl, _key)
+        for _albl, _akey in (("Median","median"),("Mean","mean"),("Min","min"),("Max","max")):
+            self._ec_aggregate_combo.addItem(_albl, _akey)
+        sf.addRow("Aggregation:", self._ec_aggregate_combo)
+
+        self._ec_sampling_sec.add_widget(samp_fw)
+        bl.addWidget(self._ec_sampling_sec)
+
+        # ── Advanced (tier=3, collapsed by default) ───────────────────────────
+        self._ec_adv_sec = CollapsibleSection("Advanced", tier=3, collapsed=True,
+                                               content_margins=(8, 4, 8, 6))
+        adv_fw = QWidget(); adv_fw.setStyleSheet("border:none; background:transparent;")
+        af = QFormLayout(adv_fw)
+        af.setContentsMargins(0, 2, 0, 2); af.setSpacing(4)
+        af.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         # Profile Gaussian LPF
         self._ec_lpf_cb = QCheckBox("Gaussian LPF")
@@ -262,6 +353,10 @@ class MeasureWorkspace(QWidget):
         self._ec_lpf_sigma.setValue(1.0); self._ec_lpf_sigma.setDecimals(1)
         self._ec_lpf_sigma.setSuffix(" px"); self._ec_lpf_sigma.setEnabled(False)
         self._ec_lpf_cb.toggled.connect(self._ec_lpf_sigma.setEnabled)
+        lpf_row = QWidget(); lpf_row.setStyleSheet("border:none; background:transparent;")
+        lpf_hl = QHBoxLayout(lpf_row); lpf_hl.setContentsMargins(0,0,0,0); lpf_hl.setSpacing(6)
+        lpf_hl.addWidget(self._ec_lpf_cb); lpf_hl.addWidget(self._ec_lpf_sigma)
+        af.addRow("Profile LPF:", lpf_row)
 
         self._ec_overlap = QDoubleSpinBox()
         self._ec_overlap.setRange(0.0, 1.0); self._ec_overlap.setSingleStep(0.05)
@@ -275,57 +370,32 @@ class MeasureWorkspace(QWidget):
         self._ec_border.setRange(0, 200); self._ec_border.setValue(0)
         self._ec_border.setSuffix(" px"); self._ec_border.setSpecialValueText("off")
 
-        form.addRow("Y-CD method:", self._ec_method)
+        af.addRow("X overlap:", self._ec_overlap)
+        af.addRow("Cluster tol:", self._ec_cluster_tol)
+        af.addRow("Border excl.:", self._ec_border)
 
-        # Advanced parameters widget (hidden for BBox)
-        self._ec_adv_widget = QWidget()
-        adv_form = QFormLayout(self._ec_adv_widget)
-        adv_form.setSpacing(5); adv_form.setContentsMargins(0, 0, 0, 0)
-        # TC-specific
-        self._ec_tc_widget = QWidget()
-        tc_form = QFormLayout(self._ec_tc_widget)
-        tc_form.setSpacing(5); tc_form.setContentsMargins(0, 0, 0, 0)
-        tc_form.addRow("Threshold level:", self._ec_threshold_frac)
-        adv_form.addRow(self._ec_tc_widget)
-        # Sampling
-        samp_row = QWidget()
-        samp_hl = QHBoxLayout(samp_row); samp_hl.setContentsMargins(0,0,0,0); samp_hl.setSpacing(4)
-        samp_hl.addWidget(self._ec_sample_mode_combo); samp_hl.addWidget(self._ec_sample_n)
-        adv_form.addRow("Vertical lines:", samp_row)
-        adv_form.addRow("Aggregation:", self._ec_aggregate_combo)
-        # Profile Filter section
-        ec_lpf_sep = QLabel("─── Profile Filter ───")
-        ec_lpf_sep.setStyleSheet("color:#666; font-size:11px;")
-        adv_form.addRow(ec_lpf_sep)
-        ec_lpf_row = QWidget()
-        ec_lpf_hl = QHBoxLayout(ec_lpf_row); ec_lpf_hl.setContentsMargins(0, 0, 0, 0); ec_lpf_hl.setSpacing(6)
-        ec_lpf_hl.addWidget(self._ec_lpf_cb); ec_lpf_hl.addWidget(self._ec_lpf_sigma)
-        adv_form.addRow("Profile LPF:", ec_lpf_row)
-        form.addRow(self._ec_adv_widget)
+        self._ec_adv_sec.add_widget(adv_fw)
+        bl.addWidget(self._ec_adv_sec)
 
-        form.addRow("X overlap:",        self._ec_overlap)
-        form.addRow("Cluster tol:",      self._ec_cluster_tol)
-        form.addRow("Border exclusion:", self._ec_border)
+        sec.add_widget(body)
 
         self._ec_method.currentIndexChanged.connect(self._on_ec_method_changed)
-        self._on_ec_method_changed()  # set initial state
+        self._on_ec_method_changed()  # set initial visibility
 
-        # Wire all EC controls to debounced preview (500 ms) so edge overlay
-        # updates live as the user adjusts parameters.
-        for _ec_w in (self._ec_method, self._ec_sample_mode_combo, self._ec_aggregate_combo):
-            _ec_w.currentIndexChanged.connect(self._schedule_preview)
-        for _ec_s in (self._ec_threshold_frac, self._ec_lpf_sigma,
-                      self._ec_overlap):
-            _ec_s.valueChanged.connect(self._schedule_preview)
-        for _ec_i in (self._ec_sample_n, self._ec_cluster_tol, self._ec_border):
-            _ec_i.valueChanged.connect(self._schedule_preview)
+        # Wire EC controls to debounced preview
+        for _ecw in (self._ec_method, self._ec_sample_mode_combo, self._ec_aggregate_combo):
+            _ecw.currentIndexChanged.connect(self._schedule_preview)
+        for _ecs in (self._ec_threshold_frac, self._ec_lpf_sigma, self._ec_overlap):
+            _ecs.valueChanged.connect(self._schedule_preview)
+        for _eci in (self._ec_sample_n, self._ec_cluster_tol, self._ec_border):
+            _eci.valueChanged.connect(self._schedule_preview)
         self._ec_lpf_cb.toggled.connect(self._schedule_preview)
 
-        return box
+        return sec
 
     def _on_ec_method_changed(self) -> None:
         method = self._ec_method.currentData()
-        self._ec_adv_widget.setVisible(method != "bbox")
+        self._ec_sampling_sec.setVisible(method != "bbox")
         self._ec_tc_widget.setVisible(method == "threshold_crossing")
 
     def _on_recipe_combo_changed(self) -> None:
@@ -382,6 +452,7 @@ class MeasureWorkspace(QWidget):
             self._viewer.set_images(raw, None, None)
             self._viewer.set_mode("raw")
             self._results.clear()
+            self._viewer_stack.setCurrentIndex(1)   # reveal viewer
         except Exception as exc:
             self.status_message.emit(f"Load error: {exc}")
             return
