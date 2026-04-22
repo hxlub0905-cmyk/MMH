@@ -156,6 +156,29 @@ QPushButton#segRight:checked {
     color: #ffffff;
 }
 
+/* Detail CD toggle — teal accent, same height as Ruler/segmented buttons */
+QPushButton#detailCD {
+    background: #fffdf9;
+    color: #6f6254;
+    border: 1px solid #dfd0be;
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 500;
+}
+QPushButton#detailCD:hover {
+    background: #f0faf5;
+    border-color: #88c4a8;
+    color: #3a6650;
+}
+QPushButton#detailCD:checked {
+    background: #d0f0e0;
+    border-color: #5ab080;
+    color: #2a5540;
+    font-weight: 700;
+}
+QPushButton#detailCD:pressed { background: #c0e8d0; }
+
 /* Run Single — green accent */
 QPushButton#runSingle {
     background: #ebf7f0;
