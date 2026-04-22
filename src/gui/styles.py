@@ -156,6 +156,77 @@ QPushButton#segRight:checked {
     color: #ffffff;
 }
 
+/* ════════════════════════ CollapsibleSection headers ═══════════════════ */
+/* Tier 1 — accent/orange, top-level section header */
+QPushButton#sectionHeader1 {
+    background: #fff4e8;
+    color: #c97028;
+    border: none;
+    border-bottom: 1px solid #efd8b8;
+    border-radius: 0;
+    padding: 0 10px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    text-align: left;
+}
+QPushButton#sectionHeader1:hover { background: #ffede0; color: #b05c20; }
+QPushButton#sectionHeader1:pressed { background: #ffe4cc; }
+
+/* Tier 2 — muted orange, parameter group header */
+QPushButton#sectionHeader2 {
+    background: #f9f4ee;
+    color: #9a7050;
+    border: none;
+    border-bottom: 1px solid #ede4d8;
+    border-radius: 0;
+    padding: 0 10px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    text-align: left;
+}
+QPushButton#sectionHeader2:hover { background: #f5ede4; color: #7a5030; }
+QPushButton#sectionHeader2:pressed { background: #f0e4d8; }
+
+/* Tier 3 — muted grey, advanced/rarely-changed section header */
+QPushButton#sectionHeader3 {
+    background: #f4f0ec;
+    color: #9f8f7b;
+    border: none;
+    border-bottom: 1px solid #e8e0d8;
+    border-radius: 0;
+    padding: 0 10px;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.3px;
+    text-align: left;
+}
+QPushButton#sectionHeader3:hover { background: #eee8e0; color: #7a6858; }
+QPushButton#sectionHeader3:pressed { background: #e8e0d8; }
+
+/* ════════════════════════ Summary stats chips ══════════════════════════ */
+QLabel#statChip {
+    background: #fff4e6;
+    border: 1px solid #efd8b8;
+    border-radius: 8px;
+    padding: 3px 10px;
+    color: #8a6830;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel#statChipAlert {
+    background: #ffeee8;
+    border: 1px solid #f0c0a8;
+    border-radius: 8px;
+    padding: 3px 10px;
+    color: #a04030;
+    font-size: 11px;
+    font-weight: 600;
+}
+
 /* Detail CD toggle — teal accent, same height as Ruler/segmented buttons */
 QPushButton#detailCD {
     background: #fffdf9;

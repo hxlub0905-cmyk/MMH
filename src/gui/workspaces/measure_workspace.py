@@ -309,6 +309,18 @@ class MeasureWorkspace(QWidget):
 
         self._ec_method.currentIndexChanged.connect(self._on_ec_method_changed)
         self._on_ec_method_changed()  # set initial state
+
+        # Wire all EC controls to debounced preview (500 ms) so edge overlay
+        # updates live as the user adjusts parameters.
+        for _ec_w in (self._ec_method, self._ec_sample_mode_combo, self._ec_aggregate_combo):
+            _ec_w.currentIndexChanged.connect(self._schedule_preview)
+        for _ec_s in (self._ec_threshold_frac, self._ec_lpf_sigma,
+                      self._ec_overlap):
+            _ec_s.valueChanged.connect(self._schedule_preview)
+        for _ec_i in (self._ec_sample_n, self._ec_cluster_tol, self._ec_border):
+            _ec_i.valueChanged.connect(self._schedule_preview)
+        self._ec_lpf_cb.toggled.connect(self._schedule_preview)
+
         return box
 
     def _on_ec_method_changed(self) -> None:
