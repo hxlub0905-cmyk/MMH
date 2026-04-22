@@ -96,6 +96,14 @@ def records_to_legacy_cuts(records: list[MeasurementRecord]) -> list:
             y_upper_edge=float(upper_edge) if refine_used and upper_edge is not None else None,
             y_lower_edge=float(lower_edge) if refine_used and lower_edge is not None else None,
         )
+        # Restore _refine_meta so Detail CD view can draw individual sample lines
+        _refine_keys = (
+            "sample_xs", "upper_sample_ys", "lower_sample_ys",
+            "individual_cds_nm", "aggregate_method",
+        )
+        _meta = {k: r.extra_metrics[k] for k in _refine_keys if k in r.extra_metrics}
+        if _meta:
+            m._refine_meta = _meta
         cut_map[r.cmg_id].append(m)
 
     return [
