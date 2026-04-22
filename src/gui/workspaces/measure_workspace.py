@@ -199,10 +199,16 @@ class MeasureWorkspace(QWidget):
         save_btn.setToolTip("Convert current ControlPanel profiles to Recipe(s) and save")
         save_btn.clicked.connect(self._save_cards_as_recipe)
 
+        self._btn_compare = QPushButton("Compare to Reference…")
+        self._btn_compare.setToolTip("Compare each measured position against a Reference CD value")
+        self._btn_compare.setEnabled(False)
+        self._btn_compare.clicked.connect(self._open_compare_dialog)
+
         btn_row = QHBoxLayout()
         btn_row.addWidget(run_btn)
         btn_row.addWidget(save_btn)
         form.addRow(btn_row)
+        form.addRow(self._btn_compare)
 
         self._refresh_recipe_selector_internal()
         self._recipe_combo.currentIndexChanged.connect(self._on_recipe_combo_changed)
@@ -281,6 +287,7 @@ class MeasureWorkspace(QWidget):
         self._current_records = []
         self._current_annotated = None
         self._focused_measurement = None
+        self._btn_compare.setEnabled(False)
 
         try:
             from ...core.image_loader import load_grayscale
@@ -435,6 +442,7 @@ class MeasureWorkspace(QWidget):
             self._results.show_fail(name, "No cuts detected")
 
         n = len(result.records)
+        self._btn_compare.setEnabled(bool(self._current_records))
         self.status_message.emit(f"{name}  ·  {n} measurement(s) via recipe")
         self.run_completed.emit(result)
 
@@ -656,6 +664,11 @@ class MeasureWorkspace(QWidget):
         self._viewer.set_images(self._current_raw, self._current_mask, annotated,
                                 profile_masks=self._profile_masks)
 
+    def _open_compare_dialog(self) -> None:
+        from ..measure_validate_dialog import MeasureValidateDialog
+        dlg = MeasureValidateDialog(records=self._current_records, parent=self)
+        dlg.exec()
+
     # ── Mode / selection handlers ─────────────────────────────────────────────
 
     def _on_mode_raw(self)  -> None: self._overlay_widget.setVisible(False); self._viewer.set_mode("raw")
@@ -700,8 +713,8 @@ class MeasureWorkspace(QWidget):
 
 
 def _filter_by_range(cuts: list, min_px: float, max_px: float) -> list:
-    """Remove measurements outside [min_px, max_px] and re-flag MIN/MAX."""
-    from ...core.cmg_analyzer import CMGCut
+    """Remove measurements outside [min_px, max_px] and re-flag global MIN/MAX."""
+    from ...core.cmg_analyzer import CMGCut, _flag_global_minmax
     filtered = []
     for cut in cuts:
         kept = [m for m in cut.measurements
@@ -709,13 +722,7 @@ def _filter_by_range(cuts: list, min_px: float, max_px: float) -> list:
                 and (max_px <= 0 or m.cd_px <= max_px)]
         if kept:
             filtered.append(CMGCut(cmg_id=cut.cmg_id, measurements=kept))
-    # Re-compute MIN/MAX flags on remaining measurements
-    all_m = [m for c in filtered for m in c.measurements]
-    if len(all_m) >= 2:
-        mn = min(m.cd_px for m in all_m)
-        mx = max(m.cd_px for m in all_m)
-        for m in all_m:
-            m.flag = "MIN" if m.cd_px == mn else ("MAX" if m.cd_px == mx else "")
+    _flag_global_minmax([m for cut in filtered for m in cut.measurements])
     return filtered
 
 

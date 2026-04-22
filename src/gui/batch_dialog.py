@@ -129,7 +129,7 @@ def _process_one(args: tuple) -> dict:
 
 def _filter_by_range(cuts, min_px: float, max_px: float) -> list:
     """Keep only measurements whose cd_px falls within [min_px, max_px] (0 = disabled)."""
-    from ..core.cmg_analyzer import CMGCut
+    from ..core.cmg_analyzer import CMGCut, _flag_top3
     filtered = []
     for cut in cuts:
         kept = [
@@ -139,12 +139,8 @@ def _filter_by_range(cuts, min_px: float, max_px: float) -> list:
         ]
         if kept:
             filtered.append(CMGCut(cmg_id=cut.cmg_id, measurements=kept))
-    all_m = [m for c in filtered for m in c.measurements]
-    if len(all_m) >= 2:
-        mn = min(m.cd_px for m in all_m)
-        mx = max(m.cd_px for m in all_m)
-        for m in all_m:
-            m.flag = "MIN" if m.cd_px == mn else ("MAX" if m.cd_px == mx else "")
+    for cut in filtered:
+        _flag_top3(cut.measurements)
     return filtered
 
 

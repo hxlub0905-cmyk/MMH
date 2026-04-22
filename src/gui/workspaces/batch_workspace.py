@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QSpinBox, QProgressBar, QTextEdit,
     QListWidget, QListWidgetItem, QFileDialog,
     QMessageBox, QLineEdit, QScrollArea, QSizePolicy,
-    QFrame,
+    QFrame, QDialog, QTableWidget, QTableWidgetItem, QAbstractItemView,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
 
@@ -19,6 +19,7 @@ from ...core.models import ImageRecord, BatchRunRecord, MultiDatasetBatchRun
 from ...core.recipe_registry import RecipeRegistry
 from ...core.measurement_engine import MeasurementEngine
 from ...core.calibration import CalibrationManager
+from ...core.batch_run_store import BatchRunStore
 from ...core.image_loader import scan_folder
 
 
@@ -42,12 +43,14 @@ class BatchWorkspace(QWidget):
         engine: MeasurementEngine,
         registry: RecipeRegistry,
         cal_manager: CalibrationManager,
+        run_store: BatchRunStore | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self._engine        = engine
         self._registry      = registry
         self._cal_manager   = cal_manager
+        self._run_store     = run_store
         self._worker        = None
         self._dataset_rows: list[_DatasetRow] = []
         self._build_ui()
@@ -126,6 +129,10 @@ class BatchWorkspace(QWidget):
         self._log_text.setReadOnly(True)
         self._log_text.setMaximumHeight(120)
         pv.addWidget(self._log_text)
+        hist_btn = QPushButton("Load History…")
+        hist_btn.setFixedWidth(130)
+        hist_btn.clicked.connect(self._open_history_dialog)
+        pv.addWidget(hist_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         root.addWidget(prog_box)
 
         # ── Results list ──────────────────────────────────────────────────────
@@ -307,6 +314,11 @@ class BatchWorkspace(QWidget):
     @pyqtSlot(object)
     def _on_single_finished(self, batch_run: BatchRunRecord) -> None:
         self._progress.setValue(self._progress.maximum())
+        if self._run_store:
+            try:
+                self._run_store.save(batch_run)
+            except Exception:
+                pass
         msg = (f"Batch complete  ·  {batch_run.success_count} OK  "
                f"·  {batch_run.fail_count} failed  —  Results sent to Review tab")
         self._log_text.append(msg)
@@ -316,12 +328,38 @@ class BatchWorkspace(QWidget):
     @pyqtSlot(object)
     def _on_multi_finished(self, mbr: MultiDatasetBatchRun) -> None:
         self._progress.setValue(self._progress.maximum())
+        if self._run_store:
+            try:
+                self._run_store.save_multi(mbr)
+            except Exception:
+                pass
         msg = (f"Multi-batch complete  ·  {mbr.success_count} OK  "
                f"·  {mbr.fail_count} failed across {len(mbr.datasets)} datasets"
                f"  —  Results sent to Report tab")
         self._log_text.append(msg)
         self.status_message.emit(msg)
         self.multi_batch_completed.emit(mbr)
+
+    def _open_history_dialog(self) -> None:
+        if not self._run_store:
+            return
+        dlg = _HistoryDialog(self._run_store, self)
+        dlg.run_selected.connect(self._on_history_selected)
+        dlg.exec()
+
+    def _on_history_selected(self, file_path: str) -> None:
+        if not self._run_store:
+            return
+        try:
+            result = self._run_store.load(file_path)
+        except Exception as exc:
+            self.status_message.emit(f"Failed to load history: {exc}")
+            return
+        from ...core.models import MultiDatasetBatchRun
+        if isinstance(result, MultiDatasetBatchRun):
+            self.multi_batch_completed.emit(result)
+        else:
+            self.batch_completed.emit(result)
 
     @pyqtSlot(str)
     def _on_batch_error(self, err: str) -> None:
@@ -393,3 +431,75 @@ class _MultiBatchWorker(QThread):
             self.finished.emit(mbr)
         except Exception as exc:
             self.error.emit(str(exc))
+
+
+# ── History dialog ─────────────────────────────────────────────────────────────
+
+class _HistoryDialog(QDialog):
+    """歷史批次結果選擇器。"""
+    run_selected = pyqtSignal(str)   # file_path
+
+    def __init__(self, run_store: BatchRunStore, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Batch Run History")
+        self.setMinimumSize(680, 400)
+        layout = QVBoxLayout(self)
+
+        self._table = QTableWidget(0, 6)
+        self._table.setHorizontalHeaderLabels(
+            ["Type", "Start Time", "Total", "OK", "Failed", "Folder / Label"]
+        )
+        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        layout.addWidget(self._table)
+
+        btn_row = QHBoxLayout()
+        load_btn  = QPushButton("Load Selected")
+        del_btn   = QPushButton("Delete")
+        close_btn = QPushButton("Close")
+        load_btn.clicked.connect(self._load)
+        del_btn.clicked.connect(self._delete)
+        close_btn.clicked.connect(self.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(load_btn)
+        btn_row.addWidget(del_btn)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        self._run_store = run_store
+        self._summaries: list[dict] = []
+        self._refresh()
+
+    def _refresh(self) -> None:
+        self._summaries = self._run_store.list_runs()
+        self._table.setRowCount(0)
+        for s in self._summaries:
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+            vals = [
+                s.get("type", "single"),
+                s.get("start_time", "")[:19].replace("T", " "),
+                str(s.get("total_images", 0)),
+                str(s.get("success_count", 0)),
+                str(s.get("fail_count", 0)),
+                s.get("input_folder") or s.get("dataset_label", ""),
+            ]
+            for col, v in enumerate(vals):
+                item = QTableWidgetItem(v)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._table.setItem(row, col, item)
+
+    def _load(self) -> None:
+        row = self._table.currentRow()
+        if row < 0:
+            return
+        self.run_selected.emit(self._summaries[row]["file_path"])
+        self.accept()
+
+    def _delete(self) -> None:
+        row = self._table.currentRow()
+        if row < 0:
+            return
+        self._run_store.delete(self._summaries[row]["file_path"])
+        self._refresh()

@@ -28,6 +28,107 @@
 
 ---
 
+## [2026-04-21] Phase B — Task 4：歷史資料庫與趨勢 Run Chart
+
+**變更類型：** 功能新增
+
+**變更摘要：**
+- 新增 `HistoryWorkspace`（`src/gui/workspaces/history_workspace.py`）：顯示 `~/.mmh/runs/` 歷史批次清單，以 matplotlib 繪製 Run Chart（CD Mean ± 1σ + ±3σ 控制線），支援 Recipe 過濾與時間範圍篩選
+- 在 `BatchRunStore` 新增 `get_stats_for_recipe(recipe_id)` 方法：從歷史 JSON 讀取所有量測值、計算 mean/std，可依 recipe_id 過濾
+- 整合至 `WorkspaceHost`：新增 History tab，`history.load_requested` 連接至 `report.load_from_file()`
+- 新增測試 `tests/test_history.py`（4 項）
+
+**影響範圍：**
+- `src/core/batch_run_store.py`（新增 `get_stats_for_recipe()`）
+- `src/gui/workspaces/history_workspace.py`（新增）
+- `src/gui/workspace_host.py`（整合 HistoryWorkspace）
+
+**測試結果：**
+- `pytest tests/ -q` → 77/77 通過（含新增 4 項）
+
+**備註：**
+- matplotlib 為 optional；無安裝時 chart label 顯示提示文字，不崩潰
+
+---
+
+## [2026-04-21] Phase B — Task 3：Recipe 驗證模式（Golden Sample 比對）
+
+**變更類型：** 功能新增
+
+**變更摘要：**
+- 在 `src/core/models.py` 新增 `GoldenSampleEntry`、`ValidationResult` dataclass
+- 新增 `RecipeValidator`（`src/core/recipe_validator.py`）：依序量測 golden sample，計算 Bias / Precision 統計
+- 新增 `ValidationWorkspace`（`src/gui/workspaces/validation_workspace.py`）：Recipe 選擇 + golden sample 表格（Add Files / Remove / Load CSV）+ Run Validation + 結果展示（Bias 顏色標示）+ Export CSV
+- 整合至 `WorkspaceHost`：插入 Validate tab（TAB_VALIDATE=2），tab index 整體後移
+- 新增測試 `tests/test_recipe_validator.py`（4 項）
+
+**影響範圍：**
+- `src/core/models.py`（新增 2 個 dataclass）
+- `src/core/recipe_validator.py`（新增）
+- `src/gui/workspaces/validation_workspace.py`（新增）
+- `src/gui/workspace_host.py`（整合 ValidationWorkspace）
+
+**測試結果：**
+- `pytest tests/ -q` → 77/77 通過（含新增 4 項）
+
+---
+
+## [2026-04-21] Phase B — Task 2：批次結果持久化（BatchRunStore）
+
+**變更類型：** 功能新增
+
+**變更摘要：**
+- 新增 `BatchRunStore`（`src/core/batch_run_store.py`）：儲存 `BatchRunRecord` / `MultiDatasetBatchRun` 至 `~/.mmh/runs/*.json`；支援 `save / save_multi / list_runs / load / delete / get_stats_for_recipe`
+- `BatchWorkspace.__init__` 接受 `run_store` 參數；`_on_single_finished` 自動呼叫 `run_store.save()`；`_on_multi_finished` 呼叫 `run_store.save_multi()`；Progress 區塊下新增「Load History…」按鈕開啟 `_HistoryDialog`
+- 新增 `_HistoryDialog`（同 `batch_workspace.py`）：顯示歷史批次清單，可載入或刪除
+- `ReportWorkspace.__init__` 接受 `run_store` 參數；Export 區塊新增「Load from History…」按鈕；新增 `load_from_file()` public 方法
+- `WorkspaceHost` 建立 `BatchRunStore` 並注入各 Workspace
+- 新增測試 `tests/test_batch_run_store.py`（7 項）
+
+**影響範圍：**
+- `src/core/batch_run_store.py`（新增）
+- `src/gui/workspaces/batch_workspace.py`（整合 BatchRunStore + _HistoryDialog）
+- `src/gui/workspaces/report_workspace.py`（整合 BatchRunStore）
+- `src/gui/workspace_host.py`（注入 BatchRunStore）
+
+**測試結果：**
+- `pytest tests/ -q` → 77/77 通過（含新增 7 項）
+
+**備註：**
+- 儲存路徑：`~/.mmh/runs/<batch_id>.json`（single）、`~/.mmh/runs/multi_<run_id>.json`（multi）
+
+---
+
+## [2026-04-21] Phase B — Task 1：Bug 修復（5 項）
+
+**變更類型：** Bug 修復
+
+**變更摘要：**
+- **Bug 1**：新增 `_flag_top3()` 至 `cmg_analyzer.py`；更新 `analyze()` Step 5、`apply_yedge_subpixel_to_cuts()` 尾端、`compute_metrics()` range filter、`batch_dialog._filter_by_range()`、`measure_workspace._filter_by_range()`；MIN/MAX 改為每 CMGCut 內前 3 小 / 前 3 大（MIN 優先，不重疊）
+- **Bug 2**：`measurement_engine._worker_run_image()` 空 cuts 時補 `else: cmg_id_offset += 1000`，避免不同 recipe 的 cmg_id 衝突
+- **Bug 3**：`review_workspace._nav_next()` / `_nav_prev()` 改為迴圈跳過 separator 列
+- **Bug 4**：`results_panel._on_selection()` 改為防禦性解析，解析失敗時 `print` 警告而非靜默忽略
+- **Bug 5**：`csv_exporter.py` / `excel_exporter.py` 頂層 `import pandas` 改為函式內延遲 import（`_require_pandas()` / `_require_openpyxl()`），避免啟動時崩潰
+- 更新既有測試 `test_min_max_flagging`（新增 6-column 場景）、`test_min_max_flagging_two_meas`（記錄 2-measurement 行為）、`test_bbox_method_default_is_threshold_crossing`
+
+**影響範圍：**
+- `src/core/cmg_analyzer.py`（新增 `_flag_top3`，更新 Step 5）
+- `src/core/recipes/cmg_recipe.py`（import `_flag_top3`，更新兩處 re-flag）
+- `src/core/measurement_engine.py`（`_worker_run_image` 空 cuts 處理）
+- `src/gui/batch_dialog.py`（`_filter_by_range`）
+- `src/gui/workspaces/measure_workspace.py`（`_filter_by_range`）
+- `src/gui/workspaces/review_workspace.py`（nav skip separator）
+- `src/gui/results_panel.py`（防禦性 feature_id 解析）
+- `src/output/csv_exporter.py`（延遲 import）
+- `src/output/excel_exporter.py`（延遲 import）
+- `tests/test_cmg_analyzer.py`（更新 + 新增 test case）
+- `tests/test_subpixel_refinement.py`（更新 test name + assertion）
+
+**測試結果：**
+- `pytest tests/ -q` → 62/62 通過（原 59 + 新增 3）
+
+---
+
 ## [2026-04-20] Phase G2 — 六項新功能 + 標注字體調整
 
 **變更類型：** 功能新增

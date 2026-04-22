@@ -296,13 +296,19 @@ class ReviewWorkspace(QWidget):
 
     def _nav_prev(self) -> None:
         row = self._img_list.currentRow()
-        if row > 0:
-            self._img_list.setCurrentRow(row - 1)
+        while row > 0:
+            row -= 1
+            if not self._batch_entries[row].get("_separator"):
+                self._img_list.setCurrentRow(row)
+                return
 
     def _nav_next(self) -> None:
         row = self._img_list.currentRow()
-        if row < self._img_list.count() - 1:
-            self._img_list.setCurrentRow(row + 1)
+        while row < self._img_list.count() - 1:
+            row += 1
+            if not self._batch_entries[row].get("_separator"):
+                self._img_list.setCurrentRow(row)
+                return
 
     def _load_batch_entry(self, idx: int) -> None:
         entry = self._batch_entries[idx]

@@ -197,6 +197,8 @@ def _worker_run_image(args: dict) -> dict:
                 cut.cmg_id += cmg_id_offset
             if cuts:
                 cmg_id_offset += max(c.cmg_id for c in cuts) + 1
+            else:
+                cmg_id_offset += 1000  # empty recipe; reserve gap to prevent collision
 
             all_records.extend(pr.records)
             all_cuts.extend(cuts)
