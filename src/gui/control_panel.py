@@ -22,7 +22,10 @@ class ControlPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        # Preferred (not Expanding) so the panel only takes as much height as
+        # its content needs; the parent layout can add a stretch below it.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self.setMinimumHeight(160)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -30,6 +33,8 @@ class ControlPanel(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Don't force a vertical scrollbar; let it appear only on overflow.
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         inner = QWidget()
         self._layout = QVBoxLayout(inner)
@@ -40,7 +45,8 @@ class ControlPanel(QWidget):
         self._build_preprocess()
         self._build_measurement_profiles()
         self._build_actions()
-        self._layout.addStretch()
+        # No addStretch() here — it would create visual empty space inside the
+        # scroll area when content is shorter than the widget height.
 
         scroll.setWidget(inner)
         outer.addWidget(scroll)

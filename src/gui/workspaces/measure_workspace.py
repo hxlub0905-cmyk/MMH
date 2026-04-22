@@ -112,7 +112,8 @@ class MeasureWorkspace(QWidget):
         self._ctrl.setMaximumWidth(320)
         self._ctrl.params_changed.connect(self._on_params_changed)
         self._ctrl.run_single.connect(self._run_single)
-        rv.addWidget(self._ctrl, stretch=1)
+        rv.addWidget(self._ctrl)
+        rv.addStretch()   # pushes all sections up; prevents ControlPanel from over-expanding
 
         splitter.addWidget(right)
         splitter.setSizes([1000, 270])
