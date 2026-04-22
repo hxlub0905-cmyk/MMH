@@ -253,6 +253,14 @@ class MeasureWorkspace(QWidget):
         for _lbl, _key in (("Median","median"),("Mean","mean"),("Min","min"),("Max","max")):
             self._ec_aggregate_combo.addItem(_lbl, _key)
 
+        # Profile Gaussian LPF
+        self._ec_lpf_cb = QCheckBox("Gaussian LPF")
+        self._ec_lpf_sigma = QDoubleSpinBox()
+        self._ec_lpf_sigma.setRange(0.1, 10.0); self._ec_lpf_sigma.setSingleStep(0.1)
+        self._ec_lpf_sigma.setValue(1.0); self._ec_lpf_sigma.setDecimals(1)
+        self._ec_lpf_sigma.setSuffix(" px"); self._ec_lpf_sigma.setEnabled(False)
+        self._ec_lpf_cb.toggled.connect(self._ec_lpf_sigma.setEnabled)
+
         self._ec_overlap = QDoubleSpinBox()
         self._ec_overlap.setRange(0.0, 1.0); self._ec_overlap.setSingleStep(0.05)
         self._ec_overlap.setValue(0.5); self._ec_overlap.setDecimals(2)
@@ -283,6 +291,14 @@ class MeasureWorkspace(QWidget):
         samp_hl.addWidget(self._ec_sample_mode_combo); samp_hl.addWidget(self._ec_sample_n)
         adv_form.addRow("Vertical lines:", samp_row)
         adv_form.addRow("Aggregation:", self._ec_aggregate_combo)
+        # Profile Filter section
+        ec_lpf_sep = QLabel("─── Profile Filter ───")
+        ec_lpf_sep.setStyleSheet("color:#666; font-size:11px;")
+        adv_form.addRow(ec_lpf_sep)
+        ec_lpf_row = QWidget()
+        ec_lpf_hl = QHBoxLayout(ec_lpf_row); ec_lpf_hl.setContentsMargins(0, 0, 0, 0); ec_lpf_hl.setSpacing(6)
+        ec_lpf_hl.addWidget(self._ec_lpf_cb); ec_lpf_hl.addWidget(self._ec_lpf_sigma)
+        adv_form.addRow("Profile LPF:", ec_lpf_row)
         form.addRow(self._ec_adv_widget)
 
         form.addRow("X overlap:",        self._ec_overlap)
@@ -328,6 +344,8 @@ class MeasureWorkspace(QWidget):
         _agg = str(ec.get("aggregate_method", "median")).lower()
         _agg_idx = self._ec_aggregate_combo.findData(_agg)
         self._ec_aggregate_combo.setCurrentIndex(_agg_idx if _agg_idx >= 0 else 0)
+        self._ec_lpf_cb.setChecked(bool(ec.get("profile_lpf_enabled", False)))
+        self._ec_lpf_sigma.setValue(float(ec.get("profile_lpf_sigma", 1.0)))
         self._ec_overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
         self._ec_cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
         self._ec_border.setValue(int(ec.get("border_margin_px", 0)))
@@ -457,6 +475,8 @@ class MeasureWorkspace(QWidget):
                                       if self._ec_sample_mode_combo.currentData() == "n"
                                       else "all"),
                 "aggregate_method":  self._ec_aggregate_combo.currentData(),
+                "profile_lpf_enabled": self._ec_lpf_cb.isChecked(),
+                "profile_lpf_sigma":   self._ec_lpf_sigma.value(),
                 "x_overlap_ratio":   self._ec_overlap.value(),
                 "y_cluster_tol":     self._ec_cluster_tol.value(),
                 "border_margin_px":  self._ec_border.value(),
@@ -684,6 +704,8 @@ class MeasureWorkspace(QWidget):
                     store_meta=False,  # legacy-cuts path doesn't use MeasurementRecord
                     sample_lines_mode=_slm,
                     aggregate_method=self._ec_aggregate_combo.currentData(),
+                    profile_lpf_enabled=self._ec_lpf_cb.isChecked(),
+                    profile_lpf_sigma=self._ec_lpf_sigma.value(),
                 )
 
             # Range filter: discard measurements outside [min_line_px, max_line_px]

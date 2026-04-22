@@ -223,6 +223,13 @@ class RecipeWorkspace(QWidget):
         self._aggregate_combo = QComboBox()
         for _lbl, _key in (("Median","median"),("Mean","mean"),("Min","min"),("Max","max")):
             self._aggregate_combo.addItem(_lbl, _key)
+        # Profile Gaussian LPF
+        self._profile_lpf_cb = QCheckBox("Gaussian LPF")
+        self._profile_lpf_sigma = QDoubleSpinBox()
+        self._profile_lpf_sigma.setRange(0.1, 10.0); self._profile_lpf_sigma.setSingleStep(0.1)
+        self._profile_lpf_sigma.setValue(1.0); self._profile_lpf_sigma.setDecimals(1)
+        self._profile_lpf_sigma.setSuffix(" px"); self._profile_lpf_sigma.setEnabled(False)
+        self._profile_lpf_cb.toggled.connect(self._profile_lpf_sigma.setEnabled)
         # Range filter
         self._range_enabled = QCheckBox("Enable range filter"); self._range_enabled.setChecked(False)
         self._min_line_px = QDoubleSpinBox(); self._min_line_px.setRange(0, 9999); self._min_line_px.setValue(0); self._min_line_px.setSuffix(" px"); self._min_line_px.setSpecialValueText("off")
@@ -260,6 +267,14 @@ class RecipeWorkspace(QWidget):
         samp_hl.addWidget(self._sample_n)
         adv_form.addRow("Vertical lines:", samp_row)
         adv_form.addRow("Aggregation:", self._aggregate_combo)
+        # Profile Filter section
+        lpf_sep = QLabel("─── Profile Filter ───")
+        lpf_sep.setStyleSheet("color:#666; font-size:11px;")
+        adv_form.addRow(lpf_sep)
+        lpf_row = QWidget()
+        lpf_hl = QHBoxLayout(lpf_row); lpf_hl.setContentsMargins(0, 0, 0, 0); lpf_hl.setSpacing(6)
+        lpf_hl.addWidget(self._profile_lpf_cb); lpf_hl.addWidget(self._profile_lpf_sigma)
+        adv_form.addRow("Profile LPF:", lpf_row)
         af.addRow(self._adv_params_widget)
 
         common_lbl = QLabel("─── Common Settings ───")
@@ -376,6 +391,8 @@ class RecipeWorkspace(QWidget):
         _agg = str(ec.get("aggregate_method", "median")).lower()
         _agg_idx = self._aggregate_combo.findData(_agg)
         self._aggregate_combo.setCurrentIndex(_agg_idx if _agg_idx >= 0 else 0)
+        self._profile_lpf_cb.setChecked(bool(ec.get("profile_lpf_enabled", False)))
+        self._profile_lpf_sigma.setValue(float(ec.get("profile_lpf_sigma", 1.0)))
         self._overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
         self._cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
         self._border_margin.setValue(int(ec.get("border_margin_px", 0)))
@@ -525,6 +542,8 @@ class RecipeWorkspace(QWidget):
                                       if self._sample_mode_combo.currentData() == "n"
                                       else "all"),
                 "aggregate_method":  self._aggregate_combo.currentData(),
+                "profile_lpf_enabled": self._profile_lpf_cb.isChecked(),
+                "profile_lpf_sigma":   self._profile_lpf_sigma.value(),
                 "x_overlap_ratio":   self._overlap.value(),
                 "y_cluster_tol":     self._cluster_tol.value(),
                 "border_margin_px":  self._border_margin.value(),

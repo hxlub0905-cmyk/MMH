@@ -250,6 +250,8 @@ class CMGRecipe(BaseRecipe):
                     except ValueError:
                         _sample_mode = "all"
                 _agg_method   = str(_sp.get("aggregate_method", "median")).lower()
+                _lpf_enabled  = bool(_sp.get("profile_lpf_enabled", False))
+                _lpf_sigma    = float(_sp.get("profile_lpf_sigma", 1.0))
                 # Stable X anchors from pitch-phase detection (may be empty)
                 _col_centers  = context.get("mg_col_centers", [])
 
@@ -264,6 +266,8 @@ class CMGRecipe(BaseRecipe):
                     col_centers=_col_centers, store_meta=True,
                     sample_lines_mode=_sample_mode,
                     aggregate_method=_agg_method,
+                    profile_lpf_enabled=_lpf_enabled,
+                    profile_lpf_sigma=_lpf_sigma,
                 )
 
         # For X-CD: blobs were analyzed in rotated space; back-rotate blob
@@ -492,6 +496,7 @@ def _collect_edge_by_columns(
     min_grad_frac: float,
     peak_ratio_thr: float,
     threshold_frac: float,
+    profile_lpf_sigma: float = 0.0,
 ) -> tuple[float, list[float], list[float], list[float]]:
     """Scan every X column in [x_start, x_end) independently.
 
@@ -518,6 +523,7 @@ def _collect_edge_by_columns(
                 proximity=proximity,
                 smooth_k=smooth_k,
                 threshold_frac=threshold_frac,
+                profile_lpf_sigma=profile_lpf_sigma,
             )
         else:  # "gradient"
             res = _refine_yedge_subpixel(
@@ -528,6 +534,7 @@ def _collect_edge_by_columns(
                 smooth_k=smooth_k,
                 min_grad_frac=min_grad_frac,
                 peak_ratio_thr=peak_ratio_thr,
+                profile_lpf_sigma=profile_lpf_sigma,
             )
         if not res.fallback_reason:
             valid_ys.append(res.y_refined)
@@ -554,6 +561,8 @@ def apply_yedge_subpixel_to_cuts(
     store_meta: bool = True,
     sample_lines_mode = "all",      # "all" or int N: configurable vertical sampling
     aggregate_method: str = "median",  # "median"/"mean"/"min"/"max"
+    profile_lpf_enabled: bool = False,  # apply Gaussian LPF to 1D profile before MA
+    profile_lpf_sigma: float = 1.0,     # Gaussian sigma in pixels
 ) -> None:
     """Apply Y-edge refinement in place to a list of CMGCut objects.
 
@@ -570,6 +579,8 @@ def apply_yedge_subpixel_to_cuts(
     YCDMeasurement, then re-flags global MIN/MAX.
     Optionally stores debug info as m._refine_meta (used by compute_metrics()).
     """
+    _lpf_sigma = float(profile_lpf_sigma) if profile_lpf_enabled else 0.0
+
     for cut in cuts:
         for m in cut.measurements:
             ub, lb = m.upper_blob, m.lower_blob
@@ -600,22 +611,26 @@ def apply_yedge_subpixel_to_cuts(
                         up_res = _refine_yedge_threshold_crossing(
                             raw_img, fx, y_up, half_col=0,
                             search_half=search_half, proximity=proximity,
-                            smooth_k=smooth_k, threshold_frac=threshold_frac)
+                            smooth_k=smooth_k, threshold_frac=threshold_frac,
+                            profile_lpf_sigma=_lpf_sigma)
                         lo_res = _refine_yedge_threshold_crossing(
                             raw_img, fx, y_lo, half_col=0,
                             search_half=search_half, proximity=proximity,
-                            smooth_k=smooth_k, threshold_frac=threshold_frac)
+                            smooth_k=smooth_k, threshold_frac=threshold_frac,
+                            profile_lpf_sigma=_lpf_sigma)
                     else:  # "gradient"
                         up_res = _refine_yedge_subpixel(
                             raw_img, fx, y_up, half_col=0,
                             search_half=search_half, proximity=proximity,
                             smooth_k=smooth_k, min_grad_frac=min_grad_frac,
-                            peak_ratio_thr=peak_ratio)
+                            peak_ratio_thr=peak_ratio,
+                            profile_lpf_sigma=_lpf_sigma)
                         lo_res = _refine_yedge_subpixel(
                             raw_img, fx, y_lo, half_col=0,
                             search_half=search_half, proximity=proximity,
                             smooth_k=smooth_k, min_grad_frac=min_grad_frac,
-                            peak_ratio_thr=peak_ratio)
+                            peak_ratio_thr=peak_ratio,
+                            profile_lpf_sigma=_lpf_sigma)
 
                     up_y_i = up_res.y_refined if not up_res.fallback_reason else None
                     lo_y_i = lo_res.y_refined if not lo_res.fallback_reason else None
@@ -647,11 +662,13 @@ def apply_yedge_subpixel_to_cuts(
                     raw_img, ub.x0, ub.x1, y_up, method,
                     search_half, proximity, smooth_k,
                     min_grad_frac, peak_ratio, threshold_frac,
+                    profile_lpf_sigma=_lpf_sigma,
                 )
                 lo_y, lo_ys, lo_ps, lo_spr = _collect_edge_by_columns(
                     raw_img, lb.x0, lb.x1, y_lo, method,
                     search_half, proximity, smooth_k,
                     min_grad_frac, peak_ratio, threshold_frac,
+                    profile_lpf_sigma=_lpf_sigma,
                 )
 
             cd_ref = lo_y - up_y
@@ -716,6 +733,7 @@ def _refine_yedge_subpixel(
     smooth_k: int = 5,
     min_grad_frac: float = 0.10,
     peak_ratio_thr: float = 0.60,
+    profile_lpf_sigma: float = 0.0,
 ) -> _SubpixelResult:
     """Refine a Y-edge position to subpixel precision using gradient-based detection.
 
@@ -755,6 +773,11 @@ def _refine_yedge_subpixel(
 
     # Step 3: 1D profile — mean intensity over X strip
     profile = img[y_lo:y_hi, x0:x1].astype(np.float64).mean(axis=1)
+
+    # Step 3b: optional Gaussian LPF pre-filter (applied before moving-average)
+    if profile_lpf_sigma > 0.0:
+        from scipy.ndimage import gaussian_filter1d
+        profile = gaussian_filter1d(profile, sigma=profile_lpf_sigma)
 
     # Step 4: relative gradient threshold — profile must have visible contrast
     p_range = float(profile.max() - profile.min())
@@ -836,6 +859,7 @@ def _refine_yedge_threshold_crossing(
     proximity: int = 8,
     smooth_k: int = 3,
     threshold_frac: float = 0.5,
+    profile_lpf_sigma: float = 0.0,
 ) -> _SubpixelResult:
     """Refine a Y-edge by finding where intensity crosses a threshold level.
 
@@ -875,6 +899,11 @@ def _refine_yedge_threshold_crossing(
 
     # Step 3: 1D profile — mean intensity over X strip
     profile = img[y_lo:y_hi, x0:x1].astype(np.float64).mean(axis=1)
+
+    # Step 3b: optional Gaussian LPF pre-filter (applied before moving-average)
+    if profile_lpf_sigma > 0.0:
+        from scipy.ndimage import gaussian_filter1d
+        profile = gaussian_filter1d(profile, sigma=profile_lpf_sigma)
 
     # Step 4: contrast check
     p_range = float(profile.max() - profile.min())
