@@ -93,6 +93,30 @@ def _flag_top3(measurements: list) -> None:
             m.flag = ""
 
 
+def _flag_global_minmax(measurements: list) -> None:
+    """Flag exactly one globally-smallest cd_px as MIN and one globally-largest as MAX.
+
+    Ensures the entire image has at most one MIN (orange) and one MAX (blue).
+    All other measurements get an empty flag (green).
+    """
+    for m in measurements:
+        m.flag = ""
+    if not measurements:
+        return
+    min_val = min(m.cd_px for m in measurements)
+    max_val = max(m.cd_px for m in measurements)
+    flagged_min = flagged_max = False
+    for m in measurements:
+        if not flagged_min and m.cd_px == min_val:
+            m.flag = "MIN"
+            flagged_min = True
+        elif not flagged_max and m.cd_px == max_val:
+            m.flag = "MAX"
+            flagged_max = True
+        if flagged_min and flagged_max:
+            break
+
+
 # ── main API ──────────────────────────────────────────────────────────────────
 
 def analyze(
@@ -184,9 +208,8 @@ def analyze(
         )
         cmg_map[cid].measurements.append(meas)
 
-    # ── Step 5: flag MIN / MAX per CMG cut ───────────────────────────────────
+    # ── Step 5: flag global MIN / MAX across all cuts ────────────────────────
     cuts = sorted(cmg_map.values(), key=lambda c: c.cmg_id)
-    for cut in cuts:
-        _flag_top3(cut.measurements)
+    _flag_global_minmax([m for cut in cuts for m in cut.measurements])
 
     return cuts

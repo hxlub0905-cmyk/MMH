@@ -17,7 +17,7 @@ import numpy as np
 
 from ..models import ImageRecord, MeasurementRecord
 from ..recipe_base import BaseRecipe, MeasurementRecipe, RecipeConfig
-from ..cmg_analyzer import _flag_top3
+from ..cmg_analyzer import _flag_global_minmax
 
 # Tolerance for float equality in MIN/MAX comparisons (subpixel values are never
 # exact integers, so direct == is unsafe after refinement).
@@ -280,9 +280,8 @@ class CMGRecipe(BaseRecipe):
                 if kept:
                     filtered.append(_CMGCut(cmg_id=cut.cmg_id, measurements=kept))
             cuts = filtered
-            # Re-flag per cut using top-3 logic
-            for cut in cuts:
-                _flag_top3(cut.measurements)
+            # Re-flag global MIN/MAX after range filter
+            _flag_global_minmax([m for cut in cuts for m in cut.measurements])
 
         context["cmg_cuts"] = cuts
 
@@ -539,9 +538,8 @@ def apply_yedge_subpixel_to_cuts(
                     "lower_refine_shift_px": lo_res.shift_px,
                 }
 
-    # Re-flag MIN/MAX per cut using top-3 logic
-    for cut in cuts:
-        _flag_top3(cut.measurements)
+    # Re-flag global MIN/MAX after Y-edge refinement
+    _flag_global_minmax([m for cut in cuts for m in cut.measurements])
 
 
 # ── Coordinate helpers ────────────────────────────────────────────────────────
