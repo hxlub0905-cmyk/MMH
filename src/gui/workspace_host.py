@@ -10,7 +10,6 @@ from .workspaces.measure_workspace     import MeasureWorkspace
 from .workspaces.review_workspace      import ReviewWorkspace
 from .workspaces.batch_workspace       import BatchWorkspace
 from .workspaces.report_workspace      import ReportWorkspace
-from .workspaces.history_workspace     import HistoryWorkspace
 from ..core.recipe_registry    import RecipeRegistry
 from ..core.calibration        import CalibrationManager
 from ..core.measurement_engine import MeasurementEngine
@@ -28,7 +27,6 @@ class WorkspaceHost(QTabWidget):
     TAB_BATCH    = 3
     TAB_REVIEW   = 4
     TAB_REPORT   = 5
-    TAB_HISTORY  = 6
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -47,7 +45,6 @@ class WorkspaceHost(QTabWidget):
         self._batch     = BatchWorkspace(self._engine, self._registry, self._cal_manager,
                                          run_store=self._run_store)
         self._report    = ReportWorkspace(run_store=self._run_store)
-        self._history   = HistoryWorkspace(self._run_store)
 
         self.addTab(self._browse,   "Browse")
         self.addTab(self._recipe,   "Recipe")
@@ -55,7 +52,6 @@ class WorkspaceHost(QTabWidget):
         self.addTab(self._batch,    "Batch")
         self.addTab(self._review,   "Review")
         self.addTab(self._report,   "Report")
-        self.addTab(self._history,  "History")
 
         self._connect_signals()
 
@@ -92,15 +88,9 @@ class WorkspaceHost(QTabWidget):
         self._measure.recipe_saved.connect(self._batch.refresh_recipe_selector)
         self._measure.recipe_saved.connect(lambda _: self._recipe.refresh_from_registry())
 
-        # History → load in Report
-        self._history.load_requested.connect(self._report.load_from_file)
-        self._history.load_requested.connect(
-            lambda _: self.setCurrentIndex(self.TAB_REPORT)
-        )
-
         # Bubble status messages up to MainWindow status bar
         for ws in (self._browse, self._recipe, self._measure,
-                   self._review, self._batch, self._report, self._history):
+                   self._review, self._batch, self._report):
             ws.status_message.connect(self.status_message)
 
     # ── Public helpers (called by MainWindow menu actions) ────────────────────

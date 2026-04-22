@@ -205,34 +205,70 @@ class RecipeWorkspace(QWidget):
         self._cluster_tol = QSpinBox();       self._cluster_tol.setRange(1, 100);  self._cluster_tol.setValue(10)
         self._border_margin = QSpinBox();     self._border_margin.setRange(0, 200); self._border_margin.setValue(0); self._border_margin.setSuffix(" px"); self._border_margin.setSpecialValueText("off")
         self._edge_method = QComboBox()
-        self._edge_method.addItem("Threshold Crossing (50%)",    "threshold_crossing")
-        self._edge_method.addItem("Subpixel (gradient refined)", "subpixel")
-        self._edge_method.addItem("BBox (original integer edge)", "bbox")
+        self._edge_method.addItem("Threshold Crossing", "threshold_crossing")
+        self._edge_method.addItem("Gradient",           "gradient")
+        self._edge_method.addItem("BBox",               "bbox")
+        # Threshold Crossing specific
         self._threshold_frac = QDoubleSpinBox()
-        self._threshold_frac.setRange(0.01, 0.99)
-        self._threshold_frac.setSingleStep(0.05)
-        self._threshold_frac.setValue(0.5)
-        self._threshold_frac.setDecimals(2)
-        self._edge_method.currentIndexChanged.connect(
-            lambda: self._threshold_frac.setEnabled(
-                self._edge_method.currentData() == "threshold_crossing"
-            )
-        )
+        self._threshold_frac.setRange(0.01, 0.99); self._threshold_frac.setSingleStep(0.05)
+        self._threshold_frac.setValue(0.5); self._threshold_frac.setDecimals(2)
+        # Sampling strategy (Gradient + TC only)
+        self._sample_mode_combo = QComboBox()
+        self._sample_mode_combo.addItem("All columns", "all")
+        self._sample_mode_combo.addItem("N evenly spaced", "n")
+        self._sample_n = QSpinBox(); self._sample_n.setRange(1, 200); self._sample_n.setValue(10)
+        self._sample_n.setEnabled(False)
+        self._sample_mode_combo.currentIndexChanged.connect(
+            lambda: self._sample_n.setEnabled(self._sample_mode_combo.currentData() == "n"))
+        self._aggregate_combo = QComboBox()
+        for _lbl, _key in (("Median","median"),("Mean","mean"),("Min","min"),("Max","max")):
+            self._aggregate_combo.addItem(_lbl, _key)
+        # Range filter
         self._range_enabled = QCheckBox("Enable range filter"); self._range_enabled.setChecked(False)
         self._min_line_px = QDoubleSpinBox(); self._min_line_px.setRange(0, 9999); self._min_line_px.setValue(0); self._min_line_px.setSuffix(" px"); self._min_line_px.setSpecialValueText("off")
         self._max_line_px = QDoubleSpinBox(); self._max_line_px.setRange(0, 9999); self._max_line_px.setValue(0); self._max_line_px.setSuffix(" px"); self._max_line_px.setSpecialValueText("off")
 
+        # Build Analysis tab layout with dynamic show/hide grouping
         ana_tab = QWidget()
         af = QFormLayout(ana_tab)
         af.setSpacing(8); af.setContentsMargins(12, 10, 12, 10)
+
         edge_lbl = QLabel("─── Edge Locator ───")
         edge_lbl.setStyleSheet("color:#666; font-size:11px;")
         af.addRow(edge_lbl)
         af.addRow("Y-CD edge method:", self._edge_method)
-        af.addRow("Threshold level:", self._threshold_frac)
+
+        # Advanced parameters widget (hidden for BBox)
+        self._adv_params_widget = QWidget()
+        adv_form = QFormLayout(self._adv_params_widget)
+        adv_form.setSpacing(6); adv_form.setContentsMargins(0, 0, 0, 0)
+
+        # TC-specific sub-widget
+        self._tc_params_widget = QWidget()
+        tc_form = QFormLayout(self._tc_params_widget)
+        tc_form.setSpacing(6); tc_form.setContentsMargins(0, 0, 0, 0)
+        tc_form.addRow("Threshold level:", self._threshold_frac)
+        adv_form.addRow(self._tc_params_widget)
+
+        # Sampling strategy section (shared TC + Gradient)
+        samp_lbl = QLabel("─── Sampling Strategy ───")
+        samp_lbl.setStyleSheet("color:#666; font-size:11px;")
+        adv_form.addRow(samp_lbl)
+        samp_row = QWidget()
+        samp_hl = QHBoxLayout(samp_row); samp_hl.setContentsMargins(0, 0, 0, 0); samp_hl.setSpacing(4)
+        samp_hl.addWidget(self._sample_mode_combo)
+        samp_hl.addWidget(self._sample_n)
+        adv_form.addRow("Vertical lines:", samp_row)
+        adv_form.addRow("Aggregation:", self._aggregate_combo)
+        af.addRow(self._adv_params_widget)
+
+        common_lbl = QLabel("─── Common Settings ───")
+        common_lbl.setStyleSheet("color:#666; font-size:11px;")
+        af.addRow(common_lbl)
         af.addRow("X overlap ratio:", self._overlap)
         af.addRow("Cluster tol (px):", self._cluster_tol)
         af.addRow("Border exclusion:", self._border_margin)
+
         range_lbl = QLabel("─── Range Filter ───")
         range_lbl.setStyleSheet("color:#666; font-size:11px;")
         af.addRow(range_lbl)
@@ -241,8 +277,18 @@ class RecipeWorkspace(QWidget):
         af.addRow("Max CD (px):", self._max_line_px)
         tabs.addTab(ana_tab, "Analysis")
 
+        self._edge_method.currentIndexChanged.connect(self._on_edge_method_changed)
+        self._on_edge_method_changed()  # set initial state
+
         ov.addWidget(tabs, stretch=1)
         return outer
+
+    # ── Edge method visibility ────────────────────────────────────────────────
+
+    def _on_edge_method_changed(self) -> None:
+        method = self._edge_method.currentData()
+        self._adv_params_widget.setVisible(method != "bbox")
+        self._tc_params_widget.setVisible(method == "threshold_crossing")
 
     # ── List management ───────────────────────────────────────────────────────
 
@@ -310,10 +356,26 @@ class RecipeWorkspace(QWidget):
 
         ec = desc.edge_locator_config
         _method = str(ec.get("ycd_edge_method", "threshold_crossing")).lower()
+        if _method == "subpixel":
+            _method = "gradient"  # backward compat for old recipes
         _method_idx = self._edge_method.findData(_method)
         self._edge_method.setCurrentIndex(_method_idx if _method_idx >= 0 else 0)
         self._threshold_frac.setValue(float(ec.get("threshold_frac", 0.5)))
-        self._threshold_frac.setEnabled(_method == "threshold_crossing")
+        _slm = ec.get("sample_lines_mode", "all")
+        if isinstance(_slm, int) or (isinstance(_slm, str) and _slm != "all"):
+            try:
+                self._sample_n.setValue(int(_slm))
+                self._sample_mode_combo.setCurrentIndex(
+                    self._sample_mode_combo.findData("n"))
+            except (ValueError, TypeError):
+                self._sample_mode_combo.setCurrentIndex(
+                    self._sample_mode_combo.findData("all"))
+        else:
+            self._sample_mode_combo.setCurrentIndex(
+                self._sample_mode_combo.findData("all"))
+        _agg = str(ec.get("aggregate_method", "median")).lower()
+        _agg_idx = self._aggregate_combo.findData(_agg)
+        self._aggregate_combo.setCurrentIndex(_agg_idx if _agg_idx >= 0 else 0)
         self._overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
         self._cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
         self._border_margin.setValue(int(ec.get("border_margin_px", 0)))
@@ -457,11 +519,15 @@ class RecipeWorkspace(QWidget):
                 # Carry forward all existing keys (e.g. subpixel_* set via JSON),
                 # then override the ones the UI explicitly controls.
                 **(desc.edge_locator_config.to_dict() if desc else {}),
-                "ycd_edge_method":  self._edge_method.currentData(),
-                "threshold_frac":   self._threshold_frac.value(),
-                "x_overlap_ratio":  self._overlap.value(),
-                "y_cluster_tol":    self._cluster_tol.value(),
-                "border_margin_px": self._border_margin.value(),
+                "ycd_edge_method":   self._edge_method.currentData(),
+                "threshold_frac":    self._threshold_frac.value(),
+                "sample_lines_mode": (self._sample_n.value()
+                                      if self._sample_mode_combo.currentData() == "n"
+                                      else "all"),
+                "aggregate_method":  self._aggregate_combo.currentData(),
+                "x_overlap_ratio":   self._overlap.value(),
+                "y_cluster_tol":     self._cluster_tol.value(),
+                "border_margin_px":  self._border_margin.value(),
             }),
             version=((desc.version + 1) if desc else 1),
             created_at=created,

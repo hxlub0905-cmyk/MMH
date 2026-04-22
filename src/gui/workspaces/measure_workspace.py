@@ -174,6 +174,16 @@ class MeasureWorkspace(QWidget):
             chk.stateChanged.connect(self._refresh_annotated)
             ov.addWidget(chk)
 
+        sep_detail = QLabel("  |  ")
+        sep_detail.setStyleSheet("color:#d8cbb8;")
+        ov.addWidget(sep_detail)
+        self._btn_detail_cd = QPushButton("Detail CD")
+        self._btn_detail_cd.setCheckable(True)
+        self._btn_detail_cd.setFixedHeight(22)
+        self._btn_detail_cd.setToolTip("Show individual per-sample CD lines instead of single aggregate line")
+        self._btn_detail_cd.toggled.connect(self._refresh_annotated)
+        ov.addWidget(self._btn_detail_cd)
+
         hbox.addWidget(self._overlay_widget)
         hbox.addStretch()
 
@@ -222,44 +232,71 @@ class MeasureWorkspace(QWidget):
         form.setContentsMargins(8, 6, 8, 6)
 
         self._ec_method = QComboBox()
-        self._ec_method.addItem("Threshold Crossing (50%)",    "threshold_crossing")
-        self._ec_method.addItem("Subpixel (gradient refined)", "subpixel")
-        self._ec_method.addItem("BBox (original integer edge)", "bbox")
+        self._ec_method.addItem("Threshold Crossing", "threshold_crossing")
+        self._ec_method.addItem("Gradient",           "gradient")
+        self._ec_method.addItem("BBox",               "bbox")
 
         self._ec_threshold_frac = QDoubleSpinBox()
-        self._ec_threshold_frac.setRange(0.01, 0.99)
-        self._ec_threshold_frac.setSingleStep(0.05)
-        self._ec_threshold_frac.setValue(0.5)
-        self._ec_threshold_frac.setDecimals(2)
-        self._ec_method.currentIndexChanged.connect(
-            lambda: self._ec_threshold_frac.setEnabled(
-                self._ec_method.currentData() == "threshold_crossing"
-            )
-        )
+        self._ec_threshold_frac.setRange(0.01, 0.99); self._ec_threshold_frac.setSingleStep(0.05)
+        self._ec_threshold_frac.setValue(0.5); self._ec_threshold_frac.setDecimals(2)
+
+        # Sampling strategy
+        self._ec_sample_mode_combo = QComboBox()
+        self._ec_sample_mode_combo.addItem("All columns", "all")
+        self._ec_sample_mode_combo.addItem("N evenly spaced", "n")
+        self._ec_sample_n = QSpinBox(); self._ec_sample_n.setRange(1, 200); self._ec_sample_n.setValue(10)
+        self._ec_sample_n.setEnabled(False)
+        self._ec_sample_mode_combo.currentIndexChanged.connect(
+            lambda: self._ec_sample_n.setEnabled(
+                self._ec_sample_mode_combo.currentData() == "n"))
+        self._ec_aggregate_combo = QComboBox()
+        for _lbl, _key in (("Median","median"),("Mean","mean"),("Min","min"),("Max","max")):
+            self._ec_aggregate_combo.addItem(_lbl, _key)
 
         self._ec_overlap = QDoubleSpinBox()
-        self._ec_overlap.setRange(0.0, 1.0)
-        self._ec_overlap.setSingleStep(0.05)
-        self._ec_overlap.setValue(0.5)
-        self._ec_overlap.setDecimals(2)
+        self._ec_overlap.setRange(0.0, 1.0); self._ec_overlap.setSingleStep(0.05)
+        self._ec_overlap.setValue(0.5); self._ec_overlap.setDecimals(2)
 
         self._ec_cluster_tol = QSpinBox()
-        self._ec_cluster_tol.setRange(1, 200)
-        self._ec_cluster_tol.setValue(10)
+        self._ec_cluster_tol.setRange(1, 200); self._ec_cluster_tol.setValue(10)
         self._ec_cluster_tol.setSuffix(" px")
 
         self._ec_border = QSpinBox()
-        self._ec_border.setRange(0, 200)
-        self._ec_border.setValue(0)
-        self._ec_border.setSuffix(" px")
-        self._ec_border.setSpecialValueText("off")
+        self._ec_border.setRange(0, 200); self._ec_border.setValue(0)
+        self._ec_border.setSuffix(" px"); self._ec_border.setSpecialValueText("off")
 
-        form.addRow("Y-CD method:",     self._ec_method)
-        form.addRow("Threshold level:", self._ec_threshold_frac)
-        form.addRow("X overlap:",       self._ec_overlap)
-        form.addRow("Cluster tol:", self._ec_cluster_tol)
+        form.addRow("Y-CD method:", self._ec_method)
+
+        # Advanced parameters widget (hidden for BBox)
+        self._ec_adv_widget = QWidget()
+        adv_form = QFormLayout(self._ec_adv_widget)
+        adv_form.setSpacing(5); adv_form.setContentsMargins(0, 0, 0, 0)
+        # TC-specific
+        self._ec_tc_widget = QWidget()
+        tc_form = QFormLayout(self._ec_tc_widget)
+        tc_form.setSpacing(5); tc_form.setContentsMargins(0, 0, 0, 0)
+        tc_form.addRow("Threshold level:", self._ec_threshold_frac)
+        adv_form.addRow(self._ec_tc_widget)
+        # Sampling
+        samp_row = QWidget()
+        samp_hl = QHBoxLayout(samp_row); samp_hl.setContentsMargins(0,0,0,0); samp_hl.setSpacing(4)
+        samp_hl.addWidget(self._ec_sample_mode_combo); samp_hl.addWidget(self._ec_sample_n)
+        adv_form.addRow("Vertical lines:", samp_row)
+        adv_form.addRow("Aggregation:", self._ec_aggregate_combo)
+        form.addRow(self._ec_adv_widget)
+
+        form.addRow("X overlap:",        self._ec_overlap)
+        form.addRow("Cluster tol:",      self._ec_cluster_tol)
         form.addRow("Border exclusion:", self._ec_border)
+
+        self._ec_method.currentIndexChanged.connect(self._on_ec_method_changed)
+        self._on_ec_method_changed()  # set initial state
         return box
+
+    def _on_ec_method_changed(self) -> None:
+        method = self._ec_method.currentData()
+        self._ec_adv_widget.setVisible(method != "bbox")
+        self._ec_tc_widget.setVisible(method == "threshold_crossing")
 
     def _on_recipe_combo_changed(self) -> None:
         """When a recipe is selected, populate edge-locator panel from its saved values."""
@@ -271,10 +308,26 @@ class MeasureWorkspace(QWidget):
             return
         ec = desc.edge_locator_config
         _method = str(ec.get("ycd_edge_method", "threshold_crossing")).lower()
+        if _method == "subpixel":
+            _method = "gradient"  # backward compat for old recipes
         idx = self._ec_method.findData(_method)
         self._ec_method.setCurrentIndex(idx if idx >= 0 else 0)
         self._ec_threshold_frac.setValue(float(ec.get("threshold_frac", 0.5)))
-        self._ec_threshold_frac.setEnabled(_method == "threshold_crossing")
+        _slm = ec.get("sample_lines_mode", "all")
+        if isinstance(_slm, int) or (isinstance(_slm, str) and _slm != "all"):
+            try:
+                self._ec_sample_n.setValue(int(_slm))
+                self._ec_sample_mode_combo.setCurrentIndex(
+                    self._ec_sample_mode_combo.findData("n"))
+            except (ValueError, TypeError):
+                self._ec_sample_mode_combo.setCurrentIndex(
+                    self._ec_sample_mode_combo.findData("all"))
+        else:
+            self._ec_sample_mode_combo.setCurrentIndex(
+                self._ec_sample_mode_combo.findData("all"))
+        _agg = str(ec.get("aggregate_method", "median")).lower()
+        _agg_idx = self._ec_aggregate_combo.findData(_agg)
+        self._ec_aggregate_combo.setCurrentIndex(_agg_idx if _agg_idx >= 0 else 0)
         self._ec_overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
         self._ec_cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
         self._ec_border.setValue(int(ec.get("border_margin_px", 0)))
@@ -329,6 +382,7 @@ class MeasureWorkspace(QWidget):
             show_labels=self._chk_labels.isChecked(),
             show_boxes=self._chk_boxes.isChecked(),
             show_legend=self._chk_legend.isChecked(),
+            show_detail=self._btn_detail_cd.isChecked(),
             focus=self._focused_measurement,
         )
 
@@ -397,11 +451,15 @@ class MeasureWorkspace(QWidget):
             recipe.recipe_descriptor,
             edge_locator_config=RecipeConfig(data={
                 **_existing_ec,
-                "ycd_edge_method":  self._ec_method.currentData(),
-                "threshold_frac":   self._ec_threshold_frac.value(),
-                "x_overlap_ratio":  self._ec_overlap.value(),
-                "y_cluster_tol":    self._ec_cluster_tol.value(),
-                "border_margin_px": self._ec_border.value(),
+                "ycd_edge_method":   self._ec_method.currentData(),
+                "threshold_frac":    self._ec_threshold_frac.value(),
+                "sample_lines_mode": (self._ec_sample_n.value()
+                                      if self._ec_sample_mode_combo.currentData() == "n"
+                                      else "all"),
+                "aggregate_method":  self._ec_aggregate_combo.currentData(),
+                "x_overlap_ratio":   self._ec_overlap.value(),
+                "y_cluster_tol":     self._ec_cluster_tol.value(),
+                "border_margin_px":  self._ec_border.value(),
             }),
         )
         recipe = _CMGRecipe(descriptor=_patched_desc)
@@ -613,14 +671,19 @@ class MeasureWorkspace(QWidget):
                         m.upper_blob = _rot_blob_to_ori(m.upper_blob, orig_h)
                         m.lower_blob = _rot_blob_to_ori(m.lower_blob, orig_h)
 
-            # Apply Y-edge refinement for threshold_crossing or subpixel methods
-            if axis == "Y" and _ec_method in ("subpixel", "threshold_crossing"):
+            # Apply Y-edge refinement for gradient or threshold_crossing methods
+            if axis == "Y" and _ec_method in ("gradient", "threshold_crossing"):
+                _slm = (self._ec_sample_n.value()
+                        if self._ec_sample_mode_combo.currentData() == "n"
+                        else "all")
                 apply_yedge_subpixel_to_cuts(
                     cuts, roi, nm_px,
                     method=_ec_method,
                     threshold_frac=_ec_threshold_frac,
                     col_centers=col_centers,
                     store_meta=False,  # legacy-cuts path doesn't use MeasurementRecord
+                    sample_lines_mode=_slm,
+                    aggregate_method=self._ec_aggregate_combo.currentData(),
                 )
 
             # Range filter: discard measurements outside [min_line_px, max_line_px]

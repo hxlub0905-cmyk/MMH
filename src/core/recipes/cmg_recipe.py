@@ -225,13 +225,16 @@ class CMGRecipe(BaseRecipe):
 
         # ── Y-edge refinement (Y-CD only) ────────────────────────────────────
         # ycd_edge_method controls which method is used:
-        #   "subpixel" (default) – gradient-based subpixel refinement on raw image
+        #   "gradient"           – gradient-based subpixel refinement on raw image
+        #   "threshold_crossing" – intensity threshold at threshold_frac of local contrast
         #   "bbox"               – keep original bounding-box integer edges
         # X-CD path is completely untouched.
         if axis == "Y":
             raw_img = context.get("raw")
             _edge_method = str(ec.get("ycd_edge_method", "threshold_crossing")).lower()
-            if raw_img is not None and _edge_method in ("subpixel", "threshold_crossing"):
+            if _edge_method == "subpixel":
+                _edge_method = "gradient"  # backward compat for old recipes
+            if raw_img is not None and _edge_method in ("gradient", "threshold_crossing"):
                 _sp           = ec   # edge_locator_config carries all knobs
                 _half_col     = int  (_sp.get("subpixel_half_col",      3))
                 _search_half  = int  (_sp.get("subpixel_search_half",  10))
@@ -240,6 +243,13 @@ class CMGRecipe(BaseRecipe):
                 _grad_frac    = float(_sp.get("subpixel_min_grad_frac", 0.10))
                 _peak_ratio   = float(_sp.get("subpixel_peak_ratio",    0.60))
                 _threshold_frac = float(_sp.get("threshold_frac",       0.5))
+                _sample_mode  = _sp.get("sample_lines_mode", "all")
+                if isinstance(_sample_mode, str) and _sample_mode != "all":
+                    try:
+                        _sample_mode = int(_sample_mode)
+                    except ValueError:
+                        _sample_mode = "all"
+                _agg_method   = str(_sp.get("aggregate_method", "median")).lower()
                 # Stable X anchors from pitch-phase detection (may be empty)
                 _col_centers  = context.get("mg_col_centers", [])
 
@@ -252,6 +262,8 @@ class CMGRecipe(BaseRecipe):
                     min_grad_frac=_grad_frac, peak_ratio=_peak_ratio,
                     threshold_frac=_threshold_frac,
                     col_centers=_col_centers, store_meta=True,
+                    sample_lines_mode=_sample_mode,
+                    aggregate_method=_agg_method,
                 )
 
         # For X-CD: blobs were analyzed in rotated space; back-rotate blob
@@ -427,6 +439,37 @@ class CMGRecipe(BaseRecipe):
 # ── Subpixel refinement helpers ──────────────────────────────────────────────
 
 
+def _compute_sample_xs(x_start: int, x_end: int, mode) -> list[int]:
+    """Return list of x positions to sample in [x_start, x_end).
+
+    mode: "all" → every integer; int N → N evenly spaced positions.
+    """
+    xs = list(range(int(x_start), int(x_end)))
+    if not xs:
+        return xs
+    if mode == "all" or not isinstance(mode, int):
+        return xs
+    N = max(1, min(int(mode), len(xs)))
+    if N >= len(xs):
+        return xs
+    indices = [int(round(i)) for i in np.linspace(0, len(xs) - 1, N)]
+    return [xs[i] for i in indices]
+
+
+def _aggregate_values(vals: list, method: str) -> float:
+    """Aggregate float list using method: median/mean/min/max."""
+    if not vals:
+        return 0.0
+    m = method.lower()
+    if m == "mean":
+        return float(np.mean(vals))
+    if m == "min":
+        return float(np.min(vals))
+    if m == "max":
+        return float(np.max(vals))
+    return float(np.median(vals))  # default: median
+
+
 def _build_fallback_reason(up: _SubpixelResult, lo: _SubpixelResult) -> str:
     """Combine per-edge fallback reasons into one string for extra_metrics."""
     parts = []
@@ -476,7 +519,7 @@ def _collect_edge_by_columns(
                 smooth_k=smooth_k,
                 threshold_frac=threshold_frac,
             )
-        else:  # "subpixel"
+        else:  # "gradient"
             res = _refine_yedge_subpixel(
                 image, float(x), y_guess,
                 half_col=0,
@@ -509,24 +552,23 @@ def apply_yedge_subpixel_to_cuts(
     threshold_frac: float = 0.5,
     col_centers: list | None = None,  # kept for API compatibility; no longer used
     store_meta: bool = True,
+    sample_lines_mode = "all",      # "all" or int N: configurable vertical sampling
+    aggregate_method: str = "median",  # "median"/"mean"/"min"/"max"
 ) -> None:
     """Apply Y-edge refinement in place to a list of CMGCut objects.
 
     method:
       "threshold_crossing" – intensity threshold at threshold_frac of local contrast
-      "subpixel"           – gradient peak + quadratic interpolation
+      "gradient"           – gradient peak + quadratic interpolation (formerly "subpixel")
 
-    For each measurement, iterates every X pixel across the full blob width
-    (ub.x0 → ub.x1 for the upper edge, lb.x0 → lb.x1 for the lower edge).
-    Each column is refined independently; the median of all successful results
-    becomes the final edge position.  If every column falls back, y_guess is kept.
+    When blobs overlap in X, paired sampling is used: the same N x-positions are
+    scanned for both the upper and lower edges, yielding per-sample CD values that
+    are stored in _refine_meta for the Detail CD view.  When blobs do not overlap,
+    independent sampling falls back to the original column-scan approach.
 
     Modifies m.cd_px / m.cd_nm and m.y_upper_edge / m.y_lower_edge on each
     YCDMeasurement, then re-flags global MIN/MAX.
     Optionally stores debug info as m._refine_meta (used by compute_metrics()).
-
-    Safe to call from outside CMGRecipe — measure_workspace uses this for the
-    legacy-cards path so both paths share the same refinement logic.
     """
     for cut in cuts:
         for m in cut.measurements:
@@ -535,17 +577,82 @@ def apply_yedge_subpixel_to_cuts(
             y_up = float(ub.y1)
             y_lo = float(lb.y0)
 
-            # Scan every X column across each blob's full width independently
-            up_y, up_ys, up_ps, up_spr = _collect_edge_by_columns(
-                raw_img, ub.x0, ub.x1, y_up, method,
-                search_half, proximity, smooth_k,
-                min_grad_frac, peak_ratio, threshold_frac,
-            )
-            lo_y, lo_ys, lo_ps, lo_spr = _collect_edge_by_columns(
-                raw_img, lb.x0, lb.x1, y_lo, method,
-                search_half, proximity, smooth_k,
-                min_grad_frac, peak_ratio, threshold_frac,
-            )
+            x_ov_start = int(max(ub.x0, lb.x0))
+            x_ov_end   = int(min(ub.x1, lb.x1))
+            use_paired = x_ov_start < x_ov_end
+
+            if use_paired:
+                # Paired sampling: same x positions for both edges
+                sample_xs: list[int] = _compute_sample_xs(x_ov_start, x_ov_end, sample_lines_mode)
+                upper_sample_ys: list = []
+                lower_sample_ys: list = []
+                up_ys: list[float] = []
+                lo_ys: list[float] = []
+                up_ps: list[float] = []
+                lo_ps: list[float] = []
+                up_spr: list[float] = []
+                lo_spr: list[float] = []
+                individual_cds_nm: list[float] = []
+
+                for x in sample_xs:
+                    fx = float(x)
+                    if method == "threshold_crossing":
+                        up_res = _refine_yedge_threshold_crossing(
+                            raw_img, fx, y_up, half_col=0,
+                            search_half=search_half, proximity=proximity,
+                            smooth_k=smooth_k, threshold_frac=threshold_frac)
+                        lo_res = _refine_yedge_threshold_crossing(
+                            raw_img, fx, y_lo, half_col=0,
+                            search_half=search_half, proximity=proximity,
+                            smooth_k=smooth_k, threshold_frac=threshold_frac)
+                    else:  # "gradient"
+                        up_res = _refine_yedge_subpixel(
+                            raw_img, fx, y_up, half_col=0,
+                            search_half=search_half, proximity=proximity,
+                            smooth_k=smooth_k, min_grad_frac=min_grad_frac,
+                            peak_ratio_thr=peak_ratio)
+                        lo_res = _refine_yedge_subpixel(
+                            raw_img, fx, y_lo, half_col=0,
+                            search_half=search_half, proximity=proximity,
+                            smooth_k=smooth_k, min_grad_frac=min_grad_frac,
+                            peak_ratio_thr=peak_ratio)
+
+                    up_y_i = up_res.y_refined if not up_res.fallback_reason else None
+                    lo_y_i = lo_res.y_refined if not lo_res.fallback_reason else None
+                    upper_sample_ys.append(up_y_i)
+                    lower_sample_ys.append(lo_y_i)
+
+                    if up_y_i is not None:
+                        up_ys.append(up_y_i)
+                        up_ps.append(up_res.peak_strength)
+                        up_spr.append(up_res.second_peak_ratio)
+                    if lo_y_i is not None:
+                        lo_ys.append(lo_y_i)
+                        lo_ps.append(lo_res.peak_strength)
+                        lo_spr.append(lo_res.second_peak_ratio)
+                    if up_y_i is not None and lo_y_i is not None:
+                        cd_i = (lo_y_i - up_y_i) * nm_per_pixel
+                        if cd_i > 0:
+                            individual_cds_nm.append(cd_i)
+
+                up_y = _aggregate_values(up_ys, aggregate_method) if up_ys else y_up
+                lo_y = _aggregate_values(lo_ys, aggregate_method) if lo_ys else y_lo
+            else:
+                # Blobs don't overlap in X: independent column scan (fallback)
+                sample_xs = list(range(int(ub.x0), int(ub.x1)))
+                upper_sample_ys = []
+                lower_sample_ys = []
+                individual_cds_nm = []
+                up_y, up_ys, up_ps, up_spr = _collect_edge_by_columns(
+                    raw_img, ub.x0, ub.x1, y_up, method,
+                    search_half, proximity, smooth_k,
+                    min_grad_frac, peak_ratio, threshold_frac,
+                )
+                lo_y, lo_ys, lo_ps, lo_spr = _collect_edge_by_columns(
+                    raw_img, lb.x0, lb.x1, y_lo, method,
+                    search_half, proximity, smooth_k,
+                    min_grad_frac, peak_ratio, threshold_frac,
+                )
 
             cd_ref = lo_y - up_y
             if cd_ref > 0.0:
@@ -581,11 +688,16 @@ def apply_yedge_subpixel_to_cuts(
                     "lower_second_peak_ratio": float(np.median(lo_spr)) if lo_spr else 0.0,
                     "upper_refine_shift_px":  up_y - y_up,
                     "lower_refine_shift_px":  lo_y - y_lo,
-                    # Debug fields: per-edge column coverage and edge spread
-                    "upper_n_valid_x":     len(up_ys),
-                    "lower_n_valid_x":     len(lo_ys),
-                    "upper_spread_y_std":  float(np.std(up_ys)) if len(up_ys) > 1 else 0.0,
-                    "lower_spread_y_std":  float(np.std(lo_ys)) if len(lo_ys) > 1 else 0.0,
+                    "upper_n_valid_x":        len(up_ys),
+                    "lower_n_valid_x":        len(lo_ys),
+                    "upper_spread_y_std":     float(np.std(up_ys)) if len(up_ys) > 1 else 0.0,
+                    "lower_spread_y_std":     float(np.std(lo_ys)) if len(lo_ys) > 1 else 0.0,
+                    # Per-sample data for Detail CD view
+                    "sample_xs":          sample_xs,
+                    "upper_sample_ys":    upper_sample_ys,
+                    "lower_sample_ys":    lower_sample_ys,
+                    "individual_cds_nm":  individual_cds_nm,
+                    "aggregate_method":   aggregate_method,
                 }
 
     # Re-flag global MIN/MAX after Y-edge refinement
