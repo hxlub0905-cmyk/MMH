@@ -162,6 +162,7 @@ QPushButton#sectionHeader1 {
     background: #fff4e8;
     color: #c97028;
     border: none;
+    border-top: 1px solid #efd8b8;
     border-bottom: 1px solid #efd8b8;
     border-radius: 0;
     padding: 0 10px;
@@ -179,13 +180,13 @@ QPushButton#sectionHeader2 {
     background: #f9f4ee;
     color: #9a7050;
     border: none;
+    border-top: 1px solid #ede4d8;
     border-bottom: 1px solid #ede4d8;
     border-radius: 0;
     padding: 0 10px;
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.5px;
-    text-transform: uppercase;
     text-align: left;
 }
 QPushButton#sectionHeader2:hover { background: #f5ede4; color: #7a5030; }
@@ -196,6 +197,7 @@ QPushButton#sectionHeader3 {
     background: #f4f0ec;
     color: #9f8f7b;
     border: none;
+    border-top: 1px solid #e8e0d8;
     border-bottom: 1px solid #e8e0d8;
     border-radius: 0;
     padding: 0 10px;

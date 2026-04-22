@@ -3,9 +3,9 @@
 from __future__ import annotations
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QDoubleSpinBox,
-    QSlider, QSpinBox, QLabel, QCheckBox, QGroupBox,
-    QPushButton, QHBoxLayout, QScrollArea, QSizePolicy, QComboBox,
-    QToolButton, QInputDialog, QFrame,
+    QSlider, QSpinBox, QLabel, QCheckBox,
+    QPushButton, QHBoxLayout, QSizePolicy, QComboBox,
+    QInputDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from ..core.preprocessor import PreprocessParams
@@ -23,39 +23,24 @@ class ControlPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Preferred (not Expanding) so the panel only takes as much height as
-        # its content needs; the parent layout can add a stretch below it.
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-        self.setMinimumHeight(160)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # Don't force a vertical scrollbar; let it appear only on overflow.
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-
-        inner = QWidget()
-        self._layout = QVBoxLayout(inner)
-        self._layout.setContentsMargins(10, 10, 10, 16)
-        self._layout.setSpacing(10)
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
 
         self._build_scale()
         self._build_preprocess()
         self._build_measurement_profiles()
         self._build_actions()
-        # No addStretch() here — it would create visual empty space inside the
-        # scroll area when content is shorter than the widget height.
-
-        scroll.setWidget(inner)
-        outer.addWidget(scroll)
 
     def _build_scale(self) -> None:
-        box = QGroupBox("Scale")
-        form = QFormLayout(box)
+        sec = CollapsibleSection("Scale", tier=2, collapsed=False,
+                                  content_margins=(8, 4, 8, 8))
+        fw = QWidget(); fw.setStyleSheet("background:transparent; border:none;")
+        form = QFormLayout(fw)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setContentsMargins(0, 0, 0, 0); form.setSpacing(5)
 
         self._nm_px = QDoubleSpinBox()
         self._nm_px.setRange(0.0001, 10000.0)
@@ -65,12 +50,17 @@ class ControlPanel(QWidget):
         self._nm_px.valueChanged.connect(self._emit)
         _set_expanding(self._nm_px)
         form.addRow(_lbl("nm / pixel"), self._nm_px)
-        self._layout.addWidget(box)
+
+        sec.add_widget(fw)
+        self._layout.addWidget(sec)
 
     def _build_preprocess(self) -> None:
-        box = QGroupBox("Pre-processing")
-        form = QFormLayout(box)
+        sec = CollapsibleSection("Pre-processing", tier=2, collapsed=True,
+                                  content_margins=(8, 4, 8, 8))
+        fw = QWidget(); fw.setStyleSheet("background:transparent; border:none;")
+        form = QFormLayout(fw)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setContentsMargins(0, 0, 0, 0); form.setSpacing(5)
 
         self._gauss_k = QSpinBox(); self._gauss_k.setRange(1, 31); self._gauss_k.setSingleStep(2); self._gauss_k.setValue(3)
         self._morph_open_k = QSpinBox(); self._morph_open_k.setRange(1, 31); self._morph_open_k.setSingleStep(2); self._morph_open_k.setValue(3)
@@ -91,27 +81,33 @@ class ControlPanel(QWidget):
         form.addRow(_lbl("Morph close"), self._morph_close_k)
         form.addRow(self._use_clahe)
 
-        self._layout.addWidget(box)
+        sec.add_widget(fw)
+        self._layout.addWidget(sec)
 
     def _build_measurement_profiles(self) -> None:
-        box = QGroupBox("Measurements")
-        root = QVBoxLayout(box)
+        sec = CollapsibleSection("Measurements", tier=1, collapsed=False,
+                                  content_margins=(6, 4, 6, 8))
 
-        header = QHBoxLayout()
-        header.addWidget(_lbl("Add reusable measurement profiles"))
-        header.addStretch()
-        self._btn_add = QToolButton()
-        self._btn_add.setText("＋")
-        self._btn_add.setToolTip("Add measurement profile")
+        add_bar = QWidget(); add_bar.setStyleSheet("border:none; background:transparent;")
+        add_hl = QHBoxLayout(add_bar); add_hl.setContentsMargins(2, 2, 2, 6)
+        self._btn_add = QPushButton("＋  Add Measurement")
+        self._btn_add.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._btn_add.setStyleSheet(
+            "QPushButton { background:#f0f8f4; border:1px dashed #a8d4bc; border-radius:6px;"
+            "  color:#4a8c6a; font-weight:600; padding:5px; }"
+            "QPushButton:hover { background:#e0f4ec; border-color:#80c4a0; }"
+        )
         self._btn_add.clicked.connect(self._on_add_profile)
-        header.addWidget(self._btn_add)
-        root.addLayout(header)
+        add_hl.addWidget(self._btn_add)
+        sec.add_widget(add_bar)
 
-        self._profiles_layout = QVBoxLayout()
+        profiles_w = QWidget(); profiles_w.setStyleSheet("border:none; background:transparent;")
+        self._profiles_layout = QVBoxLayout(profiles_w)
+        self._profiles_layout.setContentsMargins(0, 0, 0, 0)
         self._profiles_layout.setSpacing(8)
-        root.addLayout(self._profiles_layout)
-        self._layout.addWidget(box)
+        sec.add_widget(profiles_w)
 
+        self._layout.addWidget(sec)
         self._profiles: list[dict] = []
 
     def _build_actions(self) -> None:
