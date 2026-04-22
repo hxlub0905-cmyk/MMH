@@ -437,105 +437,155 @@ def _build_fallback_reason(up: _SubpixelResult, lo: _SubpixelResult) -> str:
     return ",".join(parts)
 
 
+def _collect_edge_by_columns(
+    image: np.ndarray,
+    x_start: int,
+    x_end: int,
+    y_guess: float,
+    method: str,
+    search_half: int,
+    proximity: int,
+    smooth_k: int,
+    min_grad_frac: float,
+    peak_ratio_thr: float,
+    threshold_frac: float,
+) -> tuple[float, list[float], list[float], list[float]]:
+    """Scan every X column in [x_start, x_end) independently.
+
+    Each column is processed as a single-pixel-wide strip (half_col=0).
+    Successful results (no fallback) are collected; their median is returned
+    as the final edge position.
+
+    Returns:
+        y_edge           – np.median of valid_ys, or y_guess if all columns failed
+        valid_ys         – list of successful y_refined values
+        peak_strengths   – peak_strength for each valid column
+        second_peak_ratios – second_peak_ratio for each valid column
+    """
+    valid_ys: list[float] = []
+    peak_strengths: list[float] = []
+    second_peak_ratios: list[float] = []
+
+    for x in range(int(x_start), int(x_end)):
+        if method == "threshold_crossing":
+            res = _refine_yedge_threshold_crossing(
+                image, float(x), y_guess,
+                half_col=0,
+                search_half=search_half,
+                proximity=proximity,
+                smooth_k=smooth_k,
+                threshold_frac=threshold_frac,
+            )
+        else:  # "subpixel"
+            res = _refine_yedge_subpixel(
+                image, float(x), y_guess,
+                half_col=0,
+                search_half=search_half,
+                proximity=proximity,
+                smooth_k=smooth_k,
+                min_grad_frac=min_grad_frac,
+                peak_ratio_thr=peak_ratio_thr,
+            )
+        if not res.fallback_reason:
+            valid_ys.append(res.y_refined)
+            peak_strengths.append(res.peak_strength)
+            second_peak_ratios.append(res.second_peak_ratio)
+
+    y_edge = float(np.median(valid_ys)) if valid_ys else y_guess
+    return y_edge, valid_ys, peak_strengths, second_peak_ratios
+
+
 def apply_yedge_subpixel_to_cuts(
     cuts: list,
     raw_img,
     nm_per_pixel: float,
     method: str = "threshold_crossing",
-    half_col: int = 3,
+    half_col: int = 3,       # kept for API compatibility; no longer used
     search_half: int = 10,
     proximity: int = 5,
     smooth_k: int = 5,
     min_grad_frac: float = 0.10,
     peak_ratio: float = 0.60,
     threshold_frac: float = 0.5,
-    col_centers: list | None = None,
+    col_centers: list | None = None,  # kept for API compatibility; no longer used
     store_meta: bool = True,
 ) -> None:
     """Apply Y-edge refinement in place to a list of CMGCut objects.
 
     method:
-      "threshold_crossing" (default) – intensity threshold at threshold_frac of
-                                        the local contrast range
-      "subpixel"                      – gradient peak + quadratic interpolation
+      "threshold_crossing" – intensity threshold at threshold_frac of local contrast
+      "subpixel"           – gradient peak + quadratic interpolation
+
+    For each measurement, iterates every X pixel across the full blob width
+    (ub.x0 → ub.x1 for the upper edge, lb.x0 → lb.x1 for the lower edge).
+    Each column is refined independently; the median of all successful results
+    becomes the final edge position.  If every column falls back, y_guess is kept.
 
     Modifies m.cd_px / m.cd_nm and m.y_upper_edge / m.y_lower_edge on each
-    YCDMeasurement, then re-flags MIN/MAX per cut.
+    YCDMeasurement, then re-flags global MIN/MAX.
     Optionally stores debug info as m._refine_meta (used by compute_metrics()).
 
     Safe to call from outside CMGRecipe — measure_workspace uses this for the
     legacy-cards path so both paths share the same refinement logic.
     """
-    _centers = col_centers or []
-
     for cut in cuts:
         for m in cut.measurements:
             ub, lb = m.upper_blob, m.lower_blob
-            blob_cx = (ub.cx + lb.cx) / 2.0
-            if _centers:
-                x_ctr = float(min(_centers, key=lambda c, _b=blob_cx: abs(c - _b)))
-            else:
-                x_ctr = blob_cx
 
             y_up = float(ub.y1)
             y_lo = float(lb.y0)
 
-            if method == "threshold_crossing":
-                up_res = _refine_yedge_threshold_crossing(
-                    raw_img, x_ctr, y_up,
-                    half_col=half_col, search_half=search_half,
-                    proximity=proximity, smooth_k=smooth_k,
-                    threshold_frac=threshold_frac,
-                )
-                lo_res = _refine_yedge_threshold_crossing(
-                    raw_img, x_ctr, y_lo,
-                    half_col=half_col, search_half=search_half,
-                    proximity=proximity, smooth_k=smooth_k,
-                    threshold_frac=threshold_frac,
-                )
-            else:  # "subpixel" — gradient peak
-                up_res = _refine_yedge_subpixel(
-                    raw_img, x_ctr, y_up,
-                    half_col=half_col, search_half=search_half,
-                    proximity=proximity, smooth_k=smooth_k,
-                    min_grad_frac=min_grad_frac, peak_ratio_thr=peak_ratio,
-                )
-                lo_res = _refine_yedge_subpixel(
-                    raw_img, x_ctr, y_lo,
-                    half_col=half_col, search_half=search_half,
-                    proximity=proximity, smooth_k=smooth_k,
-                    min_grad_frac=min_grad_frac, peak_ratio_thr=peak_ratio,
-                )
+            # Scan every X column across each blob's full width independently
+            up_y, up_ys, up_ps, up_spr = _collect_edge_by_columns(
+                raw_img, ub.x0, ub.x1, y_up, method,
+                search_half, proximity, smooth_k,
+                min_grad_frac, peak_ratio, threshold_frac,
+            )
+            lo_y, lo_ys, lo_ps, lo_spr = _collect_edge_by_columns(
+                raw_img, lb.x0, lb.x1, y_lo, method,
+                search_half, proximity, smooth_k,
+                min_grad_frac, peak_ratio, threshold_frac,
+            )
 
-            cd_ref = lo_res.y_refined - up_res.y_refined
+            cd_ref = lo_y - up_y
             if cd_ref > 0.0:
                 m.cd_px = cd_ref
                 m.cd_nm = cd_ref * nm_per_pixel
-                m.y_upper_edge = up_res.y_refined
-                m.y_lower_edge = lo_res.y_refined
+                m.y_upper_edge = up_y
+                m.y_lower_edge = lo_y
                 _refine_used = True
-                _fallback_reason = _build_fallback_reason(up_res, lo_res)
+                _parts = []
+                if not up_ys:
+                    _parts.append("up:all_columns_fallback")
+                if not lo_ys:
+                    _parts.append("lo:all_columns_fallback")
+                _fallback_reason = ",".join(_parts)
             else:
                 _refine_used = False
-                _both_ok = (not up_res.fallback_reason
-                            and not lo_res.fallback_reason)
-                _fallback_reason = (
-                    "non_positive_gap" if _both_ok
-                    else _build_fallback_reason(up_res, lo_res)
-                )
+                _parts = []
+                if not up_ys:
+                    _parts.append("up:all_columns_fallback")
+                if not lo_ys:
+                    _parts.append("lo:all_columns_fallback")
+                _fallback_reason = ",".join(_parts) if _parts else "non_positive_gap"
 
             if store_meta:
                 m._refine_meta = {
-                    "upper_edge_refined": up_res.y_refined,
-                    "lower_edge_refined": lo_res.y_refined,
+                    "upper_edge_refined": up_y,
+                    "lower_edge_refined": lo_y,
                     "refine_used": _refine_used,
                     "refine_fallback_reason": _fallback_reason,
-                    "upper_peak_strength": up_res.peak_strength,
-                    "lower_peak_strength": lo_res.peak_strength,
-                    "upper_second_peak_ratio": up_res.second_peak_ratio,
-                    "lower_second_peak_ratio": lo_res.second_peak_ratio,
-                    "upper_refine_shift_px": up_res.shift_px,
-                    "lower_refine_shift_px": lo_res.shift_px,
+                    "upper_peak_strength":    float(np.median(up_ps))  if up_ps  else 0.0,
+                    "lower_peak_strength":    float(np.median(lo_ps))  if lo_ps  else 0.0,
+                    "upper_second_peak_ratio": float(np.median(up_spr)) if up_spr else 0.0,
+                    "lower_second_peak_ratio": float(np.median(lo_spr)) if lo_spr else 0.0,
+                    "upper_refine_shift_px":  up_y - y_up,
+                    "lower_refine_shift_px":  lo_y - y_lo,
+                    # Debug fields: per-edge column coverage and edge spread
+                    "upper_n_valid_x":     len(up_ys),
+                    "lower_n_valid_x":     len(lo_ys),
+                    "upper_spread_y_std":  float(np.std(up_ys)) if len(up_ys) > 1 else 0.0,
+                    "lower_spread_y_std":  float(np.std(lo_ys)) if len(lo_ys) > 1 else 0.0,
                 }
 
     # Re-flag global MIN/MAX after Y-edge refinement
