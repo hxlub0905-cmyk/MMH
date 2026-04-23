@@ -2,6 +2,30 @@
 
 ---
 
+## [2026-04-23] 右側設定欄控件可見度改善
+
+**變更類型：** UI 改善
+
+**問題：** 右側面板（`QFrame#rightPanel`，背景 `#fff7ee`）內的互動控件（SpinBox、ComboBox、LineEdit、CheckBox）背景色、面板背景色、邊框三者都在同一暖米色範圍，視覺上難以區分。
+
+**修法（`src/gui/styles.py` — `QFrame#rightPanel` 子選擇器區塊）：**
+
+1. **QSpinBox / QDoubleSpinBox**：背景 `#fffdf9` → `#ffffff`；邊框 `1px solid #b8a898` → `1.5px solid #8a7060`；新增 `color: #3f3428`
+2. **QComboBox**：同上背景與邊框；新增 `color: #3f3428`；新增 `QFrame#rightPanel QComboBox::down-arrow { border-top-color: #6b5a4a }` 讓箭頭顏色加深
+3. **QLineEdit**：同上背景與邊框；新增 `color: #3f3428`
+4. **QCheckBox::indicator**：邊框 `1px solid #b8a898` → `1.5px solid #8a7060`；背景 `#fffdf9` → `#ffffff`
+5. **QFrame#rightPanel QPushButton**（小型工具按鈕）：新增規則 `background: #f0e8e0; border: 1.5px solid #8a7060; color: #4a3828`，有明確可點擊視覺
+6. **hover 狀態**：所有控件 hover 邊框改為 `#6a5040`（比預設深、比 focus accent 暗）
+7. **focus 狀態**：維持 `border-color: #f29f4b` 不變
+
+**影響範圍：**
+- `src/gui/styles.py`（`QFrame#rightPanel` 子選擇器段落）
+
+**測試結果：**
+- `python3 -m py_compile src/gui/styles.py` 通過
+
+---
+
 ## [2026-04-23] Gradient 路徑向量化（~2–3× 加速）
 
 **變更類型：** 效能優化
