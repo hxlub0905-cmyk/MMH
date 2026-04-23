@@ -2,6 +2,34 @@
 
 ---
 
+## [2026-04-23] 修復 Run Single 閃退：MeasurementRecord 缺少必填欄位
+
+**變更類型：** Bug 修復
+
+**問題根因：**
+- `measure_workspace.py` 的 `_run_with_cards()` 中，在有量測結果時嘗試建立 `MeasurementRecord` 物件，但遺漏了 6 個必填位置參數：`measurement_id`、`feature_type`、`feature_id`、`bbox`、`center_x`、`center_y`
+- 導致 `TypeError: __init__() missing required positional arguments`，在 PyQt6 的 slot 機制下使應用程式異常終止（閃退）
+- `_run_with_recipe` 沒有任何 try/except，任何未捕獲例外都會向上傳遞
+
+**修法：**
+1. **`_run_with_cards`** — 補全所有必填欄位，從 `YCDMeasurement.upper_blob`/`lower_blob` 推導：
+   - `measurement_id`：`str(uuid.uuid4())`
+   - `feature_type`：`""`（legacy cards 沒有 recipe 定義的 feature_type）
+   - `feature_id`：`f"feat{cmg_id}_col{col_id}"`
+   - `bbox`：`(min(ub.x0, lb.x0), ub.y0, max(ub.x1, lb.x1), lb.y1)`
+   - `center_x/y`：bbox 中心點
+   - `extra_metrics`：包含 `upper_bbox`、`lower_bbox` 與 `_refine_meta`（供 CD 位置 Excel 匯出使用）
+2. **`_run_with_recipe`** — 重構為 `_run_with_recipe_impl()`，外層包一層 `try/except` 顯示錯誤 dialog
+
+**影響範圍：**
+- `src/gui/workspaces/measure_workspace.py`
+
+**測試結果：**
+- `python3 -m py_compile` 通過
+- `pytest`（排除 numpy/cv2 相依）→ 17/17 通過
+
+---
+
 ## [2026-04-23] Measure 右側 UI 透明控件修復 + 全局邊框加深
 
 **變更類型：** UI 修復
