@@ -10,7 +10,7 @@ import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from .models import ImageRecord, MeasurementRecord, BatchRunRecord, MultiDatasetBatchRun
 from .recipe_base import BaseRecipe, PipelineResult
@@ -38,8 +38,9 @@ class MeasurementEngine:
         self,
         image_records: list[ImageRecord],
         recipe_ids: list[str],
-        on_progress: Callable[[int, int, str, str], None] | None = None,
+        on_progress: Callable[[int, int, str, str, dict], None] | None = None,
         max_workers: int | None = None,
+        output_dir: Path | None = None,
     ) -> BatchRunRecord:
         """Run all recipe_ids against all image_records in parallel.
 
@@ -64,7 +65,7 @@ class MeasurementEngine:
         )
 
         args_list = [
-            _make_worker_args(ir, recipes)
+            _make_worker_args(ir, recipes, output_dir=output_dir)
             for ir in image_records
         ]
 
@@ -83,7 +84,7 @@ class MeasurementEngine:
                 results.append(result_dict)
                 if on_progress:
                     on_progress(done, total, Path(result_dict["image_path"]).name,
-                                result_dict["status"])
+                                result_dict["status"], result_dict)
                 if result_dict["status"] == "OK":
                     batch.success_count += 1
                 else:
@@ -102,8 +103,9 @@ class MeasurementEngine:
         self,
         datasets: list[dict],
         on_dataset_start: Callable[[int, int, str], None] | None = None,
-        on_progress: Callable[[int, int, str, str], None] | None = None,
+        on_progress: Callable[[int, int, str, str, dict], None] | None = None,
         max_workers: int | None = None,
+        output_dir: Path | None = None,
     ) -> MultiDatasetBatchRun:
         """Run run_batch() sequentially for each dataset and aggregate results.
 
@@ -126,16 +128,18 @@ class MeasurementEngine:
             # and `total` reflects the overall image count — preventing the bar
             # from resetting at the start of each dataset.
             ds_offset = offset
-            def _wrapped(done, _total, name, status,
+            def _wrapped(done, _total, name, status, result_dict=None,
                          _off=ds_offset, _tot=total_all):
                 if on_progress:
-                    on_progress(done + _off, _tot, name, status)
+                    on_progress(done + _off, _tot, name, status, result_dict)
 
+            ds_label = label
             br = self.run_batch(
                 image_records=ds["image_records"],
                 recipe_ids=ds["recipe_ids"],
                 on_progress=_wrapped if on_progress else None,
                 max_workers=max_workers,
+                output_dir=Path(output_dir) / ds_label if output_dir else None,
             )
             br.dataset_label = label
             mbr.datasets.append(br)
@@ -146,13 +150,18 @@ class MeasurementEngine:
 
 # ── Top-level picklable worker functions ──────────────────────────────────────
 
-def _make_worker_args(image_record: ImageRecord, recipes: list[BaseRecipe]) -> dict:
+def _make_worker_args(
+    image_record: ImageRecord,
+    recipes: list[BaseRecipe],
+    output_dir: Path | None = None,
+) -> dict:
     """Serialise ImageRecord + recipes to a plain dict for subprocess pickling."""
     return {
         "image_path": image_record.file_path,
         "image_id": image_record.image_id,
         "pixel_size_nm": float(image_record.pixel_size_nm),
         "recipe_descriptors": [r.recipe_descriptor.to_dict() for r in recipes],
+        "output_dir": str(output_dir) if output_dir else None,
     }
 
 
@@ -183,11 +192,13 @@ def _worker_run_image(args: dict) -> dict:
         all_records: list[MeasurementRecord] = []
         all_cuts: list = []
         cmg_id_offset = 0
+        pr_list = []
 
         for rd_dict in args["recipe_descriptors"]:
             descriptor = MeasurementRecipe.from_dict(rd_dict)
             recipe = CMGRecipe(descriptor=descriptor)
             pr = recipe.run_pipeline(ir)
+            pr_list.append(pr)
 
             # Offset cmg_ids to avoid collisions across recipes
             for rec in pr.records:
@@ -210,6 +221,31 @@ def _worker_run_image(args: dict) -> dict:
             result["measurements"] = [r.to_dict() for r in all_records]
             from .._compat import serialise_cuts_from_records
             result["cuts"] = serialise_cuts_from_records(all_records)
+
+            if args.get("output_dir") and pr_list:
+                try:
+                    import cv2
+                    from .annotator import draw_overlays, OverlayOptions
+                    out_dir = Path(args["output_dir"])
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    last_pr = pr_list[-1]
+                    cuts_last = last_pr.context.get("cmg_cuts", [])
+                    raw = last_pr.raw
+                    if cuts_last:
+                        annotated = draw_overlays(
+                            raw, None, cuts_last,
+                            OverlayOptions(show_lines=True, show_labels=True,
+                                           show_boxes=False, show_legend=True)
+                        )
+                    else:
+                        annotated = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
+                    stem = Path(image_path).stem
+                    out_path = str(out_dir / f"{stem}_annotated.png")
+                    cv2.imwrite(out_path, annotated)
+                    result["overlay_path"] = out_path
+                except Exception as exc:
+                    result["overlay_path"] = None
+                    result["overlay_error"] = str(exc)
 
     except Exception as exc:
         result["status"] = "FAIL"

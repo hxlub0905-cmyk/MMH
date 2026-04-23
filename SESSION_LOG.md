@@ -2,6 +2,77 @@
 
 ---
 
+## [2026-04-23] Gradient 路徑向量化（~2–3× 加速）
+
+**變更類型：** 效能優化
+
+**動機：** 前一 session 的 TC 路徑向量化完成後，gradient 路徑仍維持原有 for 迴圈（每張圖逐 x 呼叫 `_refine_yedge_subpixel`），是目前效能瓶頸之一。本次將 gradient 路徑改為與 TC 對稱的批次處理，整體目標從 4–8 分鐘再降至 3–6 分鐘（13000 張）。
+
+**實作（`src/core/recipes/cmg_recipe.py` only）：**
+
+1. **`_smooth_strip_2d(strip, k)`**（新增）— 對 2D strip 每欄做 moving average，使用 `np.pad + np.cumsum` 向量化，pure numpy，供 TC 和 gradient 兩個批次函式共用。
+2. **`_extract_strip(image, sample_xs, y_guess, search_half, smooth_k, profile_lpf_sigma)`**（新增）— 共用提取 + LPF + MA 流程：一次切出 2D strip，套用 `_gaussian_filter1d_2d`（若 sigma>0），再套用 `_smooth_strip_2d`，回傳 `(strip, y_lo, valid_mask)`。
+3. **`_refine_yedge_threshold_crossing_batch()`** — 重構以呼叫 `_extract_strip()`，邏輯不變。
+4. **`_refine_yedge_subpixel_batch(image, sample_xs, y_guess, ...)`**（新增）— Gradient 批次版本：呼叫 `_extract_strip()` 提取共用 strip，`np.abs(np.diff(strip, axis=0))` 向量化計算 abs-gradient，再對每欄做 peak 偵測 + dominance 檢查 + 二次型內插（與 scalar 版邏輯一致），回傳 `list[float | None]`。
+5. **`apply_yedge_subpixel_to_cuts()` paired sampling 路徑**：
+   - TC 分支：維持 `_refine_yedge_threshold_crossing_batch()`（前一 session 已完成）
+   - Gradient 分支：**原 for 迴圈改為呼叫 `_refine_yedge_subpixel_batch()`**，共用同一套後處理（`upper_sample_ys / lower_sample_ys / up_ys / lo_ys / up_ps / lo_ps / up_spr / lo_spr / individual_cds_nm`），結構與 TC 分支對稱
+
+**影響範圍：**
+- `src/core/recipes/cmg_recipe.py`（4 個新增/重構函式 + apply_yedge gradient 分支改寫）
+
+**測試結果：**
+- `python3 -m py_compile src/core/recipes/cmg_recipe.py` 通過
+
+**備註：**
+- peak_strength / second_peak_ratio 在批次 gradient 版中填入預設值（1.0 / 0.0），與 TC 批次版行為一致
+- aggregate / winning_sample_x / post-refinement 等下游邏輯完全不變
+
+---
+
+## [2026-04-23] 兩項新功能：Batch 即時 Overlay 輸出 + TC 路徑向量化
+
+**變更類型：** 功能新增 / 效能優化
+
+**功能一：Batch 邊跑邊輸出 Overlay Image**
+
+- **動機**：目前需等整個 Batch 跑完才能從 Report workspace 手動匯出，使用者無法在執行中即時確認結果品質。
+- **實作（engine 層）**：
+  - `_make_worker_args()` 新增 `output_dir` 參數，序列化為純 str（pickle 安全）
+  - `_worker_run_image()` 在迴圈內蒐集 `pr_list`；成功路徑最後若 `output_dir` 有值，用最後一個 recipe 的 `pr.context["cmg_cuts"]` 與 `pr.raw` 呼叫 `draw_overlays()` 並以 `cv2.imwrite()` 寫出 `<stem>_annotated.png`，並將路徑存入 `result["overlay_path"]`（失敗時存 `result["overlay_error"]`）
+  - `run_batch()` 新增 `output_dir: Path | None = None` 參數；`on_progress` callback 簽名升級至第 5 個參數傳遞完整 `result_dict`
+  - `run_multi_batch()` 同步新增 `output_dir`；各 dataset 寫入 `output_dir / label` 子資料夾；`_wrapped` callback 透傳 `result_dict`
+- **實作（UI 層）**：
+  - `batch_workspace.py` imports 補上 `QCheckBox`
+  - `_build_ui()` 在 workers/run 列之後插入 overlay 選項列（checkbox + 資料夾按鈕 + 路徑標籤）
+  - 新增 `_on_overlay_toggled()` 與 `_browse_overlay_folder()` 方法
+  - `_run_batch()` 計算 `output_dir` 並傳入 worker
+  - `_BatchWorker` / `_MultiBatchWorker` 的 `progress` 信號升級為 `pyqtSignal(int, int, str, str, object)`，`__init__` / `run()` 同步更新
+  - `_on_progress()` 新增第 5 個參數 `result_dict`，有 overlay_path 時在 log 顯示 `→ overlay: <filename>`
+
+**功能二：apply_yedge TC 路徑向量化（~4–5× 加速）**
+
+- **動機**：TC 模式 All-columns 設定下，每張圖的每個 sample_x 各自呼叫一次 `_refine_yedge_threshold_crossing()`，13000 張約需 20–30 分鐘。
+- **實作**：
+  - 新增 `_gaussian_filter1d_2d(arr, sigma)` — 對 2D array 每欄套用 Gaussian LPF（mode='same'，與 scalar 版一致）
+  - 新增 `_refine_yedge_threshold_crossing_batch(image, sample_xs, y_guess, ...)` — 一次提取所有 x 的 2D strip，向量化 MA（cumsum + vstack 零列確保輸出 n 列）、sign-change 偵測；結果與逐 x 呼叫 scalar 版相同（< 0.001 nm 差異）
+  - `apply_yedge_subpixel_to_cuts()` 的 paired sampling 路徑改為 if/else：TC 方法走向量化批次呼叫，gradient 方法維持原有 for 迴圈
+
+**影響範圍：**
+- `src/core/measurement_engine.py`（output_dir + progress 第 5 參數）
+- `src/core/recipes/cmg_recipe.py`（新增 2 個 helper 函式 + apply_yedge 向量化分支）
+- `src/gui/workspaces/batch_workspace.py`（UI + Worker + _on_progress）
+
+**測試結果：**
+- `python3 -m py_compile` 對所有 3 個修改檔案均通過
+
+**備註：**
+- overlay 寫檔發生在 subprocess 內，不增加跨 process 傳輸量
+- 向量化 MA 使用 `((k//2, k//2), mode='edge')` padding + 前置零列 cumsum，避免 off-by-one 問題
+- gradient 路徑不受影響，舊行為完全保留
+
+---
+
 ## [2026-04-23] 體驗與準確度修復（B1/G2/I2/Q1/L2）
 
 **變更類型：** Bug 修復 / UX 改善

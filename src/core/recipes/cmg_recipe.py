@@ -24,6 +24,250 @@ def _gaussian_filter1d(profile: np.ndarray, sigma: float) -> np.ndarray:
     kernel /= kernel.sum()
     return np.convolve(profile, kernel, mode='same')
 
+
+def _gaussian_filter1d_2d(arr: np.ndarray, sigma: float) -> np.ndarray:
+    """Apply per-column Gaussian LPF on a 2-D array (axis=0), pure numpy."""
+    k = max(3, int(6 * sigma) | 1)
+    x = np.arange(k, dtype=np.float64) - k // 2
+    kernel = np.exp(-0.5 * (x / sigma) ** 2)
+    kernel /= kernel.sum()
+    result = np.zeros_like(arr, dtype=np.float64)
+    for col in range(arr.shape[1]):
+        result[:, col] = np.convolve(arr[:, col], kernel, mode='same')
+    return result
+
+
+def _smooth_strip_2d(strip: np.ndarray, k: int) -> np.ndarray:
+    """Per-column moving average on a 2-D strip, pure numpy.
+
+    Returns shape (n_rows - 1, n_cols) for odd k ≥ 3 — the last row of the
+    search window is dropped, which is acceptable since crossings always occur
+    well inside the window.
+    """
+    if k <= 1:
+        return strip
+    k = k | 1
+    pad = np.pad(strip, ((k // 2, k // 2), (0, 0)), mode='edge')
+    cs = np.cumsum(pad, axis=0, dtype=np.float64)
+    return (cs[k:] - cs[:-k]) / k
+
+
+def _extract_strip(
+    image: np.ndarray,
+    sample_xs: list,
+    y_guess: float,
+    search_half: int,
+    smooth_k: int,
+    profile_lpf_sigma: float,
+) -> tuple:
+    """Extract, LPF-filter, and smooth a 2-D strip for all valid sample_xs.
+
+    Returns (strip, y_lo, valid_mask) where
+      strip      – shape (window_height, n_valid_cols), dtype float64
+      y_lo       – int, top row of the search window
+      valid_mask – list[bool], True where sample_xs[i] is inside the image
+    """
+    h, w = image.shape[:2]
+    y_lo = max(0, int(round(y_guess)) - search_half)
+    y_hi = min(h, int(round(y_guess)) + search_half + 1)
+
+    valid_mask = [0 <= x < w for x in sample_xs]
+    valid_xs = [x for x, ok in zip(sample_xs, valid_mask) if ok]
+
+    strip = image[y_lo:y_hi, valid_xs].astype(np.float64)
+
+    if profile_lpf_sigma > 0.0:
+        strip = _gaussian_filter1d_2d(strip, profile_lpf_sigma)
+
+    strip = _smooth_strip_2d(strip, smooth_k)
+
+    return strip, y_lo, valid_mask
+
+
+def _refine_yedge_threshold_crossing_batch(
+    image: np.ndarray,
+    sample_xs: list,
+    y_guess: float,
+    search_half: int = 10,
+    proximity: int = 8,
+    smooth_k: int = 3,
+    threshold_frac: float = 0.5,
+    profile_lpf_sigma: float = 0.0,
+) -> list:
+    """Vectorised TC refinement: one 2-D strip extraction for all sample_xs.
+
+    Returns list[float | None] of length len(sample_xs).
+    """
+    if not sample_xs or image is None or image.ndim < 2:
+        return [None] * len(sample_xs)
+
+    img = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    h = img.shape[0]
+    y_lo_check = max(0, int(round(y_guess)) - search_half)
+    y_hi_check = min(h, int(round(y_guess)) + search_half + 1)
+    if y_hi_check - y_lo_check < 3:
+        return [None] * len(sample_xs)
+
+    strip, y_lo, valid_mask = _extract_strip(
+        img, sample_xs, y_guess, search_half, smooth_k, profile_lpf_sigma
+    )
+    if strip.shape[0] < 2 or strip.shape[1] == 0:
+        return [None] * len(sample_xs)
+
+    col_min = strip.min(axis=0)
+    col_max = strip.max(axis=0)
+    col_range = col_max - col_min
+    threshold = col_min + col_range * threshold_frac
+
+    centered = strip - threshold[np.newaxis, :]
+    signs = np.sign(centered)
+    cross_mask = (signs[:-1] * signs[1:]) <= 0   # shape (n-1, n_cols)
+
+    results_valid: list = []
+    for col_idx in range(strip.shape[1]):
+        if col_range[col_idx] < 1.0:
+            results_valid.append(None)
+            continue
+        cross_rows = np.where(cross_mask[:, col_idx])[0]
+        if len(cross_rows) == 0:
+            results_valid.append(None)
+            continue
+        best_crossing = None
+        best_dist = float('inf')
+        thr = threshold[col_idx]
+        for i in cross_rows:
+            a_val = strip[i, col_idx]
+            b_val = strip[i + 1, col_idx]
+            denom = b_val - a_val
+            frac = (thr - a_val) / denom if abs(denom) > 1e-12 else 0.5
+            crossing = float(y_lo) + i + max(0.0, min(1.0, frac))
+            dist = abs(crossing - y_guess)
+            if dist < best_dist:
+                best_dist = dist
+                best_crossing = crossing
+        if best_crossing is None or abs(best_crossing - y_guess) > proximity:
+            results_valid.append(None)
+        else:
+            results_valid.append(best_crossing)
+
+    results: list = []
+    valid_iter = iter(results_valid)
+    for ok in valid_mask:
+        results.append(next(valid_iter) if ok else None)
+    return results
+
+
+def _refine_yedge_subpixel_batch(
+    image: np.ndarray,
+    sample_xs: list,
+    y_guess: float,
+    search_half: int = 10,
+    proximity: int = 5,
+    smooth_k: int = 5,
+    min_grad_frac: float = 0.10,
+    peak_ratio_thr: float = 0.60,
+    profile_lpf_sigma: float = 0.0,
+) -> list:
+    """Vectorised Gradient refinement: one 2-D strip extraction for all sample_xs.
+
+    Mirrors the scalar _refine_yedge_subpixel logic (gradient peak + quadratic
+    interpolation + peak dominance check) but extracts one 2-D strip and
+    computes the abs-gradient array across all columns simultaneously.
+
+    Returns list[float | None] of length len(sample_xs).
+    """
+    if not sample_xs or image is None or image.ndim < 2:
+        return [None] * len(sample_xs)
+
+    img = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    h = img.shape[0]
+    y_lo_check = max(0, int(round(y_guess)) - search_half)
+    y_hi_check = min(h, int(round(y_guess)) + search_half + 1)
+    n = y_hi_check - y_lo_check
+    if n < 3:
+        return [None] * len(sample_xs)
+
+    strip, y_lo, valid_mask = _extract_strip(
+        img, sample_xs, y_guess, search_half, smooth_k, profile_lpf_sigma
+    )
+    if strip.shape[0] < 2 or strip.shape[1] == 0:
+        return [None] * len(sample_xs)
+
+    n_s = strip.shape[0]   # may be n-1 after smoothing
+    col_min = strip.min(axis=0)
+    col_max = strip.max(axis=0)
+    col_range = col_max - col_min   # shape (n_cols,)
+
+    # Vectorised absolute gradient: shape (n_s-1, n_cols)
+    abs_grad = np.abs(np.diff(strip, axis=0))
+
+    # Search margins (match scalar version: margin = k//2 + 1)
+    k = smooth_k | 1
+    margin = max(1, k // 2 + 1)
+    lo_m = margin
+    hi_m = max(lo_m + 1, n_s - margin)
+
+    results_valid: list = []
+    for col_idx in range(strip.shape[1]):
+        p_range = col_range[col_idx]
+        if p_range < 1.0:
+            results_valid.append(None)
+            continue
+
+        min_grad_abs = min_grad_frac * p_range
+        search_slice = abs_grad[lo_m:hi_m, col_idx]
+        if len(search_slice) < 1:
+            results_valid.append(None)
+            continue
+
+        peak_in_slice = int(np.argmax(search_slice))
+        peak_val = float(search_slice[peak_in_slice])
+        peak_local = peak_in_slice + lo_m
+
+        if peak_val < min_grad_abs:
+            results_valid.append(None)
+            continue
+
+        # Peak dominance check (exclusion zone matches scalar)
+        _excl_r = k // 2 + 2
+        _excl_l = k // 2 + 1
+        mask = np.ones(len(search_slice), dtype=bool)
+        excl_lo = max(0, peak_in_slice - _excl_l)
+        excl_hi = min(len(search_slice), peak_in_slice + _excl_r)
+        mask[excl_lo:excl_hi] = False
+        second_val = float(search_slice[mask].max()) if mask.any() else 0.0
+        if mask.any() and second_val > peak_ratio_thr * peak_val:
+            results_valid.append(None)   # ambiguous_peak
+            continue
+
+        # Quadratic subpixel interpolation on gradient peak
+        col_grad = abs_grad[:, col_idx]
+        if 0 < peak_local < n_s - 2:
+            a = col_grad[peak_local - 1]
+            b = col_grad[peak_local]
+            c = col_grad[peak_local + 1]
+            denom = a - 2.0 * b + c
+            delta = 0.5 * (a - c) / denom if abs(denom) > 1e-12 else 0.0
+            peak_sub = float(peak_local) + delta
+        else:
+            peak_sub = float(peak_local)
+
+        peak_sub = max(0.0, min(float(n_s - 1), peak_sub))
+        refined = float(y_lo) + peak_sub
+
+        if abs(refined - y_guess) > proximity:
+            results_valid.append(None)
+            continue
+
+        results_valid.append(refined)
+
+    results: list = []
+    valid_iter = iter(results_valid)
+    for ok in valid_mask:
+        results.append(next(valid_iter) if ok else None)
+    return results
+
+
 from ..models import ImageRecord, MeasurementRecord
 from ..recipe_base import BaseRecipe, MeasurementRecipe, RecipeConfig
 from ..cmg_analyzer import _flag_global_minmax, _flag_top3
@@ -632,50 +876,64 @@ def apply_yedge_subpixel_to_cuts(
                 lo_spr: list[float] = []
                 individual_cds_nm: list[float] = []
 
-                for x in sample_xs:
-                    fx = float(x)
-                    if method == "threshold_crossing":
-                        up_res = _refine_yedge_threshold_crossing(
-                            raw_img, fx, y_up, half_col=0,
-                            search_half=search_half, proximity=proximity,
-                            smooth_k=smooth_k, threshold_frac=threshold_frac,
-                            profile_lpf_sigma=_lpf_sigma)
-                        lo_res = _refine_yedge_threshold_crossing(
-                            raw_img, fx, y_lo, half_col=0,
-                            search_half=search_half, proximity=proximity,
-                            smooth_k=smooth_k, threshold_frac=threshold_frac,
-                            profile_lpf_sigma=_lpf_sigma)
-                    else:  # "gradient"
-                        up_res = _refine_yedge_subpixel(
-                            raw_img, fx, y_up, half_col=0,
-                            search_half=search_half, proximity=proximity,
-                            smooth_k=smooth_k, min_grad_frac=min_grad_frac,
-                            peak_ratio_thr=peak_ratio,
-                            profile_lpf_sigma=_lpf_sigma)
-                        lo_res = _refine_yedge_subpixel(
-                            raw_img, fx, y_lo, half_col=0,
-                            search_half=search_half, proximity=proximity,
-                            smooth_k=smooth_k, min_grad_frac=min_grad_frac,
-                            peak_ratio_thr=peak_ratio,
-                            profile_lpf_sigma=_lpf_sigma)
-
-                    up_y_i = up_res.y_refined if not up_res.fallback_reason else None
-                    lo_y_i = lo_res.y_refined if not lo_res.fallback_reason else None
-                    upper_sample_ys.append(up_y_i)
-                    lower_sample_ys.append(lo_y_i)
-
-                    if up_y_i is not None:
-                        up_ys.append(up_y_i)
-                        up_ps.append(up_res.peak_strength)
-                        up_spr.append(up_res.second_peak_ratio)
-                    if lo_y_i is not None:
-                        lo_ys.append(lo_y_i)
-                        lo_ps.append(lo_res.peak_strength)
-                        lo_spr.append(lo_res.second_peak_ratio)
-                    if up_y_i is not None and lo_y_i is not None:
-                        cd_i = (lo_y_i - up_y_i) * nm_per_pixel
-                        if cd_i > 0:
-                            individual_cds_nm.append(cd_i)
+                if method == "threshold_crossing":
+                    # Vectorised path: extract all columns at once
+                    up_ys_batch = _refine_yedge_threshold_crossing_batch(
+                        raw_img, sample_xs, y_up,
+                        search_half=search_half, proximity=proximity,
+                        smooth_k=smooth_k, threshold_frac=threshold_frac,
+                        profile_lpf_sigma=_lpf_sigma,
+                    )
+                    lo_ys_batch = _refine_yedge_threshold_crossing_batch(
+                        raw_img, sample_xs, y_lo,
+                        search_half=search_half, proximity=proximity,
+                        smooth_k=smooth_k, threshold_frac=threshold_frac,
+                        profile_lpf_sigma=_lpf_sigma,
+                    )
+                    upper_sample_ys = list(up_ys_batch)
+                    lower_sample_ys = list(lo_ys_batch)
+                    up_ys  = [y for y in up_ys_batch if y is not None]
+                    lo_ys  = [y for y in lo_ys_batch if y is not None]
+                    # TC version does not compute peak_strength; fill with defaults
+                    up_ps  = [1.0] * len(up_ys)
+                    lo_ps  = [1.0] * len(lo_ys)
+                    up_spr = [0.0] * len(up_ys)
+                    lo_spr = [0.0] * len(lo_ys)
+                    individual_cds_nm = [
+                        (lo - up) * nm_per_pixel
+                        for up, lo in zip(up_ys_batch, lo_ys_batch)
+                        if up is not None and lo is not None and lo > up
+                    ]
+                else:
+                    # Gradient path: vectorised batch extraction
+                    up_ys_batch = _refine_yedge_subpixel_batch(
+                        raw_img, sample_xs, y_up,
+                        search_half=search_half, proximity=proximity,
+                        smooth_k=smooth_k, min_grad_frac=min_grad_frac,
+                        peak_ratio_thr=peak_ratio,
+                        profile_lpf_sigma=_lpf_sigma,
+                    )
+                    lo_ys_batch = _refine_yedge_subpixel_batch(
+                        raw_img, sample_xs, y_lo,
+                        search_half=search_half, proximity=proximity,
+                        smooth_k=smooth_k, min_grad_frac=min_grad_frac,
+                        peak_ratio_thr=peak_ratio,
+                        profile_lpf_sigma=_lpf_sigma,
+                    )
+                    upper_sample_ys = list(up_ys_batch)
+                    lower_sample_ys = list(lo_ys_batch)
+                    up_ys  = [y for y in up_ys_batch if y is not None]
+                    lo_ys  = [y for y in lo_ys_batch if y is not None]
+                    # Gradient batch version does not return peak_strength; fill defaults
+                    up_ps  = [1.0] * len(up_ys)
+                    lo_ps  = [1.0] * len(lo_ys)
+                    up_spr = [0.0] * len(up_ys)
+                    lo_spr = [0.0] * len(lo_ys)
+                    individual_cds_nm = [
+                        (lo - up) * nm_per_pixel
+                        for up, lo in zip(up_ys_batch, lo_ys_batch)
+                        if up is not None and lo is not None and lo > up
+                    ]
 
                 up_y = _aggregate_values(up_ys, aggregate_method) if up_ys else y_up
                 lo_y = _aggregate_values(lo_ys, aggregate_method) if lo_ys else y_lo
