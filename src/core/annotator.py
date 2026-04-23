@@ -125,6 +125,8 @@ def _draw_measurement(
 ) -> None:
     ub, lb = m.upper_blob, m.lower_blob
     axis = getattr(m, "axis", "Y")
+    _meta = getattr(m, "_refine_meta", None)
+    _winning_x = _meta.get("winning_sample_x") if _meta else None
 
     # ── bounding boxes ────────────────────────────────────────────────────────
     if opts.show_boxes:
@@ -154,7 +156,7 @@ def _draw_measurement(
             y_bot = int(round(m.y_lower_edge)) if m.y_lower_edge is not None else lb.y0
             if y_bot <= y_top:
                 return
-            x_mid = int((max(ub.x0, lb.x0) + min(ub.x1, lb.x1)) / 2)
+            x_mid = _winning_x if _winning_x is not None else int((max(ub.x0, lb.x0) + min(ub.x1, lb.x1)) / 2)
             cv2.line(canvas, (x_mid, y_top), (x_mid, y_bot), line_col, line_w, cv2.LINE_AA)
             cv2.line(canvas, (x_mid - _TICK_HALF, y_top),
                      (x_mid + _TICK_HALF, y_top), line_col, line_w, cv2.LINE_AA)
@@ -176,7 +178,7 @@ def _draw_measurement(
         else:
             y_top = int(round(m.y_upper_edge)) if m.y_upper_edge is not None else ub.y1
             y_bot = int(round(m.y_lower_edge)) if m.y_lower_edge is not None else lb.y0
-            x_mid = int((max(ub.x0, lb.x0) + min(ub.x1, lb.x1)) / 2)
+            x_mid = _winning_x if _winning_x is not None else int((max(ub.x0, lb.x0) + min(ub.x1, lb.x1)) / 2)
             x_lbl = x_mid + _TICK_HALF + 2
             y_lbl = int((y_top + y_bot) / 2) + th_px // 2
         H, W   = canvas.shape[:2]
@@ -230,6 +232,7 @@ def _draw_detail_measurements(
     upper_ys      = meta.get("upper_sample_ys", [])
     lower_ys      = meta.get("lower_sample_ys", [])
     nm_per_pixel  = m.cd_nm / m.cd_px if (m.cd_px and m.cd_px > 0) else 1.0
+    winning_x     = meta.get("winning_sample_x")   # set only for min/max aggregation
 
     # Use a distinct color for detail lines when the measurement is not MIN/MAX,
     # so individual sample lines are visually differentiated from the aggregate.
@@ -266,11 +269,18 @@ def _draw_detail_measurements(
         if y_bot <= y_top:
             continue
 
-        if opts.show_lines:
-            cv2.line(canvas, (x, y_top), (x, y_bot), detail_col, _LINE_W, cv2.LINE_AA)
+        # Winning sample (min/max aggregation) drawn in the measurement color;
+        # all other samples use the muted detail color.
+        is_winner = (winning_x is not None and x == winning_x)
+        line_col_i = col if is_winner else detail_col
+        line_w_i   = _LINE_W + 1 if is_winner else _LINE_W
 
-        # Only label every label_stride-th sample to avoid horizontal crowding.
-        if opts.show_labels and (i % label_stride == 0):
+        if opts.show_lines:
+            cv2.line(canvas, (x, y_top), (x, y_bot), line_col_i, line_w_i, cv2.LINE_AA)
+
+        # Only label every label_stride-th sample to avoid horizontal crowding,
+        # but always label the winning sample so the aggregate value is visible.
+        if opts.show_labels and (i % label_stride == 0 or is_winner):
             cd_i = (lo_y_i - up_y_i) * nm_per_pixel
             text = f"{cd_i:.1f}"
             (tw, th_px), _ = cv2.getTextSize(text, font, fs * 0.85, th)
@@ -284,7 +294,7 @@ def _draw_detail_measurements(
                 cv2.putText(canvas, text, (x_lbl, y_lbl),
                             font, fs * 0.85, (0, 0, 0), th + 1, cv2.LINE_AA)
                 cv2.putText(canvas, text, (x_lbl, y_lbl),
-                            font, fs * 0.85, detail_col, th, cv2.LINE_AA)
+                            font, fs * 0.85, line_col_i, th, cv2.LINE_AA)
                 last_label_y[lane] = y_lbl
 
 

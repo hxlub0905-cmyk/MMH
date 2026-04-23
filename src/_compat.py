@@ -99,7 +99,7 @@ def records_to_legacy_cuts(records: list[MeasurementRecord]) -> list:
         # Restore _refine_meta so Detail CD view can draw individual sample lines
         _refine_keys = (
             "sample_xs", "upper_sample_ys", "lower_sample_ys",
-            "individual_cds_nm", "aggregate_method",
+            "individual_cds_nm", "aggregate_method", "winning_sample_x",
         )
         _meta = {k: r.extra_metrics[k] for k in _refine_keys if k in r.extra_metrics}
         if _meta:

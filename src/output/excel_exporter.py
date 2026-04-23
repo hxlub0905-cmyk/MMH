@@ -177,20 +177,31 @@ def export_excel_from_records(
 
         # Use conditional formatting instead of per-cell coloring:
         # avoids O(rows × cols) cell-style writes that corrupt large files.
-        flag_col_letter = _col_letter(df_meas, "flag")
-        if flag_col_letter and len(df_meas) > 0:
-            last_row = len(df_meas) + 1
-            last_col = get_column_letter(ws_meas.max_column)
-            cf_range = f"A2:{last_col}{last_row}"
-            from openpyxl.formatting.rule import FormulaRule
-            ws_meas.conditional_formatting.add(
-                cf_range,
-                FormulaRule(formula=[f'${flag_col_letter}2="MIN"'], fill=min_fill),
-            )
-            ws_meas.conditional_formatting.add(
-                cf_range,
-                FormulaRule(formula=[f'${flag_col_letter}2="MAX"'], fill=max_fill),
-            )
+        # DifferentialStyle + Rule with bgColor is the correct openpyxl API for
+        # formula-based CF; FormulaRule(fill=PatternFill(fgColor=...)) uses an
+        # incompatible solid fill that can corrupt workbook state in some versions.
+        try:
+            from openpyxl.styles.differential import DifferentialStyle
+            from openpyxl.formatting.rule import Rule as _Rule
+            flag_col_letter = _col_letter(df_meas, "flag")
+            if flag_col_letter and len(df_meas) > 0:
+                last_row = len(df_meas) + 1
+                last_col = get_column_letter(ws_meas.max_column)
+                cf_range = f"A2:{last_col}{last_row}"
+                min_dxf = DifferentialStyle(fill=PatternFill(bgColor=_MIN_FILL))
+                max_dxf = DifferentialStyle(fill=PatternFill(bgColor=_MAX_FILL))
+                ws_meas.conditional_formatting.add(
+                    cf_range,
+                    _Rule(type="formula", dxf=min_dxf,
+                          formula=[f'${flag_col_letter}2="MIN"']),
+                )
+                ws_meas.conditional_formatting.add(
+                    cf_range,
+                    _Rule(type="formula", dxf=max_dxf,
+                          formula=[f'${flag_col_letter}2="MAX"']),
+                )
+        except Exception:
+            pass  # CF is best-effort; data integrity is not affected
 
         # Freeze header row
         ws_meas.freeze_panes = "A2"
