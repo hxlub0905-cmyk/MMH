@@ -218,6 +218,9 @@ class ReviewWorkspace(QWidget):
         self._info_label.setText(f"{name}  ·  {n} measurement(s)")
         self.status_message.emit(f"Review: {name}  ·  {n} measurement(s)")
 
+    # Max items shown in image list; beyond this, only failures + first N are shown
+    _LIST_LIMIT = 1000
+
     def load_batch_run(self, batch_run: BatchRunRecord) -> None:
         """Load batch results for image-by-image browsing."""
         results = batch_run.output_manifest.get("results", [])
@@ -228,15 +231,10 @@ class ReviewWorkspace(QWidget):
         self._batch_entries = results
         self._batch_records = {}  # reset lazy cache
 
+        self._img_list.setUpdatesEnabled(False)
         self._img_list.clear()
-        for entry in results:
-            status = entry.get("status", "?")
-            name = Path(entry.get("image_path", "?")).name
-            item = QListWidgetItem(f"[{status}]  {name}")
-            item.setForeground(
-                Qt.GlobalColor.darkRed if status != "OK" else Qt.GlobalColor.darkGreen
-            )
-            self._img_list.addItem(item)
+        self._populate_img_list(results)
+        self._img_list.setUpdatesEnabled(True)
 
         self._list_panel.setVisible(True)
         self._batch_nav.setVisible(True)
@@ -250,6 +248,39 @@ class ReviewWorkspace(QWidget):
             f"Review: batch loaded  ·  {ok}/{total} OK  —  click image to inspect"
         )
 
+    def _populate_img_list(self, entries: list) -> None:
+        """Add entries to _img_list, capping at _LIST_LIMIT to stay responsive."""
+        limit = self._LIST_LIMIT
+        shown = 0
+        for entry in entries:
+            if entry.get("_separator"):
+                item = QListWidgetItem(f"── {entry['label']} ──")
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                item.setForeground(Qt.GlobalColor.gray)
+                font = item.font(); font.setBold(True); item.setFont(font)
+                self._img_list.addItem(item)
+                continue
+            status = entry.get("status", "?")
+            name = Path(entry.get("image_path", "?")).name
+            # Always show failures; show OK entries up to the limit
+            if status == "OK" and shown >= limit:
+                continue
+            item = QListWidgetItem(f"[{status}]  {name}")
+            item.setForeground(
+                Qt.GlobalColor.darkRed if status != "OK" else Qt.GlobalColor.darkGreen
+            )
+            self._img_list.addItem(item)
+            shown += 1
+
+        total = len([e for e in entries if not e.get("_separator")])
+        if shown < total:
+            note = QListWidgetItem(
+                f"… {total - shown} more images (all failures shown above)"
+            )
+            note.setFlags(note.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            note.setForeground(Qt.GlobalColor.gray)
+            self._img_list.addItem(note)
+
     def load_multi_batch(self, mbr: MultiDatasetBatchRun) -> None:
         """Load combined results from a multi-dataset batch run for browsing."""
         combined: list[dict] = []
@@ -260,21 +291,10 @@ class ReviewWorkspace(QWidget):
         self._batch_entries = combined
         self._batch_records = {}
 
+        self._img_list.setUpdatesEnabled(False)
         self._img_list.clear()
-        for entry in combined:
-            if entry.get("_separator"):
-                item = QListWidgetItem(f"── {entry['label']} ──")
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-                item.setForeground(Qt.GlobalColor.gray)
-                font = item.font(); font.setBold(True); item.setFont(font)
-            else:
-                status = entry.get("status", "?")
-                name = Path(entry.get("image_path", "?")).name
-                item = QListWidgetItem(f"[{status}]  {name}")
-                item.setForeground(
-                    Qt.GlobalColor.darkRed if status != "OK" else Qt.GlobalColor.darkGreen
-                )
-            self._img_list.addItem(item)
+        self._populate_img_list(combined)
+        self._img_list.setUpdatesEnabled(True)
 
         self._list_panel.setVisible(True)
         self._batch_nav.setVisible(True)
