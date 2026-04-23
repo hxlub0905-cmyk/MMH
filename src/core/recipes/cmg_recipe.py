@@ -26,7 +26,7 @@ def _gaussian_filter1d(profile: np.ndarray, sigma: float) -> np.ndarray:
 
 from ..models import ImageRecord, MeasurementRecord
 from ..recipe_base import BaseRecipe, MeasurementRecipe, RecipeConfig
-from ..cmg_analyzer import _flag_global_minmax
+from ..cmg_analyzer import _flag_global_minmax, _flag_top3
 
 # Tolerance for float equality in MIN/MAX comparisons (subpixel values are never
 # exact integers, so direct == is unsafe after refinement).
@@ -307,8 +307,9 @@ class CMGRecipe(BaseRecipe):
                 if kept:
                     filtered.append(_CMGCut(cmg_id=cut.cmg_id, measurements=kept))
             cuts = filtered
-            # Re-flag global MIN/MAX after range filter
-            _flag_global_minmax([m for cut in cuts for m in cut.measurements])
+            # Re-flag per-cut TOP3 after range filter
+            for cut in cuts:
+                _flag_top3(cut.measurements)
 
         context["cmg_cuts"] = cuts
 
@@ -730,6 +731,10 @@ def apply_yedge_subpixel_to_cuts(
                 _fallback_reason = ",".join(_parts)
             else:
                 _refine_used = False
+                bbox_cd = float(lb.y0) - float(ub.y1)
+                if bbox_cd > 0:
+                    m.cd_px = bbox_cd
+                    m.cd_nm = bbox_cd * nm_per_pixel
                 _parts = []
                 if not up_ys:
                     _parts.append("up:all_columns_fallback")
@@ -763,8 +768,9 @@ def apply_yedge_subpixel_to_cuts(
                     "winning_sample_x":   winning_sample_x,
                 }
 
-    # Re-flag global MIN/MAX after Y-edge refinement
-    _flag_global_minmax([m for cut in cuts for m in cut.measurements])
+    # Re-flag per-cut TOP3 after Y-edge refinement
+    for cut in cuts:
+        _flag_top3(cut.measurements)
 
 
 # ── Coordinate helpers ────────────────────────────────────────────────────────

@@ -73,10 +73,10 @@ def records_to_dataframe(
             "nm_per_pixel": float(ir.pixel_size_nm) if ir else 1.0,
             "recipe_name": r.state_name,
             "axis": r.axis,
-            "cmg_id": r.cmg_id,
-            "col_id": r.col_id,
-            "cd_px": round(float(r.raw_px), 3),
+            "cut_id": r.cmg_id,
+            "column_id": r.col_id,
             "cd_nm": round(float(r.calibrated_nm), 3),
+            "cd_px": round(float(r.raw_px), 3),
             "flag": r.flag,
             # CD line centre position relative to image top-left (px)
             "cd_line_x_px": round(float(r.center_x), 1),
@@ -99,4 +99,12 @@ def records_to_dataframe(
             "error": "",
             "recipe_id": r.recipe_id,
         })
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    _CANON = [
+        "dataset", "image_file", "nm_per_pixel", "recipe_name", "axis",
+        "cut_id", "column_id", "cd_nm", "cd_px",
+        "cd_line_x_px", "cd_line_y_px",
+        "flag", "status",
+    ]
+    _extra = [c for c in df.columns if c not in _CANON]
+    return df[[c for c in _CANON if c in df.columns] + _extra]

@@ -2,6 +2,49 @@
 
 ---
 
+## [2026-04-23] CD 計算與顯示不一致修復（A1/A2/F1/G1/V5/V6/W1）
+
+**變更類型：** Bug 修復
+
+**修復 A1：analyze() 初始 cd_px 改用 bbox 邊緣**
+- **根本原因**：`cmg_analyzer.analyze()` Step 2 計算 gap 時用 `cy ± height/2.0`（float 中心偏移），而 annotator 使用 `y1`/`y0` bbox 邊緣，導致初始 cd_px 與標注不一致
+- **修法**：`upper_edge = float(upper.y1)` / `lower_edge = float(lower.y0)`；mid_y 與 cd_px 計算式不變
+
+**修復 A2：Fallback 時 cd_px 回落到 bbox 值**
+- **根本原因**：`apply_yedge_subpixel_to_cuts()` 的 else 分支（cd_ref ≤ 0）完全不更新 m.cd_px，讓 cm_analyzer 初始值（已含 A1 bias）留在記錄中
+- **修法**：else 分支計算 `bbox_cd = lb.y0 - ub.y1`，若 > 0 則回寫 m.cd_px / m.cd_nm
+
+**修復 F1：Recipe 路徑 MIN/MAX 改為 per-cut TOP3**
+- **根本原因**：`compute_metrics()` 與 `apply_yedge_subpixel_to_cuts()` 的 re-flag 均呼叫 `_flag_global_minmax()`（全圖只標一個 MIN / MAX），與 Cards 路徑的 `_flag_top3` per-cut 行為不一致
+- **修法**：兩處均改為 `for cut in cuts: _flag_top3(cut.measurements)`；`analyze()` Step 5 的 global flag 保留不動
+
+**修復 G1：Cards 路徑 bbox 定義錯誤**
+- **根本原因**：`_run_with_cards()` 建立 MeasurementRecord 時 bbox 取整個 blob 高度（y0, y1），造成 center_y 偏移約一個 blob 高度（非 gap 中心）
+- **修法**：bbox 改為 `(min_x, ub.y1, max_x, lb.y0)`，即 gap 上下緣，center_y 因此落在 gap 中心
+
+**修復 V5：Compare to Reference N 顯示不準**
+- **修法**：`_refresh_stats()` 中 `self._lbl_n.setText(f"{len(biases)} / {n}")` 並加 tooltip 說明「有輸入參考值的筆數 / 總量測筆數」
+
+**修復 V6：Compare to Reference Export CSV n 欄位不準**
+- **修法**：`_export_csv()` 中改為兩列：`["n_with_ref", str(len(biases))]` 與 `["n_total", str(len(self._records))]`
+
+**修復 W1：records_to_dataframe() CSV 欄位清理與重新命名**
+- **修法**：`records_to_dataframe()` 中 `"cmg_id"` → `"cut_id"`，`"col_id"` → `"column_id"`；函式末端加 canonical 欄位排序（13 欄優先，其餘附後）
+- 同步更新 `excel_exporter.py`：`meas_cols` 使用 `cut_id`/`column_id`；Image Summary 的 `min_cd_cmg_id` → `min_cd_cut_id`、`min_cd_col_id` → `min_cd_column_id`（MAX 欄同）
+
+**影響範圍：**
+- `src/core/cmg_analyzer.py`（A1：gap edge 計算）
+- `src/core/recipes/cmg_recipe.py`（A2：fallback bbox cd；F1：import + re-flag per-cut）
+- `src/gui/workspaces/measure_workspace.py`（G1：bbox gap 邊緣）
+- `src/gui/measure_validate_dialog.py`（V5：N 顯示；V6：CSV summary n 欄）
+- `src/output/_common.py`（W1：欄位重命名 + 排序）
+- `src/output/excel_exporter.py`（W1：同步更新欄位名稱）
+
+**測試結果：**
+- `python3 -m py_compile` 對所有 6 個修改檔案均通過
+
+---
+
 ## [2026-04-23] 兩項緊急 Bug 修復：Review 批次導航索引錯誤 + Duplicate Recipe 覆蓋原始 Recipe
 
 **變更類型：** Bug 修復

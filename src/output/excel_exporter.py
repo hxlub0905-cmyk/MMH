@@ -147,8 +147,8 @@ def export_excel_from_records(
     # ── columns for "All Measurements" sheet ──────────────────────────────────
     meas_cols = [
         "dataset", "image_file", "nm_per_pixel", "recipe_name", "axis",
-        "cmg_id", "col_id",
-        "cd_px", "cd_nm", "flag",
+        "cut_id", "column_id",
+        "cd_nm", "cd_px", "flag",
         "cd_line_x_px", "cd_line_y_px",
         "status",
     ]
@@ -304,14 +304,14 @@ def _build_image_summary(df) -> list[dict]:
         row["3sigma_nm"]     = round(std * 3, 3)
         # MIN CD — value + location
         row["min_cd_nm"]     = round(mn, 3)
-        row["min_cd_cmg_id"] = int(min_row.get("cmg_id", -1)) if "cmg_id" in min_row.index else None
-        row["min_cd_col_id"] = int(min_row.get("col_id", -1)) if "col_id" in min_row.index else None
+        row["min_cd_cut_id"]    = int(min_row.get("cut_id",    -1)) if "cut_id"    in min_row.index else None
+        row["min_cd_column_id"] = int(min_row.get("column_id", -1)) if "column_id" in min_row.index else None
         row["min_cd_x_px"]   = float(min_row.get("cd_line_x_px", float("nan"))) if "cd_line_x_px" in min_row.index else None
         row["min_cd_y_px"]   = float(min_row.get("cd_line_y_px", float("nan"))) if "cd_line_y_px" in min_row.index else None
         # MAX CD — value + location
         row["max_cd_nm"]     = round(mx, 3)
-        row["max_cd_cmg_id"] = int(max_row.get("cmg_id", -1)) if "cmg_id" in max_row.index else None
-        row["max_cd_col_id"] = int(max_row.get("col_id", -1)) if "col_id" in max_row.index else None
+        row["max_cd_cut_id"]    = int(max_row.get("cut_id",    -1)) if "cut_id"    in max_row.index else None
+        row["max_cd_column_id"] = int(max_row.get("column_id", -1)) if "column_id" in max_row.index else None
         row["max_cd_x_px"]   = float(max_row.get("cd_line_x_px", float("nan"))) if "cd_line_x_px" in max_row.index else None
         row["max_cd_y_px"]   = float(max_row.get("cd_line_y_px", float("nan"))) if "cd_line_y_px" in max_row.index else None
 

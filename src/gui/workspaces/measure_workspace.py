@@ -702,9 +702,9 @@ class MeasureWorkspace(QWidget):
                 _lb = _m.lower_blob
                 _bbox = (
                     int(min(_ub.x0, _lb.x0)),
-                    int(_ub.y0),
+                    int(_ub.y1),              # gap 上緣
                     int(max(_ub.x1, _lb.x1)),
-                    int(_lb.y1),
+                    int(_lb.y0),              # gap 下緣
                 )
                 self._current_records.append(_MRec(
                     measurement_id=str(_uuid.uuid4()),

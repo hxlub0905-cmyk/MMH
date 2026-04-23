@@ -159,8 +159,8 @@ def analyze(
         for k in range(len(sorted_blobs) - 1):
             upper = sorted_blobs[k]
             lower = sorted_blobs[k + 1]
-            upper_edge = upper.cy + (upper.height / 2.0)
-            lower_edge = lower.cy - (lower.height / 2.0)
+            upper_edge = float(upper.y1)   # bbox 底緣，與 annotator 一致
+            lower_edge = float(lower.y0)   # bbox 頂緣，與 annotator 一致
             cd_px = lower_edge - upper_edge
             if cd_px <= 0:
                 continue   # blobs overlap — skip
