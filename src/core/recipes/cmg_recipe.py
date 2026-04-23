@@ -261,6 +261,7 @@ class CMGRecipe(BaseRecipe):
                 _agg_method   = str(_sp.get("aggregate_method", "median")).lower()
                 _lpf_enabled  = bool(_sp.get("profile_lpf_enabled", False))
                 _lpf_sigma    = float(_sp.get("profile_lpf_sigma", 1.0))
+                _x_inset      = int (_sp.get("x_inset_px", 0))
                 # Stable X anchors from pitch-phase detection (may be empty)
                 _col_centers  = context.get("mg_col_centers", [])
 
@@ -277,6 +278,7 @@ class CMGRecipe(BaseRecipe):
                     aggregate_method=_agg_method,
                     profile_lpf_enabled=_lpf_enabled,
                     profile_lpf_sigma=_lpf_sigma,
+                    x_inset=_x_inset,
                 )
 
         # For X-CD: blobs were analyzed in rotated space; back-rotate blob
@@ -445,6 +447,7 @@ class CMGRecipe(BaseRecipe):
                 "subpixel_min_grad_frac": float(card.get("subpixel_min_grad_frac", 0.10)),
                 "subpixel_peak_ratio":    float(card.get("subpixel_peak_ratio",    0.60)),
                 "border_margin_px":       int  (card.get("border_margin_px",       0)),
+                "x_inset_px":             int  (card.get("x_inset_px",             0)),
             }),
         )
 
@@ -572,6 +575,7 @@ def apply_yedge_subpixel_to_cuts(
     aggregate_method: str = "median",  # "median"/"mean"/"min"/"max"
     profile_lpf_enabled: bool = False,  # apply Gaussian LPF to 1D profile before MA
     profile_lpf_sigma: float = 1.0,     # Gaussian sigma in pixels
+    x_inset: int = 0,              # px to exclude from each side of the blob X overlap
 ) -> None:
     """Apply Y-edge refinement in place to a list of CMGCut objects.
 
@@ -599,6 +603,11 @@ def apply_yedge_subpixel_to_cuts(
 
             x_ov_start = int(max(ub.x0, lb.x0))
             x_ov_end   = int(min(ub.x1, lb.x1))
+            # Shrink the sampling zone inward by x_inset on each side so that
+            # edge columns at the boundary of one blob are not sampled.
+            if x_inset > 0:
+                x_ov_start = min(x_ov_start + x_inset, x_ov_end)
+                x_ov_end   = max(x_ov_end   - x_inset, x_ov_start)
             use_paired = x_ov_start < x_ov_end
 
             winning_sample_x: int | None = None   # set below for min/max paired path
