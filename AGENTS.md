@@ -1,7 +1,7 @@
 # AGENTS.md — SEM MM 開發指南
 
 本文件供 AI Agent 或開發者快速掌握 SEM MM 專案的架構、慣例與開發方式。
-最後更新：2026-04-23（Phase C 部分完成：Overlay 即時輸出 + TC 向量化）
+最後更新：2026-04-23（Phase C 部分完成：Overlay 即時輸出 + TC 向量化 + Gradient 向量化）
 
 ---
 
@@ -26,7 +26,7 @@
 | 測試數量 | 17 項通過（環境無 numpy/cv2，其餘 60 項需科學計算套件） |
 | Phase B 完成 | Bug 修復 5 項 + 批次持久化 + Recipe 驗證模式 + 歷史趨勢 Run Chart |
 | Bug Fix Series | CD 計算一致性（A1/A2/F1/G1）、UX 修復（B1/G2/I2/Q1）、效能（L2）、導航（Review/Recipe） |
-| Phase C（部分） | Batch 即時 Overlay 輸出 + TC 路徑向量化（4–5× 加速）| 
+| Phase C（部分） | Batch 即時 Overlay 輸出 + TC 路徑向量化（4–5×）+ Gradient 路徑向量化（2–3×）；合計 13000 張目標 3–6 分鐘 |
 | 未完成 Phase | C（Worker 上限保護、X-CD 標注修正）、D（平台化） |
 
 ---
@@ -546,8 +546,9 @@ pytest tests/ -v
 
 | 功能 | 說明 | 主要檔案 |
 |------|------|---------|
-| Batch 即時 Overlay 輸出 | subprocess 內每張圖寫 `<stem>_annotated.png`；UI 新增 checkbox + 資料夾選擇 | `measurement_engine.py`, `batch_workspace.py` |
-| TC 路徑向量化 | `_refine_yedge_threshold_crossing_batch()` 一次處理所有 sample_x；預期 4–5× 加速（13000 張 20–30 min → 4–8 min） | `cmg_recipe.py` |
+| Batch 即時 Overlay 輸出 | subprocess 內每張圖寫 `<stem>_annotated.png`；UI 新增 checkbox + 資料夾選擇；progress callback 升級為第 5 個參數傳遞 `result_dict` | `measurement_engine.py`, `batch_workspace.py` |
+| TC 路徑向量化 | `_refine_yedge_threshold_crossing_batch()` 一次提取 2D strip，向量化 MA + sign-change；預期 4–5× 加速（13000 張 20–30 min → 4–8 min） | `cmg_recipe.py` |
+| Gradient 路徑向量化 | `_refine_yedge_subpixel_batch()` 共用 `_extract_strip()` + `_smooth_strip_2d()` 提取 2D strip，`np.abs(np.diff())` 向量化 abs-gradient，逐欄 peak 偵測 + 二次型內插；預期 2–3× 加速；合計目標 3–6 min | `cmg_recipe.py` |
 
 ### Phase B 開發重點（下一步）
 
