@@ -328,15 +328,15 @@ def _style_header_row(ws, fill_hex: str = "F7E0C8") -> None:
     ws.row_dimensions[1].height = 30
 
 
-def _autofit_columns(ws, max_width: int = 30) -> None:
+def _autofit_columns(ws, max_width: int = 30, sample_rows: int = 200) -> None:
     from openpyxl.utils import get_column_letter
     for col_idx, col_cells in enumerate(ws.columns, start=1):
-        col_letter = get_column_letter(col_idx)
+        # Sample header + first N data rows to avoid O(n) scan over 20k+ rows
+        cells_to_check = list(col_cells)[: sample_rows + 1]
         max_len = max(
-            (len(str(cell.value)) if cell.value is not None else 0)
-            for cell in col_cells
+            (len(str(c.value)) if c.value is not None else 0) for c in cells_to_check
         )
-        ws.column_dimensions[col_letter].width = min(max(max_len + 2, 8), max_width)
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 2, 8), max_width)
 
 
 def _col_index(df, col: str) -> int | None:
