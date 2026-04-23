@@ -25,7 +25,8 @@ _COL = {
 }
 # Detail CD individual sample lines use a distinct cyan-teal color so they
 # are visually differentiated from the aggregate measurement line.
-_COL_DETAIL_NORMAL = (200, 170, 80)   # steel-blue (BGR) for non-flagged detail lines
+_COL_DETAIL_NORMAL  = (200, 170, 80)    # steel-blue (BGR) for non-winning detail lines
+_COL_DETAIL_WINNER  = (220, 50, 200)    # vivid purple (BGR) for the winning sample (detail mode)
 _TICK_HALF    = 5
 _LINE_W       = 1
 _BOX_W        = 1
@@ -234,8 +235,13 @@ def _draw_detail_measurements(
     nm_per_pixel  = m.cd_nm / m.cd_px if (m.cd_px and m.cd_px > 0) else 1.0
     winning_x     = meta.get("winning_sample_x")   # set only for min/max aggregation
 
-    # Use a distinct color for detail lines when the measurement is not MIN/MAX,
-    # so individual sample lines are visually differentiated from the aggregate.
+    # X range that is genuinely covered by BOTH blobs (half-open: x1 is exclusive).
+    # Samples outside this range are skipped — they would appear beyond one blob's edge.
+    x_common_lo = max(ub.x0, lb.x0)
+    x_common_hi = min(ub.x1, lb.x1)   # exclusive
+
+    # Use a distinct color for detail lines; winning sample gets its own purple so
+    # it is not confused with the aggregate measurement line.
     detail_col = _COL.get(m.flag) if m.flag else _COL_DETAIL_NORMAL
 
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -258,6 +264,9 @@ def _draw_detail_measurements(
         label_stride = 1
 
     for i, x in enumerate(sample_xs):
+        # Skip samples that fall outside the X range shared by both blobs.
+        if not (x_common_lo <= x < x_common_hi):
+            continue
         if i >= len(upper_ys) or i >= len(lower_ys):
             break
         up_y_i = upper_ys[i]
@@ -269,14 +278,13 @@ def _draw_detail_measurements(
         if y_bot <= y_top:
             continue
 
-        # Winning sample (min/max aggregation) drawn in the measurement color;
-        # all other samples use the muted detail color.
+        # Winning sample (min/max aggregation) drawn in purple so it is distinct
+        # from both the aggregate measurement line and the other detail lines.
         is_winner = (winning_x is not None and x == winning_x)
-        line_col_i = col if is_winner else detail_col
-        line_w_i   = _LINE_W + 1 if is_winner else _LINE_W
+        line_col_i = _COL_DETAIL_WINNER if is_winner else detail_col
 
         if opts.show_lines:
-            cv2.line(canvas, (x, y_top), (x, y_bot), line_col_i, line_w_i, cv2.LINE_AA)
+            cv2.line(canvas, (x, y_top), (x, y_bot), line_col_i, _LINE_W, cv2.LINE_AA)
 
         # Only label every label_stride-th sample to avoid horizontal crowding,
         # but always label the winning sample so the aggregate value is visible.
@@ -307,6 +315,7 @@ def _draw_legend(canvas: np.ndarray, fs: float, show_detail: bool = False) -> No
         ("NORMAL", _COL[""]),
     ]
     if show_detail:
+        items.append(("DETAIL WINNER", _COL_DETAIL_WINNER))
         items.append(("DETAIL LINE", _COL_DETAIL_NORMAL))
     pad = 5
     lh = 12                            # reduced from 16 → tighter line spacing
