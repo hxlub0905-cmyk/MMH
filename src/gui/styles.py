@@ -589,4 +589,49 @@ QGraphicsView {
 /* ════════════════════════ ScrollArea ════════════════════════════════════ */
 QScrollArea { border: none; background: transparent; }
 QScrollArea > QWidget > QWidget { background: transparent; }
+
+/* ════════════════════════ Right panel — stronger input borders ══════════
+   The panel BG (#fff7ee) and default input BG (#fffdf9) are very close;
+   bump the border to #c8b09a so SpinBoxes / ComboBoxes / buttons are
+   clearly distinct from the background.                                  */
+QFrame#rightPanel QSpinBox,
+QFrame#rightPanel QDoubleSpinBox {
+    border: 1px solid #c8b09a;
+    background: #fffdf9;
+}
+QFrame#rightPanel QComboBox {
+    border: 1px solid #c8b09a;
+    background: #fffdf9;
+}
+QFrame#rightPanel QSpinBox:focus,
+QFrame#rightPanel QDoubleSpinBox:focus,
+QFrame#rightPanel QComboBox:focus {
+    border-color: #f29f4b;
+    background: #fffef9;
+}
+QFrame#rightPanel QSpinBox:disabled,
+QFrame#rightPanel QDoubleSpinBox:disabled,
+QFrame#rightPanel QComboBox:disabled {
+    border-color: #dfd0be;
+    background: #f5f0ea;
+}
+/* Secondary action buttons (Save Cards, Compare to Reference, etc.) */
+QFrame#rightPanel QPushButton:not(#runSingle):not(#sectionHeader1):not(#sectionHeader2):not(#sectionHeader3) {
+    border: 1px solid #c8b09a;
+    background: #fff8f2;
+}
+QFrame#rightPanel QPushButton:not(#runSingle):not(#sectionHeader1):not(#sectionHeader2):not(#sectionHeader3):hover {
+    border-color: #b09080;
+    background: #fff0e6;
+    color: #3f3428;
+}
+QFrame#rightPanel QPushButton:not(#runSingle):not(#sectionHeader1):not(#sectionHeader2):not(#sectionHeader3):pressed {
+    background: #ffe8d8;
+    border-color: #a08070;
+}
+QFrame#rightPanel QPushButton:not(#runSingle):not(#sectionHeader1):not(#sectionHeader2):not(#sectionHeader3):disabled {
+    border-color: #dfd0be;
+    background: #faf6f0;
+    color: #c8b89e;
+}
 """

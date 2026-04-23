@@ -301,19 +301,36 @@ class ReportWorkspace(QWidget):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         errors: list[str] = []
 
-        if dlg.export_csv:
-            try:
-                from ...output.csv_exporter import export_csv_from_records
-                export_csv_from_records(self._records, out / f"measurements_{ts}.csv",
-                                        self._image_records)
-            except Exception as exc:
-                errors.append(f"CSV: {exc}")
-
         if dlg.export_excel:
             try:
-                from ...output.excel_exporter import export_excel_from_records
-                export_excel_from_records(self._records, out / f"measurements_{ts}.xlsx",
-                                          self._image_records)
+                from ...output.excel_exporter import export_excel_rich
+                if self._multi_batch_run:
+                    datasets = []
+                    img_map = {ir.image_id: ir for ir in self._image_records}
+                    for ds in self._multi_batch_run.datasets:
+                        ds_records: list = []
+                        ds_images: list = []
+                        seen: set[str] = set()
+                        for r in ds.output_manifest.get("results", []):
+                            img_id = r.get("image_id", "")
+                            img_path = r.get("image_path", "")
+                            if img_id not in seen:
+                                from ...core.models import ImageRecord
+                                ir = ImageRecord.from_path(img_path)
+                                ir.image_id = img_id
+                                ds_images.append(ir)
+                                seen.add(img_id)
+                            for m_dict in r.get("measurements", []):
+                                try:
+                                    from ...core.models import MeasurementRecord
+                                    ds_records.append(MeasurementRecord.from_dict(m_dict))
+                                except Exception:
+                                    pass
+                        datasets.append((ds_records, ds_images, ds.dataset_label or f"Dataset_{len(datasets)+1}"))
+                else:
+                    label = (self._batch_run.dataset_label if self._batch_run else "") or ""
+                    datasets = [(self._records, self._image_records, label)]
+                export_excel_rich(datasets, out / f"measurements_{ts}.xlsx")
             except Exception as exc:
                 errors.append(f"Excel: {exc}")
 
@@ -543,8 +560,9 @@ class _ExportDialog(QDialog):
         pandas_ok = _check_pandas()
         formats_box = QGroupBox("Formats to export")
         fv = QVBoxLayout(formats_box)
-        self._chk_csv     = QCheckBox("CSV  (measurements table)")
-        self._chk_excel   = QCheckBox("Excel  (measurements + statistics sheet)")
+
+        # Excel: rich multi-sheet export (replaces CSV + old Excel)
+        self._chk_excel   = QCheckBox("Excel  (per-dataset sheets · Statistics · Min CD per Image)")
         self._chk_json    = QCheckBox("JSON")
         self._chk_html    = QCheckBox("HTML Report")
         self._chk_img     = QCheckBox("Overlay images  (annotated PNG per image)")
@@ -553,12 +571,9 @@ class _ExportDialog(QDialog):
 
         if not pandas_ok:
             _no_pd = "  ⚠ 需安裝 pandas：pip install \"pandas>=2.0\" openpyxl"
-            self._chk_csv.setText(self._chk_csv.text() + _no_pd)
             self._chk_excel.setText(self._chk_excel.text() + _no_pd)
-            self._chk_csv.setEnabled(False)
             self._chk_excel.setEnabled(False)
         else:
-            self._chk_csv.setChecked(True)
             self._chk_excel.setChecked(True)
         self._chk_json.setChecked(True)
         self._chk_html.setChecked(True)
@@ -566,7 +581,7 @@ class _ExportDialog(QDialog):
         if has_multi_batch:
             self._chk_boxplot.setChecked(True)
 
-        for chk in (self._chk_csv, self._chk_excel, self._chk_json,
+        for chk in (self._chk_excel, self._chk_json,
                     self._chk_html, self._chk_img, self._chk_boxplot):
             fv.addWidget(chk)
         layout.addWidget(formats_box)
@@ -589,10 +604,6 @@ class _ExportDialog(QDialog):
     @property
     def folder(self) -> str:
         return self._folder
-
-    @property
-    def export_csv(self) -> bool:
-        return self._chk_csv.isChecked() and self._chk_csv.isEnabled()
 
     @property
     def export_excel(self) -> bool:
