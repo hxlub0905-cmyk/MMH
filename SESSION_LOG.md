@@ -5,6 +5,53 @@
 
 ---
 
+## [2026-04-23] Measure 分頁右側欄 UI 配色 + Export 整合 + Min CD per Image 輸出
+
+**變更類型：** UI 改善 / 功能整合
+
+**變更摘要：**
+
+### 1. Measure 分頁右側設定欄輸入框邊框增強
+- **問題**：右側面板（`#rightPanel`，背景 `#fff7ee`）的 SpinBox、DoubleSpinBox、ComboBox 邊框顏色 `#e6dccf` 與背景對比極低，邊界模糊
+- **修法**：在 `src/gui/styles.py` 末端新增 `QFrame#rightPanel` 範圍的 QSS 規則，將子元件邊框升級為 `#c8b09a`（暖棕色）
+  - 包含 SpinBox、DoubleSpinBox、ComboBox、次要 QPushButton（不含 `#runSingle`、`#sectionHeaderN`）
+  - Focus 狀態仍沿用主題橙色 `#f29f4b`
+  - Disabled 狀態保持灰色 `#dfd0be`，不影響視覺層級
+
+### 2. Export 整合：CSV 合併至 Excel，輸出格式重設計
+- **動機**：舊版 CSV 與 Excel 幾乎輸出相同資料，且缺少 CD 量測位置與多 dataset 分頁支援
+- **`src/output/_common.py`**
+  - `records_to_dataframe()` 欄位重命名：`y_cd_px` → `cd_px`、`y_cd_nm` → `cd_nm`
+  - 移除 `cmg_id`、`col_id`、`upper_bbox`、`lower_bbox`、`error`、`recipe_id`（內部 id，對下游使用者無意義）
+  - 新增 `cd_pos_x_px`、`cd_pos_y_px`（來自 `MeasurementRecord.center_x/y`，以左上角為原點的像素座標）
+  - 新增 `records_to_min_cd_dataframe()`：每張圖取 cd_nm 最小的量測點，回傳一列，依 `min_cd_nm` 升冪排列
+- **`src/output/excel_exporter.py`**
+  - 新增 `export_excel_rich(datasets, out_path)` — 接受 `(records, image_records, label)` tuple list
+  - **單 dataset**：`Measurements` + `Statistics` + `Min CD per Image` 三個 sheet
+  - **多 dataset**：每個 dataset 獨立一個 sheet + `Summary`（統計比較）+ `Min CD per Image`（全部合併，依 min_cd_nm 排序）
+  - 自動欄寬、header 粗體、MIN 列紅色/MAX 列藍色填色沿用
+  - 舊版 `export_excel_from_records()` 保留以維持測試相容性
+- **`src/gui/workspaces/report_workspace.py`**
+  - `_ExportDialog`：移除 CSV checkbox，Excel checkbox 說明文字更新為包含 sheet 結構說明
+  - 匯出邏輯：多 dataset 時從各 `BatchRunRecord.output_manifest` 重建 per-dataset records，統一呼叫 `export_excel_rich()`
+
+### 3. Output：Min CD per Image（Excel 輸出）
+- 無 Report tab UI 變動；資料輸出至 Excel 的 `Min CD per Image` sheet
+- 欄位：`[dataset,] image_file, min_cd_nm, cd_pos_x_px, cd_pos_y_px, structure_name, recipe_name`
+- 可快速識別哪張圖、哪個位置的 CD 值最小，便於交接給後續工程師
+
+**影響範圍：**
+- `src/gui/styles.py`（新增右側面板 QSS 規則）
+- `src/output/_common.py`（欄位重構 + 新增 helper）
+- `src/output/excel_exporter.py`（新增 `export_excel_rich()`）
+- `src/gui/workspaces/report_workspace.py`（Export 對話框 + 匯出邏輯）
+
+**測試結果：**
+- `python -m py_compile` 對所有修改檔案通過
+- `pytest tests/test_models.py tests/test_batch_run_store.py tests/test_history.py` — 17/17 passed
+
+---
+
 ## [2026-04-22] Profile Gaussian LPF 濾波功能 + Detail CD Bug 修復
 
 **變更類型：** 功能新增 / Bug 修復
