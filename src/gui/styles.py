@@ -595,35 +595,62 @@ QScrollArea > QWidget > QWidget { background: transparent; }
 /* backgrounds, making 1px light borders nearly invisible. Darken them.     */
 QFrame#rightPanel QSpinBox,
 QFrame#rightPanel QDoubleSpinBox {
-    border: 1px solid #b8a898;
-    background: #fffdf9;
+    border: 1.5px solid #8a7060;
+    background: #ffffff;
     border-radius: 5px;
+    color: #3f3428;
+}
+QFrame#rightPanel QSpinBox:hover,
+QFrame#rightPanel QDoubleSpinBox:hover {
+    border-color: #6a5040;
 }
 QFrame#rightPanel QSpinBox:focus,
 QFrame#rightPanel QDoubleSpinBox:focus {
     border-color: #f29f4b;
 }
 QFrame#rightPanel QComboBox {
-    border: 1px solid #b8a898;
-    background: #fffdf9;
+    border: 1.5px solid #8a7060;
+    background: #ffffff;
+    color: #3f3428;
+}
+QFrame#rightPanel QComboBox:hover {
+    border-color: #6a5040;
 }
 QFrame#rightPanel QComboBox:focus {
     border-color: #f29f4b;
 }
+QFrame#rightPanel QComboBox::down-arrow {
+    border-top-color: #6b5a4a;
+}
 QFrame#rightPanel QLineEdit {
-    border: 1px solid #b8a898;
-    background: #fffdf9;
+    border: 1.5px solid #8a7060;
+    background: #ffffff;
+    color: #3f3428;
+}
+QFrame#rightPanel QLineEdit:hover {
+    border-color: #6a5040;
 }
 QFrame#rightPanel QLineEdit:focus {
     border-color: #f29f4b;
 }
 QFrame#rightPanel QCheckBox::indicator {
-    border: 1px solid #b8a898;
+    border: 1.5px solid #8a7060;
     border-radius: 3px;
-    background: #fffdf9;
+    background: #ffffff;
 }
 QFrame#rightPanel QCheckBox::indicator:checked {
     background: #e6953d;
+    border-color: #f29f4b;
+}
+QFrame#rightPanel QPushButton {
+    background: #f0e8e0;
+    border: 1.5px solid #8a7060;
+    color: #4a3828;
+}
+QFrame#rightPanel QPushButton:hover {
+    border-color: #6a5040;
+}
+QFrame#rightPanel QPushButton:focus {
     border-color: #f29f4b;
 }
 
