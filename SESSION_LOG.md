@@ -2,6 +2,27 @@
 
 ---
 
+## [2026-04-23] UI 全面重設計（§1-§8 企劃書實作）
+
+**變更類型：** UI 重設計
+
+**變更摘要：**
+- styles.py 全面重寫，套用新 Design Token（BG_PAGE/PANEL/SURFACE、BORDER_DEFAULT/INPUT/HOVER/FOCUS、TEXT_PRIMARY/SECONDARY/MUTED/HINT、ACCENT 橙色系、SUCCESS/DANGER、MIN/MAX 標注色）
+- 新增 QLabel#statChipMin / #statChipMax / primaryBtn / successBtn / progressDone QSS 規則
+- browse_workspace：左側欄 setFixedWidth(180)、Open Folder 橙色主按鈕、Calibration 改為橫排 bar、ImageViewer 深色背景、圖片資訊標籤
+- recipe_workspace：左側欄 setFixedWidth(200)、Identity 改為 QFrame 卡片、QTabWidget 改為 Pill 選單 + QStackedWidget、Save Recipe 橙色按鈕
+- measure_workspace：overlay checkbox 前加色點（● 綠/灰）、右側欄 Run Single 改用 successBtn、viewer info label
+- batch_workspace：header 標籤色，folder_label 空/填滿兩種樣式、Run Batch 改用 successBtn、overlay 選項包在 QFrame、新增 _lbl_status、完成後 progressDone 變綠
+- review_workspace：Batch 圖片列表 ●/✕ 前綴色彩、nav 按鈕移到右側（hbox.addStretch() 之後）
+- report_workspace：新增 4 個 Summary Card（Total/OK/Failed/Measurements）、CD Statistics 改為 Highlight Cards（2×2）+ Detail Rows（2×N）、Export 橙色主按鈕
+- results_panel.py：_ROW_COLOURS MIN→#fff8f0、MAX→#f0f7fc；statChipMin/statChipMax objectName
+
+**影響範圍：** styles.py + workspaces/*.py + results_panel.py
+
+**測試結果：** pytest 17/17 通過，py_compile 全部通過
+
+---
+
 ## [2026-04-23] 右側設定欄控件可見度改善
 
 **變更類型：** UI 改善

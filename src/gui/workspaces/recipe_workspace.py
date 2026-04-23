@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QGroupBox, QFormLayout,
     QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox,
     QCheckBox, QPushButton, QLabel, QMessageBox, QSizePolicy,
-    QTabWidget, QScrollArea,
+    QScrollArea, QStackedWidget, QFrame,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -40,28 +40,37 @@ class RecipeWorkspace(QWidget):
         splitter.setChildrenCollapsible(False)
 
         # Left: recipe list + buttons
-        left = QWidget()
+        left = QFrame()
+        left.setObjectName("leftPanel")
+        left.setFixedWidth(200)
         lv = QVBoxLayout(left)
-        lv.setContentsMargins(4, 4, 4, 4)
-        lv.addWidget(QLabel("Saved Recipes"))
+        lv.setContentsMargins(6, 8, 6, 6)
+        lv.setSpacing(6)
+
+        saved_lbl = QLabel("SAVED RECIPES")
+        saved_lbl.setStyleSheet(
+            "font-size:10px; color:#9a8a7a; letter-spacing:0.06em; "
+            "padding:0 0 4px 0; background:transparent;"
+        )
+        lv.addWidget(saved_lbl)
 
         self._list = QListWidget()
         self._list.currentItemChanged.connect(self._on_recipe_selected)
         lv.addWidget(self._list, stretch=1)
 
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(3)
         new_btn = QPushButton("New")
-        tmpl_btn = QPushButton("CMG Template")
-        dup_btn = QPushButton("Duplicate")
-        del_btn = QPushButton("Delete")
+        tmpl_btn = QPushButton("Template")
+        dup_btn = QPushButton("Dup")
+        del_btn = QPushButton("Del")
+        del_btn.setStyleSheet("color:#cc7b6c;")
         new_btn.clicked.connect(self._new_recipe)
         tmpl_btn.clicked.connect(self._new_from_cmg_template)
         dup_btn.clicked.connect(self._duplicate_recipe)
         del_btn.clicked.connect(self._delete_recipe)
-        btn_row.addWidget(new_btn)
-        btn_row.addWidget(tmpl_btn)
-        btn_row.addWidget(dup_btn)
-        btn_row.addWidget(del_btn)
+        for b in (new_btn, tmpl_btn, dup_btn, del_btn):
+            btn_row.addWidget(b)
         lv.addLayout(btn_row)
 
         splitter.addWidget(left)
@@ -73,6 +82,9 @@ class RecipeWorkspace(QWidget):
         rv.addWidget(self._build_editor())
 
         save_btn = QPushButton("Save Recipe")
+        save_btn.setObjectName("primaryBtn")
+        save_btn.setFixedHeight(40)
+        save_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         save_btn.clicked.connect(self._save_recipe)
         rv.addWidget(save_btn)
 
@@ -88,10 +100,13 @@ class RecipeWorkspace(QWidget):
         ov.setSpacing(6)
 
         # ── Identity (always visible) ─────────────────────────────────────────
-        id_box = QGroupBox("Recipe Identity")
-        id_form = QFormLayout(id_box)
-        id_form.setSpacing(8)
-        id_form.setContentsMargins(10, 14, 10, 10)
+        id_frame = QFrame()
+        id_frame.setStyleSheet(
+            "background:#fff8f2; border:0.5px solid #e8d8c8; border-radius:8px;"
+        )
+        id_form = QFormLayout(id_frame)
+        id_form.setSpacing(10)
+        id_form.setContentsMargins(12, 14, 12, 12)
 
         self._name_edit   = QLineEdit()
         self._layer_edit  = QLineEdit()
@@ -114,11 +129,34 @@ class RecipeWorkspace(QWidget):
         id_form.addRow("Name:", self._name_edit)
         id_form.addRow("Target layer:", self._layer_edit)
         id_form.addRow("Structure:", struct_row)
-        ov.addWidget(id_box)
+        ov.addWidget(id_frame)
 
-        # ── Tabbed parameter sections ─────────────────────────────────────────
-        tabs = QTabWidget()
-        tabs.setDocumentMode(True)
+        # ── Pill selector + stacked parameter sections ────────────────────────
+        pill_container = QFrame()
+        pill_container.setStyleSheet("background:#f0ece6; border-radius:8px;")
+        pill_hl = QHBoxLayout(pill_container)
+        pill_hl.setContentsMargins(3, 3, 3, 3)
+        pill_hl.setSpacing(2)
+        pill_labels = ["Preprocessing", "Detection", "Strip Mask", "Analysis"]
+        self._pills: list[QPushButton] = []
+        for i, pl in enumerate(pill_labels):
+            pbtn = QPushButton(pl)
+            pbtn.setCheckable(False)
+            pbtn.setFixedHeight(28)
+            pbtn.clicked.connect(lambda _, idx=i: self._switch_pill(idx))
+            self._pills.append(pbtn)
+            pill_hl.addWidget(pbtn)
+        ov.addWidget(pill_container)
+
+        self._param_stack = QStackedWidget()
+
+        # legacy tabs shim — used below to addTab → addWidget to stack
+        class _StackShim:
+            def __init__(self, stack: QStackedWidget):
+                self._stack = stack
+            def addTab(self, w: QWidget, _label: str) -> None:
+                self._stack.addWidget(w)
+        tabs = _StackShim(self._param_stack)
 
         # ── Tab 1: Preprocessing ──────────────────────────────────────────────
         self._gl_min = QSpinBox(); self._gl_min.setRange(0, 255); self._gl_min.setValue(100)
@@ -297,8 +335,26 @@ class RecipeWorkspace(QWidget):
         self._edge_method.currentIndexChanged.connect(self._on_edge_method_changed)
         self._on_edge_method_changed()  # set initial state
 
-        ov.addWidget(tabs, stretch=1)
+        ov.addWidget(self._param_stack, stretch=1)
+        self._switch_pill(0)  # activate first pill
         return outer
+
+    # ── Pill navigation ───────────────────────────────────────────────────────
+
+    def _switch_pill(self, idx: int) -> None:
+        self._param_stack.setCurrentIndex(idx)
+        for i, btn in enumerate(self._pills):
+            if i == idx:
+                btn.setStyleSheet(
+                    "background:#ffffff; color:#c97028; font-weight:500; "
+                    "border:0.5px solid #e0c8a8; border-radius:6px; "
+                    "padding:4px 12px; font-size:11px;"
+                )
+            else:
+                btn.setStyleSheet(
+                    "background:transparent; border:none; border-radius:6px; "
+                    "padding:4px 12px; font-size:11px; color:#9a8a7a;"
+                )
 
     # ── Edge method visibility ────────────────────────────────────────────────
 

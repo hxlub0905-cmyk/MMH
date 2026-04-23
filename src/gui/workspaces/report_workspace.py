@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QFormLayout,
     QLabel, QPushButton, QFileDialog, QMessageBox, QSizePolicy,
     QScrollArea, QProgressDialog, QApplication, QComboBox,
-    QDialog, QDialogButtonBox, QCheckBox,
+    QDialog, QDialogButtonBox, QCheckBox, QFrame, QGridLayout,
 )
 from PyQt6.QtCore import pyqtSignal, pyqtSlot, Qt, QThread
 from PyQt6.QtGui import QPixmap
@@ -44,6 +44,39 @@ class ReportWorkspace(QWidget):
         iv = QVBoxLayout(inner)
         iv.setSpacing(8)
 
+        # ── Summary Cards (4 metrics) ─────────────────────────────────────────
+        cards_widget = QWidget()
+        cards_hl = QHBoxLayout(cards_widget)
+        cards_hl.setSpacing(8)
+        cards_hl.setContentsMargins(0, 0, 0, 0)
+
+        card_defs = [
+            ("—", "Total images", "#3f3428"),
+            ("—", "OK",           "#3e7f5d"),
+            ("—", "Failed",       "#cc7b6c"),
+            ("—", "Measurements", "#3f3428"),
+        ]
+        self._card_vals: list[QLabel] = []
+        for init_val, label, color in card_defs:
+            card = QFrame()
+            card.setStyleSheet("background:#f5f1eb; border-radius:8px; border:none;")
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(12, 10, 12, 10)
+            cl.setSpacing(2)
+            val_lbl = QLabel(init_val)
+            val_lbl.setStyleSheet(
+                f"font-size:22px; font-weight:500; color:{color}; background:transparent;"
+            )
+            desc_lbl = QLabel(label)
+            desc_lbl.setStyleSheet(
+                "font-size:11px; color:#9a8a7a; background:transparent; margin-top:2px;"
+            )
+            cl.addWidget(val_lbl)
+            cl.addWidget(desc_lbl)
+            cards_hl.addWidget(card)
+            self._card_vals.append(val_lbl)
+        iv.addWidget(cards_widget)
+
         # Outlier filter row
         filter_box = QGroupBox("Display Filter")
         fh = QHBoxLayout(filter_box)
@@ -63,8 +96,11 @@ class ReportWorkspace(QWidget):
         # Statistics — QVBoxLayout holds one (single-batch) or many (multi-batch) sections
         self._stats_box = QGroupBox("CD Statistics")
         self._stats_vbox = QVBoxLayout(self._stats_box)
-        self._stats_vbox.setSpacing(6)
+        self._stats_vbox.setSpacing(8)
         iv.addWidget(self._stats_box)
+        # Highlight card labels (created on first refresh, stored for update)
+        self._hl_vals: list[QLabel] = []
+        self._detail_vals: dict[str, QLabel] = {}
 
         # Box plot — visible only for multi-batch
         self._boxplot_box = QGroupBox("CD Distribution by Dataset")
@@ -79,15 +115,19 @@ class ReportWorkspace(QWidget):
         # Export button
         export_box = QGroupBox("Export")
         ev = QVBoxLayout(export_box)
-        btn_row = QHBoxLayout()
-        btn_export = QPushButton("Export…")
-        btn_export.clicked.connect(self._export_dialog_clicked)
+        export_row = QHBoxLayout()
+        self._outlier_combo_export = None  # use the one from filter_box
+        export_row.addStretch()
         btn_load_hist = QPushButton("Load from History…")
         btn_load_hist.clicked.connect(self._load_from_history_clicked)
-        btn_row.addWidget(btn_export)
-        btn_row.addWidget(btn_load_hist)
-        btn_row.addStretch()
-        ev.addLayout(btn_row)
+        export_row.addWidget(btn_load_hist)
+        btn_export = QPushButton("Export…")
+        btn_export.setObjectName("primaryBtn")
+        btn_export.setFixedWidth(120)
+        btn_export.setFixedHeight(36)
+        btn_export.clicked.connect(self._export_dialog_clicked)
+        export_row.addWidget(btn_export)
+        ev.addLayout(export_row)
         iv.addWidget(export_box)
         iv.addStretch()
 
@@ -122,6 +162,9 @@ class ReportWorkspace(QWidget):
         self._records = records
         self._image_records = image_records
         self._refresh_stats()
+        ok_vals = [r.calibrated_nm for r in records if r.status not in ("rejected",)]
+        if len(self._card_vals) >= 4:
+            self._card_vals[3].setText(str(len(ok_vals)))
         br = self._batch_run
         if br:
             self.status_message.emit(
@@ -229,6 +272,11 @@ class ReportWorkspace(QWidget):
         ]
         for label, value in rows:
             self._summary_layout.addRow(QLabel(label), QLabel(value))
+        # Update summary cards
+        if len(self._card_vals) >= 3:
+            self._card_vals[0].setText(str(br.total_images))
+            self._card_vals[1].setText(str(br.success_count))
+            self._card_vals[2].setText(str(br.fail_count))
 
     def _refresh_summary_multi(self) -> None:
         mbr = self._multi_batch_run
@@ -247,6 +295,8 @@ class ReportWorkspace(QWidget):
 
     def _refresh_stats(self) -> None:
         _clear_vbox(self._stats_vbox)
+        self._hl_vals = []
+        self._detail_vals = {}
 
         if self._multi_batch_run:
             for ds in self._multi_batch_run.datasets:
@@ -259,11 +309,95 @@ class ReportWorkspace(QWidget):
         else:
             ok_vals = [r.calibrated_nm for r in self._records if r.status not in ("rejected",)]
             ok_vals = self._apply_outlier_filter(ok_vals)
-            wrapper = QWidget()
-            fl = QFormLayout(wrapper)
-            fl.setContentsMargins(0, 0, 0, 0)
-            _fill_stats_form(fl, ok_vals)
-            self._stats_vbox.addWidget(wrapper)
+            self._build_stats_cards(ok_vals)
+
+    def _build_stats_cards(self, vals: list) -> None:
+        import statistics as _stats
+
+        if not vals:
+            placeholder = QLabel("No data available.")
+            placeholder.setStyleSheet("color:#9a8a7a; font-size:12px; padding:8px;")
+            self._stats_vbox.addWidget(placeholder)
+            return
+
+        n = len(vals)
+        mean = _stats.mean(vals)
+        std  = _stats.stdev(vals) if n > 1 else 0.0
+        min_val = min(vals)
+        max_val = max(vals)
+        median = _stats.median(vals)
+        if n >= 2:
+            qs = _stats.quantiles(vals, n=4)
+            q25, q75 = qs[0], qs[2]
+        else:
+            q25 = q75 = vals[0]
+
+        # Highlight Cards (2×2 grid)
+        highlight_widget = QWidget()
+        hg = QGridLayout(highlight_widget)
+        hg.setSpacing(8)
+        hg.setContentsMargins(0, 0, 0, 0)
+
+        hl_defs = [
+            (f"{mean:.3f} nm",    "Mean CD",  "#fff4e6", "#efd8b8", "#8a6830"),
+            (f"{std*3:.3f} nm",   "3-Sigma",  "#fff4e6", "#efd8b8", "#8a6830"),
+            (f"{min_val:.3f} nm", "Min CD",   "#f0f7fc", "#c8dcea", "#4a7a9a"),
+            (f"{max_val:.3f} nm", "Max CD",   "#f0f7fc", "#c8dcea", "#4a7a9a"),
+        ]
+        positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
+        for (val, lbl, bg, bd, color), (r, c) in zip(hl_defs, positions):
+            frame = QFrame()
+            frame.setStyleSheet(
+                f"background:{bg}; border:0.5px solid {bd}; border-radius:8px;"
+            )
+            fl = QVBoxLayout(frame)
+            fl.setContentsMargins(14, 10, 14, 10)
+            fl.setSpacing(2)
+            v_lbl = QLabel(val)
+            v_lbl.setStyleSheet(
+                f"font-size:20px; font-weight:500; color:{color}; background:transparent;"
+            )
+            d_lbl = QLabel(lbl)
+            d_lbl.setStyleSheet(
+                f"font-size:11px; color:{color}; background:transparent; margin-top:2px;"
+            )
+            fl.addWidget(v_lbl)
+            fl.addWidget(d_lbl)
+            hg.addWidget(frame, r, c)
+            self._hl_vals.append(v_lbl)
+        self._stats_vbox.addWidget(highlight_widget)
+
+        # Detail Rows (2×N grid)
+        detail_widget = QWidget()
+        dg = QGridLayout(detail_widget)
+        dg.setSpacing(6)
+        dg.setContentsMargins(0, 0, 0, 0)
+
+        detail_defs = [
+            ("Median",  f"{median:.3f} nm"),
+            ("Std Dev", f"{std:.3f} nm"),
+            ("Q25",     f"{q25:.3f} nm"),
+            ("Q75",     f"{q75:.3f} nm"),
+            ("Count",   str(n)),
+        ]
+        for i, (key, value) in enumerate(detail_defs):
+            row_frame = QFrame()
+            row_frame.setStyleSheet("background:#f7f4ef; border-radius:5px;")
+            rf = QHBoxLayout(row_frame)
+            rf.setContentsMargins(8, 5, 8, 5)
+            k_lbl = QLabel(key)
+            k_lbl.setStyleSheet("font-size:12px; color:#9a8a7a; background:transparent;")
+            v_lbl = QLabel(value)
+            v_lbl.setStyleSheet(
+                "font-size:12px; font-weight:500; color:#3f3428; background:transparent;"
+            )
+            v_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+            rf.addWidget(k_lbl)
+            rf.addStretch()
+            rf.addWidget(v_lbl)
+            dg.addWidget(row_frame, i // 2, i % 2)
+            self._detail_vals[key] = v_lbl
+        self._stats_vbox.addWidget(detail_widget)
 
     def _refresh_boxplot(self) -> None:
         if not self._multi_batch_run:

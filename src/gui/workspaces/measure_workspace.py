@@ -208,8 +208,18 @@ class MeasureWorkspace(QWidget):
         self._chk_labels = _ov_chk("Values", True)
         self._chk_boxes  = _ov_chk("Boxes",  False)
         self._chk_legend = _ov_chk("Legend", True)
-        for chk in (self._chk_lines, self._chk_labels, self._chk_boxes, self._chk_legend):
+
+        # Color dots before Lines/Values and Boxes
+        _dot_lv = QLabel("●")
+        _dot_lv.setStyleSheet("color:#8ccaa6; font-size:12px; background:transparent;")
+        _dot_bx = QLabel("●")
+        _dot_bx.setStyleSheet("color:#c8b8a8; font-size:12px; background:transparent;")
+
+        for dot, chk in ((_dot_lv, self._chk_lines), (None, self._chk_labels),
+                         (_dot_bx, self._chk_boxes), (None, self._chk_legend)):
             chk.stateChanged.connect(self._refresh_annotated)
+            if dot is not None:
+                ov.addWidget(dot)
             ov.addWidget(chk)
 
         sep_detail = QLabel("  |  ")
@@ -225,6 +235,12 @@ class MeasureWorkspace(QWidget):
 
         hbox.addWidget(self._overlay_widget)
         hbox.addStretch()
+
+        self._viewer_info_label = QLabel("")
+        self._viewer_info_label.setStyleSheet(
+            "color:#9a8a7a; font-size:10px; background:transparent;"
+        )
+        hbox.addWidget(self._viewer_info_label)
 
         self._btn_raw.clicked.connect(self._on_mode_raw)
         self._btn_mask.clicked.connect(self._on_mode_mask)
@@ -253,7 +269,8 @@ class MeasureWorkspace(QWidget):
 
         # Primary action: Run Single — full width, green accent
         run_btn = QPushButton("▶   Run Single  (F5)")
-        run_btn.setObjectName("runSingle")
+        run_btn.setObjectName("successBtn")
+        run_btn.setFixedHeight(36)
         run_btn.setShortcut("F5")
         run_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         run_btn.clicked.connect(self._run_single)
@@ -268,6 +285,8 @@ class MeasureWorkspace(QWidget):
         self._btn_compare.setToolTip("Compare measured CDs against a Reference value")
         self._btn_compare.setEnabled(False)
         self._btn_compare.clicked.connect(self._open_compare_dialog)
+        save_btn.setFixedHeight(28)
+        self._btn_compare.setFixedHeight(28)
         sec_row.addWidget(save_btn); sec_row.addWidget(self._btn_compare)
         bl.addLayout(sec_row)
 
@@ -297,8 +316,8 @@ class MeasureWorkspace(QWidget):
         mf.addRow("Y-CD method:", self._ec_method)
         hint = QLabel("參數僅本次有效，儲存請至 Recipe workspace")
         hint.setStyleSheet(
-            "color:#9f8f7b; font-size:10px; "
-            "padding:2px 8px 4px 8px; background:transparent;"
+            "color:#b09880; background:#f5ede4; font-size:10px; "
+            "border-radius:4px; padding:2px 8px; background:transparent;"
         )
         bl.addWidget(hint)
         bl.addWidget(method_w)
@@ -651,6 +670,10 @@ class MeasureWorkspace(QWidget):
         n = len(result.records)
         self._btn_compare.setEnabled(bool(self._current_records))
         self.status_message.emit(f"{name}  ·  {n} measurement(s) via recipe")
+        n_cuts = len(self._current_cuts)
+        self._viewer_info_label.setText(
+            f"{name}  ·  {n_cuts} cuts  ·  {n} meas"
+        )
         self.run_completed.emit(result)
 
     def _run_with_cards(self) -> None:
@@ -744,6 +767,9 @@ class MeasureWorkspace(QWidget):
 
         n_meas = sum(len(c.measurements) for c in cuts)
         self.status_message.emit(f"{name}  ·  {len(cuts)} cut(s)  ·  {n_meas} measurement(s)")
+        self._viewer_info_label.setText(
+            f"{name}  ·  {len(cuts)} cuts  ·  {n_meas} meas"
+        )
 
     def _analyze_with_cards(self, raw: np.ndarray, preview_only: bool) -> tuple:
         from ...core.preprocessor import preprocess, PreprocessParams, apply_column_strip_mask
