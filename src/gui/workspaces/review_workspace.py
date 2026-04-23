@@ -32,6 +32,7 @@ class ReviewWorkspace(QWidget):
         # Batch mode state
         self._batch_entries: list[dict] = []
         self._batch_records: dict[int, list[MeasurementRecord]] = {}  # lazy cache
+        self._entry_index_map: list[int] = []
 
         # Cached current view (for overlay re-render without re-loading image)
         self._cur_raw   = None
@@ -250,15 +251,17 @@ class ReviewWorkspace(QWidget):
 
     def _populate_img_list(self, entries: list) -> None:
         """Add entries to _img_list, capping at _LIST_LIMIT to stay responsive."""
+        self._entry_index_map = []
         limit = self._LIST_LIMIT
         shown = 0
-        for entry in entries:
+        for i, entry in enumerate(entries):
             if entry.get("_separator"):
                 item = QListWidgetItem(f"── {entry['label']} ──")
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
                 item.setForeground(Qt.GlobalColor.gray)
                 font = item.font(); font.setBold(True); item.setFont(font)
                 self._img_list.addItem(item)
+                self._entry_index_map.append(-1)
                 continue
             status = entry.get("status", "?")
             name = Path(entry.get("image_path", "?")).name
@@ -270,6 +273,7 @@ class ReviewWorkspace(QWidget):
                 Qt.GlobalColor.darkRed if status != "OK" else Qt.GlobalColor.darkGreen
             )
             self._img_list.addItem(item)
+            self._entry_index_map.append(i)
             shown += 1
 
         total = len([e for e in entries if not e.get("_separator")])
@@ -280,6 +284,7 @@ class ReviewWorkspace(QWidget):
             note.setFlags(note.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             note.setForeground(Qt.GlobalColor.gray)
             self._img_list.addItem(note)
+            self._entry_index_map.append(-1)
 
     def load_multi_batch(self, mbr: MultiDatasetBatchRun) -> None:
         """Load combined results from a multi-dataset batch run for browsing."""
@@ -327,19 +332,19 @@ class ReviewWorkspace(QWidget):
     # ── Internal — batch navigation ───────────────────────────────────────────
 
     def _on_batch_row_changed(self, row: int) -> None:
-        if row < 0 or row >= len(self._batch_entries):
+        if row < 0 or row >= len(self._entry_index_map):
             return
-        if self._batch_entries[row].get("_separator"):
-            return  # skip separator header rows
-        self._load_batch_entry(row)
-        total = len(self._batch_entries)
-        self._nav_label.setText(f"{row + 1} / {total}")
+        entry_idx = self._entry_index_map[row]
+        if entry_idx < 0:
+            return
+        self._load_batch_entry(entry_idx)
+        self._nav_label.setText(f"{entry_idx+1} / {len(self._batch_entries)}")
 
     def _nav_prev(self) -> None:
         row = self._img_list.currentRow()
         while row > 0:
             row -= 1
-            if not self._batch_entries[row].get("_separator"):
+            if row < len(self._entry_index_map) and self._entry_index_map[row] >= 0:
                 self._img_list.setCurrentRow(row)
                 return
 
@@ -347,7 +352,7 @@ class ReviewWorkspace(QWidget):
         row = self._img_list.currentRow()
         while row < self._img_list.count() - 1:
             row += 1
-            if not self._batch_entries[row].get("_separator"):
+            if row < len(self._entry_index_map) and self._entry_index_map[row] >= 0:
                 self._img_list.setCurrentRow(row)
                 return
 

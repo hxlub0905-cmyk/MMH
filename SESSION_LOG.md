@@ -2,6 +2,33 @@
 
 ---
 
+## [2026-04-23] 兩項緊急 Bug 修復：Review 批次導航索引錯誤 + Duplicate Recipe 覆蓋原始 Recipe
+
+**變更類型：** Bug 修復
+
+**問題 1：Review 工作區批次超過 1000 張時導航對應錯誤影像**
+
+- **根本原因**：`_populate_img_list()` 在批次超過 `_LIST_LIMIT`（1000）時會跳過部分 OK 項目，導致 `_img_list` 的列索引（row）與 `_batch_entries` 的索引不再一致。`_on_batch_row_changed(row)` 直接以 `row` 索引進 `_batch_entries`，造成顯示錯誤影像。`_nav_next()` / `_nav_prev()` 同樣以 `row` 直接查詢 `_batch_entries`，在 entries 被截斷時會 IndexError 或取到 separator。
+- **修法**（`review_workspace.py`）：
+  - `__init__` 新增 `self._entry_index_map: list[int] = []`
+  - `_populate_img_list()` 開頭重置 `_entry_index_map`；改為 `enumerate(entries)` 迴圈；每次 `addItem()` 同步 append：separator / "…more" 列 → -1，一般 entry 列 → 原始索引 `i`
+  - `_on_batch_row_changed(row)` 改為透過 `_entry_index_map[row]` 取得真實 entry 索引後再呼叫 `_load_batch_entry(entry_idx)`，nav label 顯示 `entry_idx+1 / len(_batch_entries)`
+  - `_nav_prev()` / `_nav_next()` 改為跳過 `_entry_index_map[row] < 0` 的列，取代原本直接查詢 `_batch_entries[row]` 的邏輯
+
+**問題 2：Duplicate Recipe 後按 Save 覆蓋原始 Recipe**
+
+- **根本原因**：`_duplicate_recipe()` 儲存副本後未更新 `self._current_id`，導致接下來按 Save 時 `rid = self._current_id` 仍指向原始 recipe，覆蓋原本的 recipe。
+- **修法**（`recipe_workspace.py`）：在 `self._registry.save(dup)` 之後加入 `self._current_id = dup.recipe_id`
+
+**影響範圍：**
+- `src/gui/workspaces/review_workspace.py`（`__init__`、`_populate_img_list`、`_on_batch_row_changed`、`_nav_prev`、`_nav_next`）
+- `src/gui/workspaces/recipe_workspace.py`（`_duplicate_recipe`）
+
+**測試結果：**
+- `python3 -m py_compile` 兩個修改檔案均通過
+
+---
+
 ## [2026-04-23] Measure 右側設定欄全面重設計：融入式 Tier 架構
 
 **變更類型：** UI 重設計

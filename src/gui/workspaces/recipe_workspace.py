@@ -455,6 +455,7 @@ class RecipeWorkspace(QWidget):
         dup.recipe_name = f"{orig.recipe_name} (copy)"
         dup.created_at = datetime.now(timezone.utc).isoformat()
         self._registry.save(dup)
+        self._current_id = dup.recipe_id
         self._refresh_list()
         self.recipe_saved.emit(dup)
         self.status_message.emit(f"Duplicated → '{dup.recipe_name}'")
