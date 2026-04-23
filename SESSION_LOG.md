@@ -2,6 +2,43 @@
 
 ---
 
+## [2026-04-23] 體驗與準確度修復（B1/G2/I2/Q1/L2）
+
+**變更類型：** Bug 修復 / UX 改善
+
+**修復 B1：精化成功後 center_y 未更新（Excel cd_line_y_px 位置偏移）**
+- **根本原因**：`compute_metrics()` 建立 `MeasurementRecord` 時 `center_y` 使用 `(bbox[1]+bbox[3])/2`（bbox = gap 上下緣整數），但 Y-edge 精化成功後 `m.y_upper_edge`/`m.y_lower_edge` 是亞像素值，兩者不一致導致 cd_line_y_px 偏向 bbox 中心而非精化後的 gap 中心
+- **修法**：`records.append(rec)` 之前：若 `m.y_upper_edge` / `m.y_lower_edge` 均非 None，以 `(y_upper_edge + y_lower_edge) / 2` 更新 `rec.center_y`
+
+**修復 G2：Cards 路徑 Detail CD 在 Measure Tab 無反應**
+- **根本原因**：`_analyze_with_cards()` 呼叫 `apply_yedge_subpixel_to_cuts()` 時 `store_meta=False`，導致 `m._refine_meta` 從未寫入，`_draw_detail_measurements()` 無取樣資料可用而 fallback 至普通繪圖
+- **修法**：改為 `store_meta=True`
+
+**修復 I2：Edge Locator 參數改動沒有提示說明未存回 Recipe**
+- **修法**：`_build_edge_locator_panel()` 在 `method_w` 前插入 `QLabel("參數僅本次有效，儲存請至 Recipe workspace")`，灰色小字提示
+
+**修復 Q1：Mask 模式顯示舊 mask，不反映目前參數**
+- **根本原因**：`_run_preview()` 以 `_, _, profile_masks = ...` 丟棄回傳的 `mask`，導致 `_current_mask` 永遠是上一次 Run 的結果（甚至 None）
+- **修法**：改為 `mask, _, profile_masks = ...` 並加 `self._current_mask = mask`；`set_images()` 改用新的 `self._current_mask`
+
+**修復 L2：大量歷史記錄時 get_stats_for_recipe() 卡頓**
+- **根本原因**：`get_stats_for_recipe()` 每次都逐一讀取所有歷史 JSON 檔，百筆記錄時 I/O 開銷大
+- **修法**：
+  1. `_rebuild_index()` 在 index entry 加入 `"recipe_ids": d.get("recipe_ids", [])` (single) / `"recipe_ids": []` (multi)
+  2. `save()` 在 index entry 加入 `"recipe_ids": list(batch_run.recipe_ids)` — `BatchRunRecord` 已有此欄位
+  3. `save_multi()` 在 index entry 加入 `"recipe_ids": []`
+  4. `get_stats_for_recipe()` 迴圈開頭加快速跳過：若 `recipe_id` 指定且不在 `summary["recipe_ids"]` 中則 continue，避免讀取無關的 JSON 檔
+
+**影響範圍：**
+- `src/core/recipes/cmg_recipe.py`（B1：center_y 更新）
+- `src/gui/workspaces/measure_workspace.py`（G2：store_meta=True；I2：hint label；Q1：mask 更新）
+- `src/core/batch_run_store.py`（L2：recipe_ids index + fast-skip）
+
+**測試結果：**
+- `python3 -m py_compile` 對所有修改檔案均通過
+
+---
+
 ## [2026-04-23] CD 計算與顯示不一致修復（A1/A2/F1/G1/V5/V6/W1）
 
 **變更類型：** Bug 修復

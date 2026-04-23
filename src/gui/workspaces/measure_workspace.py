@@ -295,6 +295,12 @@ class MeasureWorkspace(QWidget):
         self._ec_method.addItem("Gradient",           "gradient")
         self._ec_method.addItem("BBox",               "bbox")
         mf.addRow("Y-CD method:", self._ec_method)
+        hint = QLabel("參數僅本次有效，儲存請至 Recipe workspace")
+        hint.setStyleSheet(
+            "color:#9f8f7b; font-size:10px; "
+            "padding:2px 8px 4px 8px; background:transparent;"
+        )
+        bl.addWidget(hint)
         bl.addWidget(method_w)
 
         # ── Sampling (tier=2, expanded by default) ────────────────────────────
@@ -502,12 +508,17 @@ class MeasureWorkspace(QWidget):
         if self._current_raw is None:
             return
         try:
-            _, _, profile_masks = self._analyze_with_cards(self._current_raw, preview_only=True)
+            mask, _, profile_masks = self._analyze_with_cards(
+                self._current_raw, preview_only=True
+            )
+            self._current_mask = mask
         except Exception:
             return
         self._profile_masks = profile_masks
-        self._viewer.set_images(self._current_raw, self._current_mask, self._current_annotated,
-                                profile_masks=profile_masks)
+        self._viewer.set_images(
+            self._current_raw, self._current_mask,
+            self._current_annotated, profile_masks=profile_masks
+        )
 
     # ── Save cards as recipe ──────────────────────────────────────────────────
 
@@ -860,7 +871,7 @@ class MeasureWorkspace(QWidget):
                     method=_ec_method,
                     threshold_frac=_ec_threshold_frac,
                     col_centers=col_centers,
-                    store_meta=False,  # legacy-cuts path doesn't use MeasurementRecord
+                    store_meta=True,
                     sample_lines_mode=_slm,
                     aggregate_method=self._ec_aggregate_combo.currentData(),
                     profile_lpf_enabled=self._ec_lpf_cb.isChecked(),

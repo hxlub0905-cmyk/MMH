@@ -365,6 +365,8 @@ class CMGRecipe(BaseRecipe):
                         **getattr(m, "_refine_meta", {}),
                     },
                 )
+                if m.y_upper_edge is not None and m.y_lower_edge is not None:
+                    rec.center_y = float((m.y_upper_edge + m.y_lower_edge) / 2)
                 records.append(rec)
 
         return records
