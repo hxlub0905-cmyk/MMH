@@ -301,19 +301,51 @@ class ReportWorkspace(QWidget):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         errors: list[str] = []
 
-        if dlg.export_csv:
-            try:
-                from ...output.csv_exporter import export_csv_from_records
-                export_csv_from_records(self._records, out / f"measurements_{ts}.csv",
-                                        self._image_records)
-            except Exception as exc:
-                errors.append(f"CSV: {exc}")
-
         if dlg.export_excel:
             try:
                 from ...output.excel_exporter import export_excel_from_records
-                export_excel_from_records(self._records, out / f"measurements_{ts}.xlsx",
-                                          self._image_records)
+                if self._multi_batch_run:
+                    # Build per-dataset record lists so dataset labels propagate correctly
+                    datasets_for_excel = []
+                    for ds in self._multi_batch_run.datasets:
+                        ds_records: list[MeasurementRecord] = []
+                        ds_image_records: list[ImageRecord] = []
+                        seen_img: set[str] = set()
+                        for r in ds.output_manifest.get("results", []):
+                            img_id  = r.get("image_id", "")
+                            img_path = r.get("image_path", "")
+                            if img_id not in seen_img:
+                                ir = ImageRecord.from_path(img_path)
+                                ir.image_id = img_id
+                                ds_image_records.append(ir)
+                                seen_img.add(img_id)
+                            for m_dict in r.get("measurements", []):
+                                try:
+                                    ds_records.append(MeasurementRecord.from_dict(m_dict))
+                                except Exception:
+                                    pass
+                        datasets_for_excel.append({
+                            "records":       ds_records,
+                            "image_records": ds_image_records,
+                            "dataset_label": ds.dataset_label or "Dataset",
+                        })
+                    export_excel_from_records(
+                        [],
+                        out / f"measurements_{ts}.xlsx",
+                        datasets=datasets_for_excel,
+                    )
+                else:
+                    ds_label = (
+                        self._batch_run.dataset_label
+                        if self._batch_run and self._batch_run.dataset_label
+                        else ""
+                    )
+                    export_excel_from_records(
+                        self._records,
+                        out / f"measurements_{ts}.xlsx",
+                        self._image_records,
+                        dataset_label=ds_label,
+                    )
             except Exception as exc:
                 errors.append(f"Excel: {exc}")
 
@@ -543,8 +575,15 @@ class _ExportDialog(QDialog):
         pandas_ok = _check_pandas()
         formats_box = QGroupBox("Formats to export")
         fv = QVBoxLayout(formats_box)
-        self._chk_csv     = QCheckBox("CSV  (measurements table)")
-        self._chk_excel   = QCheckBox("Excel  (measurements + statistics sheet)")
+
+        # Comprehensive Excel replaces separate CSV + Excel options
+        self._chk_excel = QCheckBox(
+            "Comprehensive Excel  (All Measurements + Image Summary + Statistics)\n"
+            "  • CD line XY positions per measurement (origin = image top-left)\n"
+            "  • MIN/MAX CD locations highlighted in Image Summary sheet"
+        )
+        self._chk_excel.setStyleSheet("QCheckBox { spacing: 6px; }")
+
         self._chk_json    = QCheckBox("JSON")
         self._chk_html    = QCheckBox("HTML Report")
         self._chk_img     = QCheckBox("Overlay images  (annotated PNG per image)")
@@ -553,12 +592,9 @@ class _ExportDialog(QDialog):
 
         if not pandas_ok:
             _no_pd = "  ⚠ 需安裝 pandas：pip install \"pandas>=2.0\" openpyxl"
-            self._chk_csv.setText(self._chk_csv.text() + _no_pd)
             self._chk_excel.setText(self._chk_excel.text() + _no_pd)
-            self._chk_csv.setEnabled(False)
             self._chk_excel.setEnabled(False)
         else:
-            self._chk_csv.setChecked(True)
             self._chk_excel.setChecked(True)
         self._chk_json.setChecked(True)
         self._chk_html.setChecked(True)
@@ -566,7 +602,7 @@ class _ExportDialog(QDialog):
         if has_multi_batch:
             self._chk_boxplot.setChecked(True)
 
-        for chk in (self._chk_csv, self._chk_excel, self._chk_json,
+        for chk in (self._chk_excel, self._chk_json,
                     self._chk_html, self._chk_img, self._chk_boxplot):
             fv.addWidget(chk)
         layout.addWidget(formats_box)
@@ -592,7 +628,7 @@ class _ExportDialog(QDialog):
 
     @property
     def export_csv(self) -> bool:
-        return self._chk_csv.isChecked() and self._chk_csv.isEnabled()
+        return False  # CSV merged into Comprehensive Excel
 
     @property
     def export_excel(self) -> bool:

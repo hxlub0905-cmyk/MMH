@@ -1,5 +1,49 @@
 # Session Log
 
+---
+
+## [2026-04-23] Measure 右側邊界強化 + Comprehensive Excel 匯出
+
+**變更類型：** UI 改善 / 功能增強
+
+**變更摘要：**
+
+### 1. Measure 分頁右側設定欄邊界強化
+- **問題**：右側面板（`QFrame#rightPanel`，背景 `#fff7ee`）內的 SpinBox（邊框 `#e6dccf`）、ComboBox、LineEdit、CheckBox、Button 的 1px 邊框與背景色差不足，視覺上幾乎不可見
+- **修法**：在 `styles.py` 末尾新增 `QFrame#rightPanel` 子選擇器規則，將所有互動控件的邊框色統一加深至 `#b8a898`（原 `#e6dccf`/`#dfd0be`），hover 時進一步加深至 `#9a8878`，focus 時仍以 accent 橘色（`#f29f4b`）顯示
+- SpinBox、ComboBox、LineEdit、Button、CheckBox::indicator 均已覆蓋
+
+### 2. CSV + Excel 整合為一份 Comprehensive Excel
+- **動機**：使用者希望一份不用看圖就能掌握所有 data 的總表，尤其在多組 dataset 情境下
+- **`src/output/_common.py`**：
+  - `records_to_dataframe()` 新增 `dataset_label` 參數
+  - 新增欄位：`cd_px`、`cd_nm`（主名稱）、`cd_line_x_px`、`cd_line_y_px`（CD 線相對圖左上角的 XY 座標，單位 px）、`upper_blob_x0/y0/x1/y1`、`lower_blob_x0/y0/x1/y1`（blob bounding box 分解欄位）、`dataset`
+  - 保留 `y_cd_px`、`y_cd_nm`、`upper_bbox`、`lower_bbox` 舊欄位供 CSV 相容
+- **`src/output/excel_exporter.py`**：全面改寫 `export_excel_from_records()`：
+  - 新增 `datasets: list[dict] | None` 參數，支援多資料集輸入（每個 dict 含 `records`、`image_records`、`dataset_label`）
+  - **Sheet 1「All Measurements」**：完整量測資料 + CD 線位置 + blob bbox，MIN 行橘色、MAX 行藍色；凍結表頭，自動欄寬
+  - **Sheet 2「Image Summary」**：每張圖一列，包含 mean、median、std、3-sigma，以及 MIN CD 值/位置（XY, cmg_id, col_id）與 MAX CD 值/位置；MIN 欄橘色、MAX 欄藍色，一眼找到極值位置，不用看圖
+  - **Sheet 3「Statistics」**：依 recipe_name 分組的統計摘要（N、Mean、Median、Q25/Q75、Std、3σ、Min、Max、影像數）
+- **`src/gui/workspaces/report_workspace.py`**：
+  - `_ExportDialog` 將 CSV + Excel 兩個 checkbox 合併為一個「Comprehensive Excel」checkbox（附描述說明三個工作表內容）
+  - 多資料集（`MultiDatasetBatchRun`）匯出時，逐 dataset 重建 record 列表並帶入 `dataset_label`，傳入 `datasets` 參數確保「dataset」欄正確填入
+  - `export_csv` property 直接回傳 `False`（CSV 已整合進 Excel）
+
+**影響範圍：**
+- `src/gui/styles.py`（右側面板控件邊框覆蓋規則）
+- `src/output/_common.py`（新增欄位 + `dataset_label` 參數）
+- `src/output/excel_exporter.py`（全面改寫 `export_excel_from_records()`，新增 multi-sheet + multi-dataset 支援）
+- `src/gui/workspaces/report_workspace.py`（合併 CSV/Excel checkbox，更新多資料集匯出邏輯）
+
+**測試結果：**
+- `python3 -m py_compile` 對所有修改檔案均通過
+- `pytest tests/test_models.py tests/test_batch_run_store.py tests/test_history.py` → 17/17 通過
+- （numpy 相依測試因環境未安裝 numpy 跳過，與先前 session 一致）
+
+**備註：**
+- CD 線位置（`cd_line_x_px`、`cd_line_y_px`）來自 `MeasurementRecord.center_x/center_y`，對 Y-CD 為 gap 中心點，原點為圖左上角
+- 舊 `export_excel()`（舊版 results list 路徑）不受影響，保留向後相容
+
 每次對本專案進行任何變更（功能新增、Bug 修復、重構、文件更新），
 都必須在本文件**最上方**新增一筆 session 記錄。
 

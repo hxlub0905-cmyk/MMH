@@ -589,4 +589,47 @@ QGraphicsView {
 /* ════════════════════════ ScrollArea ════════════════════════════════════ */
 QScrollArea { border: none; background: transparent; }
 QScrollArea > QWidget > QWidget { background: transparent; }
+
+/* ════════════════════════ Right panel — stronger input borders ══════════ */
+/* The right panel (#fff7ee bg) is close in tone to the default widget      */
+/* backgrounds, making 1px light borders nearly invisible. Darken them.     */
+QFrame#rightPanel QSpinBox,
+QFrame#rightPanel QDoubleSpinBox {
+    border: 1px solid #b8a898;
+    background: #fffdf9;
+    border-radius: 5px;
+}
+QFrame#rightPanel QSpinBox:focus,
+QFrame#rightPanel QDoubleSpinBox:focus {
+    border-color: #f29f4b;
+}
+QFrame#rightPanel QComboBox {
+    border: 1px solid #b8a898;
+    background: #fffdf9;
+}
+QFrame#rightPanel QComboBox:focus {
+    border-color: #f29f4b;
+}
+QFrame#rightPanel QLineEdit {
+    border: 1px solid #b8a898;
+    background: #fffdf9;
+}
+QFrame#rightPanel QLineEdit:focus {
+    border-color: #f29f4b;
+}
+QFrame#rightPanel QPushButton:!checked:!disabled {
+    border: 1px solid #b8a898;
+}
+QFrame#rightPanel QPushButton:hover:!checked:!disabled {
+    border-color: #9a8878;
+}
+QFrame#rightPanel QCheckBox::indicator {
+    border: 1px solid #b8a898;
+    border-radius: 3px;
+    background: #fffdf9;
+}
+QFrame#rightPanel QCheckBox::indicator:checked {
+    background: #e6953d;
+    border-color: #f29f4b;
+}
 """
