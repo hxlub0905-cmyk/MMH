@@ -212,7 +212,10 @@ def export_excel_from_records(
         _autofit_columns(ws_sum)
         ws_sum.freeze_panes = "A2"
 
-        # Highlight min_cd and max_cd cells (Image Summary is small — per-cell ok)
+        # Highlight min_cd and max_cd columns in Image Summary.
+        # For large datasets use whole-column CF to avoid O(rows × cols) cell
+        # style writes that create massive openpyxl internal state and can
+        # cause corrupted xlsx files.
         min_cd_col = _col_letter(df_summary, "min_cd_nm")
         max_cd_col = _col_letter(df_summary, "max_cd_nm")
         min_x_col  = _col_letter(df_summary, "min_cd_x_px")
@@ -220,19 +223,54 @@ def export_excel_from_records(
         max_x_col  = _col_letter(df_summary, "max_cd_x_px")
         max_y_col  = _col_letter(df_summary, "max_cd_y_px")
 
-        for row_idx in range(2, len(df_summary) + 2):
-            for col_letter in (min_cd_col, min_x_col, min_y_col):
-                if col_letter:
-                    ws_sum[f"{col_letter}{row_idx}"].fill = min_fill
-            for col_letter in (max_cd_col, max_x_col, max_y_col):
-                if col_letter:
-                    ws_sum[f"{col_letter}{row_idx}"].fill = max_fill
+        _sum_rows = len(df_summary)
+        if _sum_rows > 2000:
+            # Large dataset: use column-range CF (no per-row allocation)
+            try:
+                from openpyxl.styles.differential import DifferentialStyle
+                from openpyxl.formatting.rule import Rule as _Rule
+                _last_sum = _sum_rows + 1
+                _min_dxf = DifferentialStyle(fill=PatternFill(bgColor=_MIN_FILL))
+                _max_dxf = DifferentialStyle(fill=PatternFill(bgColor=_MAX_FILL))
+                for _ltr in (min_cd_col, min_x_col, min_y_col):
+                    if _ltr:
+                        ws_sum.conditional_formatting.add(
+                            f"{_ltr}2:{_ltr}{_last_sum}",
+                            _Rule(type="formula", dxf=_min_dxf, formula=["TRUE"]),
+                        )
+                for _ltr in (max_cd_col, max_x_col, max_y_col):
+                    if _ltr:
+                        ws_sum.conditional_formatting.add(
+                            f"{_ltr}2:{_ltr}{_last_sum}",
+                            _Rule(type="formula", dxf=_max_dxf, formula=["TRUE"]),
+                        )
+            except Exception:
+                pass  # highlighting is best-effort
+        else:
+            for row_idx in range(2, _sum_rows + 2):
+                for col_letter in (min_cd_col, min_x_col, min_y_col):
+                    if col_letter:
+                        ws_sum[f"{col_letter}{row_idx}"].fill = min_fill
+                for col_letter in (max_cd_col, max_x_col, max_y_col):
+                    if col_letter:
+                        ws_sum[f"{col_letter}{row_idx}"].fill = max_fill
 
         # ── Style: Statistics ─────────────────────────────────────────────────
         ws_stat = wb["Statistics"]
         _style_header_row(ws_stat, fill_hex=_STAT_HEADER_FILL)
         _autofit_columns(ws_stat)
         ws_stat.freeze_panes = "A2"
+
+        # ── Safeguard: ensure all sheets visible + active sheet pinned ────────
+        # openpyxl can leave sheetView / tabSelected inconsistent after heavy
+        # write operations, causing Excel to warn "At least one sheet must be
+        # visible" when opening the file.
+        try:
+            for _ws in wb.worksheets:
+                _ws.sheet_state = "visible"
+            wb.active = ws_meas
+        except Exception:
+            pass
 
 
 # ── helper: build per-image summary ──────────────────────────────────────────
@@ -349,11 +387,16 @@ def _style_header_row(ws, fill_hex: str = "F7E0C8") -> None:
 
 def _autofit_columns(ws, max_width: int = 30, sample_rows: int = 200) -> None:
     from openpyxl.utils import get_column_letter
-    for col_idx, col_cells in enumerate(ws.columns, start=1):
-        # Sample header + first N data rows to avoid O(n) scan over 20k+ rows
-        cells_to_check = list(col_cells)[: sample_rows + 1]
+    # Use iter_cols with explicit max_row so openpyxl only materialises
+    # the header + first N rows — not the entire sheet (which would be
+    # O(rows × cols) dict lookups and is the root cause of memory pressure
+    # leading to corrupted xlsx on large exports).
+    max_row = min(ws.max_row or 1, sample_rows + 1)
+    for col_idx, col_cells in enumerate(
+        ws.iter_cols(min_row=1, max_row=max_row), start=1
+    ):
         max_len = max(
-            (len(str(c.value)) if c.value is not None else 0) for c in cells_to_check
+            (len(str(c.value)) if c.value is not None else 0) for c in col_cells
         )
         ws.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 2, 8), max_width)
 
