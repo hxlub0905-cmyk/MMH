@@ -172,19 +172,27 @@ def export_excel_from_records(
         _style_header_row(ws_meas, fill_hex=_HEADER_FILL)
         _autofit_columns(ws_meas)
 
-        min_fill  = PatternFill("solid", fgColor=_MIN_FILL)
-        max_fill  = PatternFill("solid", fgColor=_MAX_FILL)
+        min_fill = PatternFill("solid", fgColor=_MIN_FILL)
+        max_fill = PatternFill("solid", fgColor=_MAX_FILL)
 
-        flag_col_idx = _col_index(df_meas, "flag")
-        for row_idx, flag in enumerate(df_meas["flag"], start=2):
-            if flag == "MIN":
-                for cell in ws_meas[row_idx]:
-                    cell.fill = min_fill
-            elif flag == "MAX":
-                for cell in ws_meas[row_idx]:
-                    cell.fill = max_fill
+        # Use conditional formatting instead of per-cell coloring:
+        # avoids O(rows × cols) cell-style writes that corrupt large files.
+        flag_col_letter = _col_letter(df_meas, "flag")
+        if flag_col_letter and len(df_meas) > 0:
+            last_row = len(df_meas) + 1
+            last_col = get_column_letter(ws_meas.max_column)
+            cf_range = f"A2:{last_col}{last_row}"
+            from openpyxl.formatting.rule import FormulaRule
+            ws_meas.conditional_formatting.add(
+                cf_range,
+                FormulaRule(formula=[f'${flag_col_letter}2="MIN"'], fill=min_fill),
+            )
+            ws_meas.conditional_formatting.add(
+                cf_range,
+                FormulaRule(formula=[f'${flag_col_letter}2="MAX"'], fill=max_fill),
+            )
 
-        # Freeze header row + make it bold
+        # Freeze header row
         ws_meas.freeze_panes = "A2"
 
         # ── Style: Image Summary ──────────────────────────────────────────────
@@ -193,7 +201,7 @@ def export_excel_from_records(
         _autofit_columns(ws_sum)
         ws_sum.freeze_panes = "A2"
 
-        # Highlight min_cd and max_cd cells within each row
+        # Highlight min_cd and max_cd cells (Image Summary is small — per-cell ok)
         min_cd_col = _col_letter(df_summary, "min_cd_nm")
         max_cd_col = _col_letter(df_summary, "max_cd_nm")
         min_x_col  = _col_letter(df_summary, "min_cd_x_px")
