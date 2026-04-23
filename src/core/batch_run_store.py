@@ -65,6 +65,7 @@ class BatchRunStore:
                         ),
                         "input_folder": f"{len(d.get('datasets', []))} datasets",
                         "file_path": str(f),
+                        "recipe_ids": [],
                     })
                 else:
                     summaries.append({
@@ -77,6 +78,7 @@ class BatchRunStore:
                         "input_folder": d.get("input_folder", ""),
                         "dataset_label": d.get("dataset_label", ""),
                         "file_path": str(f),
+                        "recipe_ids": d.get("recipe_ids", []),
                     })
             except Exception:
                 continue
@@ -136,6 +138,7 @@ class BatchRunStore:
             "input_folder": getattr(batch_run, "input_folder", ""),
             "dataset_label": getattr(batch_run, "dataset_label", ""),
             "file_path": str(path),
+            "recipe_ids": list(batch_run.recipe_ids) if batch_run.recipe_ids else [],
         })
         return path
 
@@ -164,6 +167,7 @@ class BatchRunStore:
             "fail_count": mbr.fail_count,
             "input_folder": f"{len(mbr.datasets)} datasets",
             "file_path": str(path),
+            "recipe_ids": [],
         })
         return path
 
@@ -214,6 +218,8 @@ class BatchRunStore:
         results = []
         base = _summaries if _summaries is not None else self.list_runs()
         for summary in reversed(base):  # list_runs is desc, reverse → asc for chart
+            if recipe_id and recipe_id not in summary.get("recipe_ids", []):
+                continue
             fp = summary["file_path"]
             try:
                 d = json.loads(Path(fp).read_text(encoding="utf-8"))

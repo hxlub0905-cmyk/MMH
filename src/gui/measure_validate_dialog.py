@@ -334,7 +334,8 @@ class MeasureValidateDialog(QDialog):
                 ref_vals.append(ref)
 
         n = len(self._records)
-        self._lbl_n.setText(str(n))
+        self._lbl_n.setText(f"{len(biases)} / {n}")
+        self._lbl_n.setToolTip("有輸入參考值的筆數 / 總量測筆數")
 
         if meas_vals:
             self._lbl_mean_meas.setText(f"{statistics.mean(meas_vals):.3f} nm")
@@ -404,7 +405,8 @@ class MeasureValidateDialog(QDialog):
             writer.writerows(rows)
             writer.writerow([])
             writer.writerow(["# summary"])
-            writer.writerow(["n", str(len(self._records))])
+            writer.writerow(["n_with_ref", str(len(biases))])
+            writer.writerow(["n_total",    str(len(self._records))])
             if biases:
                 writer.writerow(["mean_bias_nm", f"{statistics.mean(biases):.4f}"])
                 writer.writerow(["min_bias_nm",  f"{min(biases):.4f}"])

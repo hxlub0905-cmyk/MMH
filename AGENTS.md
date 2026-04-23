@@ -1,7 +1,7 @@
 # AGENTS.md — SEM MM 開發指南
 
 本文件供 AI Agent 或開發者快速掌握 SEM MM 專案的架構、慣例與開發方式。
-最後更新：2026-04-21（Phase B 完成）
+最後更新：2026-04-23（Phase B + Bug Fix Series 完成）
 
 ---
 
@@ -19,12 +19,13 @@
 
 | 項目 | 說明 |
 |------|------|
-| 版本階段 | **Phase A + F2 + G2 + B 已完成** |
+| 版本階段 | **Phase A + F2 + G2 + B + Bug Fix Series 已完成** |
 | 核心演算法 | CMG Y-CD / X-CD 量測（完整保留，以 Recipe 包裝） |
 | X-Proj 偵測 | Pitch-anchored 相位偵測（`detect_mg_column_centers_pitch_phase()`） |
 | 架構模型 | Recipe-driven SEM Metrology Platform |
-| 測試數量 | 77 項全數通過 |
+| 測試數量 | 17 項通過（環境無 numpy/cv2，其餘 60 項需科學計算套件） |
 | Phase B 完成 | Bug 修復 5 項 + 批次持久化 + Recipe 驗證模式 + 歷史趨勢 Run Chart |
+| Bug Fix Series | CD 計算一致性（A1/A2/F1/G1）、UX 修復（B1/G2/I2/Q1）、效能（L2）、導航（Review/Recipe） |
 | 未完成 Phase | C（能力升級）、D（平台化） |
 
 ---
@@ -205,10 +206,10 @@ class BaseRecipe(ABC):
 
 **演算法步驟**：
 1. 依 X 範圍重疊（50% overlap ratio，可由 Recipe edge_locator_config 調整）將 blobs 分群為「欄位」（union-find）
-2. 在每個欄位內找相鄰 blob 對 → CMG gap
+2. 在每個欄位內找相鄰 blob 對 → CMG gap；gap 上緣 = `upper.y1`（bbox 底緣），gap 下緣 = `lower.y0`（bbox 頂緣）
 3. 跨欄位 union-find 群集（10px Y 座標容差）→ CMG cut 事件
-4. 計算每個 cut 每欄的 Y-CD（upper blob 底緣到 lower blob 頂緣距離）
-5. 標記每個 cut 內的 MIN / MAX 量測值
+4. 計算每個 cut 每欄的 Y-CD（`lower.y0 - upper.y1`，與 annotator 一致）
+5. 標記每個 cut 內的 MIN / MAX 量測值（`_flag_global_minmax`）
 
 ```python
 def analyze(
@@ -438,15 +439,32 @@ Phase B 考慮直接接受 `list[MeasurementRecord]`。
 
 ### 測試規範
 ```bash
-# 執行所有測試（36 項）
-pytest tests/ -v
+# 執行不依賴 numpy/cv2 的測試（17 項，本環境可跑）
+pytest tests/test_models.py tests/test_batch_run_store.py tests/test_history.py -v
 
-# 測試覆蓋範圍
-# tests/test_cmg_analyzer.py       — 原始 CMG 演算法（10 項）
+# 完整測試（需 numpy + cv2 + scikit-image 環境）
+pytest tests/ -v
+# tests/test_cmg_analyzer.py       — 原始 CMG 演算法（11 項）
 # tests/test_models.py             — 資料模型 round-trip（6 項）
 # tests/test_recipe_base.py        — CMGRecipe pipeline + Registry（12 項）
 # tests/test_measurement_engine.py — 相容層 + 輸出 + 引擎整合（8 項）
+# tests/test_subpixel_refinement.py— 次像素精細化
+# tests/test_batch_run_store.py    — 批次持久化（7 項）
+# tests/test_recipe_validator.py   — Recipe 驗證（4 項）
+# tests/test_history.py            — 歷史統計（4 項）
 ```
+
+### 重要實作注意事項（Bug Fix Series 後）
+
+| 項目 | 規則 |
+|------|------|
+| `analyze()` gap edge | `upper.y1` / `lower.y0`（不可改回 `cy±height/2`，兩者不等） |
+| Recipe path re-flag | 精化後及 range filter 後均用 `_flag_top3(cut.measurements)`（per-cut），`analyze()` Step 5 仍用 global |
+| Cards path `bbox` | `(min_x, ub.y1, max_x, lb.y0)`（gap 邊緣，不含 blob 本身高度） |
+| `center_y` 精化後 | `compute_metrics()` 在 `records.append(rec)` 前若 `y_upper_edge` 有值則覆寫 `rec.center_y` |
+| `store_meta` | Cards 路徑的 `apply_yedge_subpixel_to_cuts()` 必須 `store_meta=True`（Detail CD 需要） |
+| DataFrame 欄位 | `records_to_dataframe()` 輸出 `cut_id`/`column_id`（不是 `cmg_id`/`col_id`）；13 欄標準順序 |
+| Index recipe_ids | `BatchRunStore` 儲存時 index entry 含 `recipe_ids`；`get_stats_for_recipe()` 以此快速跳過無關記錄 |
 
 ---
 
@@ -465,6 +483,19 @@ pytest tests/ -v
 | 已修復 | review_workspace.py | 批次導航卡在 separator 列 | ✅ B-Bug3 |
 | 已修復 | results_panel.py | feature_id 解析靜默失敗 | ✅ B-Bug4 |
 | 已修復 | csv/excel_exporter.py | 頂層 pandas import 造成啟動崩潰 | ✅ B-Bug5 |
+| 已修復 | review_workspace.py | 批次 > 1000 張時導航對應錯誤影像（_entry_index_map） | ✅ |
+| 已修復 | recipe_workspace.py | Duplicate Recipe 後按 Save 覆蓋原始 Recipe | ✅ |
+| 已修復 | cmg_analyzer.py | `analyze()` gap edge 用 `cy±height/2` 而非 bbox 邊緣（A1） | ✅ |
+| 已修復 | cmg_recipe.py | 精化失敗時 cd_px 未回落 bbox 值（A2） | ✅ |
+| 已修復 | cmg_recipe.py | Recipe 路徑 re-flag 用 global minmax，不一致 Cards 路徑（F1） | ✅ |
+| 已修復 | measure_workspace.py | Cards 路徑 bbox 含整個 blob 高度，center_y 偏移（G1） | ✅ |
+| 已修復 | cmg_recipe.py | 精化成功後 center_y 未更新，Excel cd_line_y_px 偏移（B1） | ✅ |
+| 已修復 | measure_workspace.py | Cards 路徑 Detail CD 無反應（store_meta=False）（G2） | ✅ |
+| 已修復 | measure_workspace.py | Edge Locator 無提示「參數僅本次有效」（I2） | ✅ |
+| 已修復 | measure_workspace.py | Mask 模式顯示舊 mask，_run_preview 未更新（Q1） | ✅ |
+| 已修復 | batch_run_store.py | get_stats_for_recipe 大量歷史記錄卡頓，缺快速跳過（L2） | ✅ |
+| 已修復 | measure_validate_dialog.py | Compare to Reference N 顯示不準（V5/V6） | ✅ |
+| 已修復 | _common.py / excel_exporter.py | CSV/Excel 欄位命名：cmg_id→cut_id, col_id→column_id（W1） | ✅ |
 | 待修 | review_workspace.py | Review 工作流程為基礎版，缺 Accept/Reject 操作 | 待修 |
 | 待修 | annotator.py | X-CD 標注 overlay 座標對齊待驗證 | 待修 |
 | Phase C | measure/batch | Worker 數可調已實作，但無上限保護 | 待改善 |
