@@ -2,6 +2,47 @@
 
 ---
 
+## [2026-04-23] Measure 右側設定欄全面重設計：融入式 Tier 架構
+
+**變更類型：** UI 重設計
+
+**設計目標：**
+- 移除自訂卡片框線（border/border-radius outer QWidget），改為與整個面板視覺統一的 Tier-2 CollapsibleSection
+- 移除 `QFrame#rightPanel QPushButton:!checked:!disabled` 全域覆蓋，按鈕配色與其他分頁/全域統一
+- 每個測量 profile 以 Tier-2 section header 呈現，Filters/Advanced 改為 Tier-3
+
+**變更內容：**
+
+### `src/gui/collapsible.py` — 新增 `trailing_widget` 支援
+- `__init__` 加入 `trailing_widget: QWidget | None = None` 參數
+- 當提供 trailing_widget 時，header 改為 container QWidget（背景/邊框與 tier 一致）+ toggle QPushButton（background:transparent + inline hover QSS）+ trailing_widget
+- 新增 `_TIER_BG`、`_TIER_BORDER`、`_TIER_HOVER_QSS` 常數（避免 hardcode 分散各處）
+- 原有無 trailing_widget 的使用方式完全不變（向下相容）
+
+### `src/gui/control_panel.py` — 重寫 `_add_profile()`
+- **移除**：`outer` 卡片 QWidget、`header_row`、`card_title` QLabel、舊式 inline `btn_del` 樣式
+- **改為**：`CollapsibleSection(name, tier=2, trailing_widget=btn_del)` — 與 Recipe/Edge Locator 視覺統一
+- Filters section：tier=2 → tier=3（因為現在嵌套在 tier=2 profile 內）
+- Advanced section：保留 tier=3
+- `_build_measurement_profiles`：profile 間距 spacing=8 → 0（tier section 本身的 border 已提供視覺分隔）
+- 「＋ Add Measurement」按鈕：綠色 → 橙色系（與 app accent 統一）
+
+### `src/gui/styles.py`
+- **移除** `QFrame#rightPanel QPushButton:!checked:!disabled` 及 hover 規則（這是造成所有按鈕邊框突兀的根因）
+- **保留** QSpinBox/QComboBox/QLineEdit/QCheckBox::indicator 的右側面板邊框加深規則
+- **新增** `QPushButton#profileDeleteBtn`：平時無邊框靜默顯示，hover 才顯示危險紅色
+
+**影響範圍：**
+- `src/gui/collapsible.py`
+- `src/gui/control_panel.py`
+- `src/gui/styles.py`
+
+**測試結果：**
+- `python3 -m py_compile` 通過
+- `pytest`（排除 numpy/cv2 相依）→ 17/17 通過
+
+---
+
 ## [2026-04-23] 修復 Run Single 閃退：MeasurementRecord 缺少必填欄位
 
 **變更類型：** Bug 修復

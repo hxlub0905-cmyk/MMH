@@ -37,7 +37,7 @@ class ControlPanel(QWidget):
     def _build_scale(self) -> None:
         sec = CollapsibleSection("Scale", tier=2, collapsed=False,
                                   content_margins=(8, 4, 8, 8))
-        fw = QWidget(); fw.setStyleSheet("background:transparent; border:none;")
+        fw = QWidget(); fw.setStyleSheet("background:transparent;")
         form = QFormLayout(fw)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         form.setContentsMargins(0, 0, 0, 0); form.setSpacing(5)
@@ -57,7 +57,7 @@ class ControlPanel(QWidget):
     def _build_preprocess(self) -> None:
         sec = CollapsibleSection("Pre-processing", tier=2, collapsed=True,
                                   content_margins=(8, 4, 8, 8))
-        fw = QWidget(); fw.setStyleSheet("background:transparent; border:none;")
+        fw = QWidget(); fw.setStyleSheet("background:transparent;")
         form = QFormLayout(fw)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         form.setContentsMargins(0, 0, 0, 0); form.setSpacing(5)
@@ -86,25 +86,26 @@ class ControlPanel(QWidget):
 
     def _build_measurement_profiles(self) -> None:
         sec = CollapsibleSection("Measurements", tier=1, collapsed=False,
-                                  content_margins=(6, 4, 6, 8))
+                                  content_margins=(0, 4, 0, 8))
 
-        add_bar = QWidget(); add_bar.setStyleSheet("border:none; background:transparent;")
-        add_hl = QHBoxLayout(add_bar); add_hl.setContentsMargins(2, 2, 2, 6)
+        # "Add Measurement" button — orange-accent dashed style to signal "add" action
+        add_bar = QWidget(); add_bar.setStyleSheet("background:transparent;")
+        add_hl = QHBoxLayout(add_bar); add_hl.setContentsMargins(6, 2, 6, 6)
         self._btn_add = QPushButton("＋  Add Measurement")
         self._btn_add.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._btn_add.setStyleSheet(
-            "QPushButton { background:#f0f8f4; border:1px dashed #a8d4bc; border-radius:6px;"
-            "  color:#4a8c6a; font-weight:600; padding:5px; }"
-            "QPushButton:hover { background:#e0f4ec; border-color:#80c4a0; }"
+            "QPushButton { background:#fffbf5; border:1px dashed #e8b87a; border-radius:6px;"
+            "  color:#c97028; font-weight:600; padding:5px; }"
+            "QPushButton:hover { background:#fff4e4; border-color:#d49a50; }"
         )
         self._btn_add.clicked.connect(self._on_add_profile)
         add_hl.addWidget(self._btn_add)
         sec.add_widget(add_bar)
 
-        profiles_w = QWidget(); profiles_w.setStyleSheet("border:none; background:transparent;")
+        profiles_w = QWidget(); profiles_w.setStyleSheet("background:transparent;")
         self._profiles_layout = QVBoxLayout(profiles_w)
         self._profiles_layout.setContentsMargins(0, 0, 0, 0)
-        self._profiles_layout.setSpacing(8)
+        self._profiles_layout.setSpacing(0)
         sec.add_widget(profiles_w)
 
         self._layout.addWidget(sec)
@@ -122,51 +123,23 @@ class ControlPanel(QWidget):
         self._add_profile(name.strip() or f"Measure {len(self._profiles)+1}")
 
     def _add_profile(self, name: str) -> None:
-        outer = QWidget()
-        # ⚠ Use bare property (no "QWidget { }" type-selector) so the rule
-        #   applies ONLY to `outer` itself and does NOT cascade to child
-        #   widgets (QComboBox, QSpinBox …) via Qt's stylesheet inheritance.
-        outer.setStyleSheet(
-            "background:#fff9f2; border:1px solid #c8b8a8; border-radius:8px;"
-        )
-        outer_layout = QVBoxLayout(outer)
-        outer_layout.setContentsMargins(0, 0, 0, 6)
-        outer_layout.setSpacing(0)
-
-        # Card header: title + delete button (Tier 1 colour)
-        header_row = QWidget()
-        # Bare property — only this widget, NOT its children.
-        header_row.setStyleSheet(
-            "background:#fff4e8;"
-            "border-top-left-radius:8px; border-top-right-radius:8px;"
-            "border-bottom:1px solid #efd8b8;"
-        )
-        header_hl = QHBoxLayout(header_row)
-        header_hl.setContentsMargins(10, 5, 6, 5)
-        header_hl.setSpacing(4)
-        card_title = QLabel(name)
-        card_title.setStyleSheet(
-            "color:#c97028; font-weight:700; font-size:11px;"
-            "letter-spacing:0.5px; background:transparent; border:none;"
-        )
+        # Delete button — quiet by default, danger colour on hover
         btn_del = QPushButton("×")
-        btn_del.setFixedSize(18, 18)
+        btn_del.setFixedSize(20, 20)
+        btn_del.setObjectName("profileDeleteBtn")
         btn_del.setToolTip(f"Remove measurement '{name}'")
-        btn_del.setStyleSheet(
-            "QPushButton { background:#fff0eb; border:1px solid #efb6a0; border-radius:4px;"
-            "  color:#b04030; font-weight:700; padding:0; font-size:13px; }"
-            "QPushButton:hover { background:#f4d0c8; border-color:#d07060; }"
-        )
-        header_hl.addWidget(card_title)
-        header_hl.addStretch()
-        header_hl.addWidget(btn_del)
-        outer_layout.addWidget(header_row)
 
-        # Tier 1 params: always visible
-        t1_widget = QWidget()
-        # Bare property only — child QComboBox / QSpinBox keep their own styles.
-        t1_widget.setStyleSheet("background:transparent;")
-        t1_form = QFormLayout(t1_widget)
+        # Profile section: Tier-2, visually integrated with the panel hierarchy
+        sec_profile = CollapsibleSection(
+            name, tier=2, collapsed=False,
+            content_margins=(0, 0, 0, 4),
+            trailing_widget=btn_del,
+        )
+        sec_profile.setStyleSheet("background:transparent;")
+
+        # ── Always-visible form fields ────────────────────────────────────────
+        form_w = QWidget(); form_w.setStyleSheet("background:transparent;")
+        t1_form = QFormLayout(form_w)
         t1_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         t1_form.setContentsMargins(8, 6, 8, 4)
         t1_form.setSpacing(5)
@@ -194,12 +167,11 @@ class ControlPanel(QWidget):
         t1_form.addRow("GL Min", min_wrap)
         t1_form.addRow("GL Max", max_wrap)
         t1_form.addRow("Min blob area", min_area)
-        outer_layout.addWidget(t1_widget)
+        sec_profile.add_widget(form_w)
 
-        # Tier 2: Filters (collapsed=False, visible but collapsible)
-        sec_filters = CollapsibleSection("Filters", tier=2, collapsed=False,
+        # ── Filters (Tier-3, expanded by default) ────────────────────────────
+        sec_filters = CollapsibleSection("Filters", tier=3, collapsed=False,
                                          content_margins=(8, 4, 8, 6))
-        sec_filters.setStyleSheet("background:transparent;")
         f2_form_w = QWidget(); f2_form_w.setStyleSheet("background:transparent;")
         f2_form = QFormLayout(f2_form_w)
         f2_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
@@ -218,12 +190,11 @@ class ControlPanel(QWidget):
         f2_form.addRow("Max width", max_w)
         f2_form.addRow("Min height", min_h)
         sec_filters.add_widget(f2_form_w)
-        outer_layout.addWidget(sec_filters)
+        sec_profile.add_widget(sec_filters)
 
-        # Tier 3: Advanced (collapsed by default)
+        # ── Advanced (Tier-3, collapsed by default) ───────────────────────────
         sec_adv = CollapsibleSection("Advanced", tier=3, collapsed=True,
                                       content_margins=(8, 4, 8, 6))
-        sec_adv.setStyleSheet("background:transparent;")
         f3_form_w = QWidget(); f3_form_w.setStyleSheet("background:transparent;")
         f3_form = QFormLayout(f3_form_w)
         f3_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
@@ -275,8 +246,9 @@ class ControlPanel(QWidget):
         f3_form.addRow("Min line (px)", min_line_px)
         f3_form.addRow("Max line (px)", max_line_px)
         sec_adv.add_widget(f3_form_w)
-        outer_layout.addWidget(sec_adv)
+        sec_profile.add_widget(sec_adv)
 
+        # ── Signal wiring ─────────────────────────────────────────────────────
         def on_min(v: int) -> None:
             if v > gl_max.value():
                 gl_max.setValue(v)
@@ -305,10 +277,10 @@ class ControlPanel(QWidget):
         range_enabled.stateChanged.connect(self._emit)
         enabled.stateChanged.connect(self._emit)
 
-        self._profiles_layout.addWidget(outer)
+        self._profiles_layout.addWidget(sec_profile)
         profile_dict = {
             "name": name,
-            "_widget": outer,
+            "_widget": sec_profile,
             "enabled": enabled,
             "axis": axis,
             "gl_min": gl_min,
@@ -341,9 +313,9 @@ class ControlPanel(QWidget):
         self._profiles.append(profile_dict)
 
         def _on_delete() -> None:
-            self._profiles_layout.removeWidget(outer)
-            outer.setParent(None)
-            outer.deleteLater()
+            self._profiles_layout.removeWidget(sec_profile)
+            sec_profile.setParent(None)
+            sec_profile.deleteLater()
             if profile_dict in self._profiles:
                 self._profiles.remove(profile_dict)
             self._emit()

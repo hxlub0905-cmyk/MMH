@@ -617,12 +617,6 @@ QFrame#rightPanel QLineEdit {
 QFrame#rightPanel QLineEdit:focus {
     border-color: #f29f4b;
 }
-QFrame#rightPanel QPushButton:!checked:!disabled {
-    border: 1px solid #b8a898;
-}
-QFrame#rightPanel QPushButton:hover:!checked:!disabled {
-    border-color: #9a8878;
-}
 QFrame#rightPanel QCheckBox::indicator {
     border: 1px solid #b8a898;
     border-radius: 3px;
@@ -631,5 +625,28 @@ QFrame#rightPanel QCheckBox::indicator {
 QFrame#rightPanel QCheckBox::indicator:checked {
     background: #e6953d;
     border-color: #f29f4b;
+}
+
+/* ════════════════════════ Profile delete button ═════════════════════════ */
+/* Quiet by default; danger colour only on hover — avoids visual clutter   */
+/* in the section header while remaining immediately recognisable.          */
+QPushButton#profileDeleteBtn {
+    background: transparent;
+    border: none;
+    color: #c8b8a8;
+    font-size: 14px;
+    font-weight: 700;
+    padding: 0;
+    border-radius: 3px;
+    min-height: 0;
+}
+QPushButton#profileDeleteBtn:hover {
+    background: #f4d0c8;
+    color: #b04030;
+    border: 1px solid #efb6a0;
+}
+QPushButton#profileDeleteBtn:pressed {
+    background: #ead0c8;
+    color: #902820;
 }
 """
