@@ -8,7 +8,7 @@ from typing import NamedTuple
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QGroupBox, QLabel, QPushButton,
+    QGroupBox, QLabel, QPushButton, QCheckBox,
     QComboBox, QSpinBox, QProgressBar, QTextEdit,
     QListWidget, QListWidgetItem, QFileDialog,
     QMessageBox, QLineEdit, QScrollArea, QSizePolicy,
@@ -59,6 +59,7 @@ class BatchWorkspace(QWidget):
         self._batch_start_time: float | None = None
         self._THROTTLE = 50    # update log/list every N images
         self._LIST_CAP = 500   # max QListWidget items (keeps most recent)
+        self._overlay_output_dir: str = ""
         self._build_ui()
         self._add_dataset_row()   # start with one empty row
 
@@ -124,6 +125,24 @@ class BatchWorkspace(QWidget):
         run_btn.clicked.connect(self._run_batch)
         ctrl_row.addWidget(run_btn)
         root.addLayout(ctrl_row)
+
+        # ── Overlay 選項列 ────────────────────────────────────────────────────
+        self._chk_overlay = QCheckBox("邊跑邊輸出 Overlay Image")
+        self._chk_overlay.setChecked(False)
+        self._chk_overlay.stateChanged.connect(self._on_overlay_toggled)
+
+        self._overlay_folder_btn = QPushButton("選擇輸出資料夾…")
+        self._overlay_folder_btn.setEnabled(False)
+        self._overlay_folder_btn.clicked.connect(self._browse_overlay_folder)
+
+        self._overlay_folder_label = QLabel("（未選擇）")
+        self._overlay_folder_label.setStyleSheet("color:#9f8f7b; font-size:11px;")
+
+        overlay_row = QHBoxLayout()
+        overlay_row.addWidget(self._chk_overlay)
+        overlay_row.addWidget(self._overlay_folder_btn)
+        overlay_row.addWidget(self._overlay_folder_label, stretch=1)
+        root.addLayout(overlay_row)
 
         # ── Progress ──────────────────────────────────────────────────────────
         prog_box = QGroupBox("Progress")
@@ -241,6 +260,21 @@ class BatchWorkspace(QWidget):
                         dr.recipe_combo.setCurrentIndex(i)
                         break
 
+    # ── Overlay 設定 ──────────────────────────────────────────────────────────
+
+    def _on_overlay_toggled(self, state: int) -> None:
+        self._overlay_folder_btn.setEnabled(bool(state))
+        if not state:
+            self._overlay_output_dir = ""
+            self._overlay_folder_label.setText("（未選擇）")
+
+    def _browse_overlay_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "選擇 Overlay 輸出資料夾")
+        if folder:
+            self._overlay_output_dir = folder
+            self._overlay_folder_label.setText(Path(folder).name)
+            self._overlay_folder_label.setToolTip(folder)
+
     # ── Batch execution ───────────────────────────────────────────────────────
 
     def _run_batch(self) -> None:
@@ -281,6 +315,12 @@ class BatchWorkspace(QWidget):
         self._progress.setMaximum(total_images)
         self._progress.setValue(0)
 
+        output_dir = (
+            Path(self._overlay_output_dir)
+            if self._chk_overlay.isChecked() and self._overlay_output_dir
+            else None
+        )
+
         if len(valid_rows) == 1:
             # Single-dataset path — backward compatible
             r = valid_rows[0]
@@ -289,6 +329,7 @@ class BatchWorkspace(QWidget):
                 image_records=r["image_records"],
                 recipe_ids=r["recipe_ids"],
                 max_workers=self._worker_spin.value(),
+                output_dir=output_dir,
             )
             self._worker.progress.connect(self._on_progress)
             self._worker.finished.connect(self._on_single_finished)
@@ -301,6 +342,7 @@ class BatchWorkspace(QWidget):
                 engine=self._engine,
                 datasets=valid_rows,
                 max_workers=self._worker_spin.value(),
+                output_dir=output_dir,
             )
             self._worker.dataset_started.connect(self._on_dataset_started)
             self._worker.progress.connect(self._on_progress)
@@ -315,8 +357,9 @@ class BatchWorkspace(QWidget):
     def _on_dataset_started(self, current: int, total: int, label: str) -> None:
         self._log_text.append(f"\n=== Dataset {current}/{total}: {label} ===")
 
-    @pyqtSlot(int, int, str, str)
-    def _on_progress(self, done: int, total: int, name: str, status: str) -> None:
+    @pyqtSlot(int, int, str, str, object)
+    def _on_progress(self, done: int, total: int, name: str, status: str,
+                     result_dict: object = None) -> None:
         self._progress_count += 1
         self._progress.setValue(done)
 
@@ -336,6 +379,16 @@ class BatchWorkspace(QWidget):
             if self._image_list.count() >= self._LIST_CAP:
                 self._image_list.takeItem(0)
             self._image_list.addItem(item)
+
+        if isinstance(result_dict, dict):
+            if result_dict.get("overlay_path"):
+                self._log_text.append(
+                    f"  → overlay: {Path(result_dict['overlay_path']).name}"
+                )
+            if result_dict.get("overlay_error"):
+                self._log_text.append(
+                    f"  → overlay error: {result_dict['overlay_error']}"
+                )
 
     @pyqtSlot(object)
     def _on_single_finished(self, batch_run: BatchRunRecord) -> None:
@@ -418,8 +471,8 @@ class BatchWorkspace(QWidget):
 # ── Worker threads ─────────────────────────────────────────────────────────────
 
 class _BatchWorker(QThread):
-    progress = pyqtSignal(int, int, str, str)  # done, total, name, status
-    finished = pyqtSignal(object)              # BatchRunRecord
+    progress = pyqtSignal(int, int, str, str, object)  # done, total, name, status, result_dict
+    finished = pyqtSignal(object)                      # BatchRunRecord
     error    = pyqtSignal(str)
 
     def __init__(
@@ -428,21 +481,24 @@ class _BatchWorker(QThread):
         image_records: list[ImageRecord],
         recipe_ids: list[str],
         max_workers: int,
+        output_dir: Path | None = None,
     ):
         super().__init__()
         self._engine        = engine
         self._image_records = image_records
         self._recipe_ids    = recipe_ids
         self._max_workers   = max_workers
+        self._output_dir    = output_dir
 
     def run(self) -> None:
         try:
             batch_run = self._engine.run_batch(
                 image_records=self._image_records,
                 recipe_ids=self._recipe_ids,
-                on_progress=lambda done, total, name, status:
-                    self.progress.emit(done, total, name, status),
+                on_progress=lambda done, total, name, status, result_dict:
+                    self.progress.emit(done, total, name, status, result_dict),
                 max_workers=self._max_workers,
+                output_dir=self._output_dir,
             )
             self.finished.emit(batch_run)
         except Exception as exc:
@@ -450,9 +506,9 @@ class _BatchWorker(QThread):
 
 
 class _MultiBatchWorker(QThread):
-    dataset_started = pyqtSignal(int, int, str)   # current_idx, total, label
-    progress        = pyqtSignal(int, int, str, str)
-    finished        = pyqtSignal(object)           # MultiDatasetBatchRun
+    dataset_started = pyqtSignal(int, int, str)           # current_idx, total, label
+    progress        = pyqtSignal(int, int, str, str, object)  # done, total, name, status, result_dict
+    finished        = pyqtSignal(object)                  # MultiDatasetBatchRun
     error           = pyqtSignal(str)
 
     def __init__(
@@ -460,11 +516,13 @@ class _MultiBatchWorker(QThread):
         engine: MeasurementEngine,
         datasets: list[dict],
         max_workers: int,
+        output_dir: Path | None = None,
     ):
         super().__init__()
         self._engine      = engine
         self._datasets    = datasets
         self._max_workers = max_workers
+        self._output_dir  = output_dir
 
     def run(self) -> None:
         try:
@@ -472,9 +530,10 @@ class _MultiBatchWorker(QThread):
                 datasets=self._datasets,
                 on_dataset_start=lambda cur, tot, lbl:
                     self.dataset_started.emit(cur, tot, lbl),
-                on_progress=lambda done, total, name, status:
-                    self.progress.emit(done, total, name, status),
+                on_progress=lambda done, total, name, status, result_dict:
+                    self.progress.emit(done, total, name, status, result_dict),
                 max_workers=self._max_workers,
+                output_dir=self._output_dir,
             )
             self.finished.emit(mbr)
         except Exception as exc:

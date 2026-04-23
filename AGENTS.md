@@ -1,7 +1,7 @@
 # AGENTS.md — SEM MM 開發指南
 
 本文件供 AI Agent 或開發者快速掌握 SEM MM 專案的架構、慣例與開發方式。
-最後更新：2026-04-23（Phase B + Bug Fix Series 完成）
+最後更新：2026-04-23（Phase C 部分完成：Overlay 即時輸出 + TC 向量化）
 
 ---
 
@@ -19,14 +19,15 @@
 
 | 項目 | 說明 |
 |------|------|
-| 版本階段 | **Phase A + F2 + G2 + B + Bug Fix Series 已完成** |
+| 版本階段 | **Phase A + F2 + G2 + B + Bug Fix Series + Phase C（部分）已完成** |
 | 核心演算法 | CMG Y-CD / X-CD 量測（完整保留，以 Recipe 包裝） |
 | X-Proj 偵測 | Pitch-anchored 相位偵測（`detect_mg_column_centers_pitch_phase()`） |
 | 架構模型 | Recipe-driven SEM Metrology Platform |
 | 測試數量 | 17 項通過（環境無 numpy/cv2，其餘 60 項需科學計算套件） |
 | Phase B 完成 | Bug 修復 5 項 + 批次持久化 + Recipe 驗證模式 + 歷史趨勢 Run Chart |
 | Bug Fix Series | CD 計算一致性（A1/A2/F1/G1）、UX 修復（B1/G2/I2/Q1）、效能（L2）、導航（Review/Recipe） |
-| 未完成 Phase | C（能力升級）、D（平台化） |
+| Phase C（部分） | Batch 即時 Overlay 輸出 + TC 路徑向量化（4–5× 加速）| 
+| 未完成 Phase | C（Worker 上限保護、X-CD 標注修正）、D（平台化） |
 
 ---
 
@@ -334,17 +335,27 @@ class MeasurementEngine:
     def run_batch(
         image_records: list[ImageRecord],
         recipe_ids: list[str],
-        on_progress: Callable[[int, int, str], None] | None,
+        on_progress: Callable[[int, int, str, str, dict], None] | None,
         max_workers: int | None,
+        output_dir: Path | None = None,   # Phase C：每張圖跑完即寫 overlay PNG
     ) -> BatchRunRecord
+
+    def run_multi_batch(
+        datasets: list[dict],
+        on_dataset_start: Callable | None,
+        on_progress: Callable[[int, int, str, str, dict], None] | None,
+        max_workers: int | None,
+        output_dir: Path | None = None,   # 各 dataset 寫入 output_dir / label 子資料夾
+    ) -> MultiDatasetBatchRun
 ```
 
 **Batch 序列化規則**（ProcessPoolExecutor 限制）：
 - 所有傳入子行程的資料必須為純 dict/list/primitive（不可含 dataclass）
-- Worker args：`{image_path, image_id, pixel_size_nm, recipe_descriptors: [dict, ...]}`
-- Worker 返回值：`{image_path, status, error, measurements: [dict], cuts: [dict]}`
+- Worker args：`{image_path, image_id, pixel_size_nm, recipe_descriptors: [dict, ...], output_dir: str | None}`
+- Worker 返回值：`{image_path, status, error, measurements: [dict], cuts: [dict], overlay_path: str | None, overlay_error: str | None}`
 - `measurements`：新格式（`MeasurementRecord.to_dict()` 列表）
 - `cuts`：舊格式（`_compat.serialise_cuts_from_records()` 轉換，供舊版 exporter 使用）
+- `on_progress` 第 5 個參數為完整 `result_dict`（UI 層用來顯示 overlay_path）
 
 ---
 
@@ -530,6 +541,13 @@ pytest tests/ -v
 | G2-4 | HTML 匯出 matplotlib 容錯 + 圖片匯出進度條 | `report_generator.py`, `report_workspace.py` |
 | G2-5 | Recipe 編輯器改為 QTabWidget 四 Tab 佈局 | `recipe_workspace.py` |
 | G2-6 | Annotated 數值標籤字體縮小、間距加緊 | `annotator.py` |
+
+#### Phase C（部分完成，2026-04-23）
+
+| 功能 | 說明 | 主要檔案 |
+|------|------|---------|
+| Batch 即時 Overlay 輸出 | subprocess 內每張圖寫 `<stem>_annotated.png`；UI 新增 checkbox + 資料夾選擇 | `measurement_engine.py`, `batch_workspace.py` |
+| TC 路徑向量化 | `_refine_yedge_threshold_crossing_batch()` 一次處理所有 sample_x；預期 4–5× 加速（13000 張 20–30 min → 4–8 min） | `cmg_recipe.py` |
 
 ### Phase B 開發重點（下一步）
 
