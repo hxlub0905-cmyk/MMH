@@ -172,19 +172,38 @@ def export_excel_from_records(
         _style_header_row(ws_meas, fill_hex=_HEADER_FILL)
         _autofit_columns(ws_meas)
 
-        min_fill  = PatternFill("solid", fgColor=_MIN_FILL)
-        max_fill  = PatternFill("solid", fgColor=_MAX_FILL)
+        min_fill = PatternFill("solid", fgColor=_MIN_FILL)
+        max_fill = PatternFill("solid", fgColor=_MAX_FILL)
 
-        flag_col_idx = _col_index(df_meas, "flag")
-        for row_idx, flag in enumerate(df_meas["flag"], start=2):
-            if flag == "MIN":
-                for cell in ws_meas[row_idx]:
-                    cell.fill = min_fill
-            elif flag == "MAX":
-                for cell in ws_meas[row_idx]:
-                    cell.fill = max_fill
+        # Use conditional formatting instead of per-cell coloring:
+        # avoids O(rows × cols) cell-style writes that corrupt large files.
+        # DifferentialStyle + Rule with bgColor is the correct openpyxl API for
+        # formula-based CF; FormulaRule(fill=PatternFill(fgColor=...)) uses an
+        # incompatible solid fill that can corrupt workbook state in some versions.
+        try:
+            from openpyxl.styles.differential import DifferentialStyle
+            from openpyxl.formatting.rule import Rule as _Rule
+            flag_col_letter = _col_letter(df_meas, "flag")
+            if flag_col_letter and len(df_meas) > 0:
+                last_row = len(df_meas) + 1
+                last_col = get_column_letter(ws_meas.max_column)
+                cf_range = f"A2:{last_col}{last_row}"
+                min_dxf = DifferentialStyle(fill=PatternFill(bgColor=_MIN_FILL))
+                max_dxf = DifferentialStyle(fill=PatternFill(bgColor=_MAX_FILL))
+                ws_meas.conditional_formatting.add(
+                    cf_range,
+                    _Rule(type="formula", dxf=min_dxf,
+                          formula=[f'${flag_col_letter}2="MIN"']),
+                )
+                ws_meas.conditional_formatting.add(
+                    cf_range,
+                    _Rule(type="formula", dxf=max_dxf,
+                          formula=[f'${flag_col_letter}2="MAX"']),
+                )
+        except Exception:
+            pass  # CF is best-effort; data integrity is not affected
 
-        # Freeze header row + make it bold
+        # Freeze header row
         ws_meas.freeze_panes = "A2"
 
         # ── Style: Image Summary ──────────────────────────────────────────────
@@ -193,7 +212,7 @@ def export_excel_from_records(
         _autofit_columns(ws_sum)
         ws_sum.freeze_panes = "A2"
 
-        # Highlight min_cd and max_cd cells within each row
+        # Highlight min_cd and max_cd cells (Image Summary is small — per-cell ok)
         min_cd_col = _col_letter(df_summary, "min_cd_nm")
         max_cd_col = _col_letter(df_summary, "max_cd_nm")
         min_x_col  = _col_letter(df_summary, "min_cd_x_px")
@@ -328,15 +347,15 @@ def _style_header_row(ws, fill_hex: str = "F7E0C8") -> None:
     ws.row_dimensions[1].height = 30
 
 
-def _autofit_columns(ws, max_width: int = 30) -> None:
+def _autofit_columns(ws, max_width: int = 30, sample_rows: int = 200) -> None:
     from openpyxl.utils import get_column_letter
     for col_idx, col_cells in enumerate(ws.columns, start=1):
-        col_letter = get_column_letter(col_idx)
+        # Sample header + first N data rows to avoid O(n) scan over 20k+ rows
+        cells_to_check = list(col_cells)[: sample_rows + 1]
         max_len = max(
-            (len(str(cell.value)) if cell.value is not None else 0)
-            for cell in col_cells
+            (len(str(c.value)) if c.value is not None else 0) for c in cells_to_check
         )
-        ws.column_dimensions[col_letter].width = min(max(max_len + 2, 8), max_width)
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 2, 8), max_width)
 
 
 def _col_index(df, col: str) -> int | None:

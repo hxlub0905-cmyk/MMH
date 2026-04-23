@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import NamedTuple
 
@@ -52,7 +53,12 @@ class BatchWorkspace(QWidget):
         self._cal_manager   = cal_manager
         self._run_store     = run_store
         self._worker        = None
+        self._save_worker   = None
         self._dataset_rows: list[_DatasetRow] = []
+        self._progress_count    = 0
+        self._batch_start_time: float | None = None
+        self._THROTTLE = 50    # update log/list every N images
+        self._LIST_CAP = 500   # max QListWidget items (keeps most recent)
         self._build_ui()
         self._add_dataset_row()   # start with one empty row
 
@@ -125,6 +131,9 @@ class BatchWorkspace(QWidget):
         self._progress = QProgressBar()
         self._progress.setTextVisible(True)
         pv.addWidget(self._progress)
+        self._lbl_eta = QLabel("ETA: —")
+        self._lbl_eta.setStyleSheet("color:#aaa; font-size:11px;")
+        pv.addWidget(self._lbl_eta)
         self._log_text = QTextEdit()
         self._log_text.setReadOnly(True)
         self._log_text.setMaximumHeight(120)
@@ -265,6 +274,9 @@ class BatchWorkspace(QWidget):
 
         self._log_text.clear()
         self._image_list.clear()
+        self._progress_count = 0
+        self._batch_start_time = time.monotonic()
+        self._lbl_eta.setText("ETA: —")
         total_images = sum(len(r["image_records"]) for r in valid_rows)
         self._progress.setMaximum(total_images)
         self._progress.setValue(0)
@@ -305,40 +317,76 @@ class BatchWorkspace(QWidget):
 
     @pyqtSlot(int, int, str, str)
     def _on_progress(self, done: int, total: int, name: str, status: str) -> None:
+        self._progress_count += 1
         self._progress.setValue(done)
-        self._log_text.append(f"[{done}/{total}] {name}")
-        item = QListWidgetItem(f"[{status}]  {name}")
-        item.setForeground(Qt.GlobalColor.red if status != "OK" else Qt.GlobalColor.darkGreen)
-        self._image_list.addItem(item)
+
+        # ETA — always recalculate (cheap)
+        if done > 0 and self._batch_start_time is not None:
+            elapsed = time.monotonic() - self._batch_start_time
+            rate = done / elapsed
+            remaining = (total - done) / rate if rate > 0 else 0
+            mins, secs = divmod(int(remaining), 60)
+            self._lbl_eta.setText(f"ETA: {mins}m {secs:02d}s  ({rate:.1f} img/s)")
+
+        # Throttle heavy UI updates — only on first, every THROTTLE-th, failures, or last
+        if self._progress_count % self._THROTTLE == 1 or status != "OK" or done == total:
+            self._log_text.append(f"[{done}/{total}] {name}  [{status}]")
+            item = QListWidgetItem(f"[{status}]  {name}")
+            item.setForeground(Qt.GlobalColor.red if status != "OK" else Qt.GlobalColor.darkGreen)
+            if self._image_list.count() >= self._LIST_CAP:
+                self._image_list.takeItem(0)
+            self._image_list.addItem(item)
 
     @pyqtSlot(object)
     def _on_single_finished(self, batch_run: BatchRunRecord) -> None:
         self._progress.setValue(self._progress.maximum())
-        if self._run_store:
-            try:
-                self._run_store.save(batch_run)
-            except Exception:
-                pass
+        self._lbl_eta.setText("ETA: done")
         msg = (f"Batch complete  ·  {batch_run.success_count} OK  "
                f"·  {batch_run.fail_count} failed  —  Results sent to Review tab")
         self._log_text.append(msg)
-        self.status_message.emit(msg)
-        self.batch_completed.emit(batch_run)
+        self.batch_completed.emit(batch_run)   # send to Report tab immediately
+        if self._run_store:
+            self._log_text.append("Saving results…")
+            self.status_message.emit(msg + "  (saving…)")
+            self._save_worker = _SaveWorker(self._run_store, batch_run, multi=False)
+            self._save_worker.save_done.connect(
+                lambda p: self.status_message.emit(f"Results saved → {Path(p).name}")
+            )
+            self._save_worker.save_done.connect(
+                lambda p: self._log_text.append(f"Saved → {Path(p).name}")
+            )
+            self._save_worker.save_error.connect(
+                lambda e: self.status_message.emit(f"Save error: {e}")
+            )
+            self._save_worker.start()
+        else:
+            self.status_message.emit(msg)
 
     @pyqtSlot(object)
     def _on_multi_finished(self, mbr: MultiDatasetBatchRun) -> None:
         self._progress.setValue(self._progress.maximum())
-        if self._run_store:
-            try:
-                self._run_store.save_multi(mbr)
-            except Exception:
-                pass
+        self._lbl_eta.setText("ETA: done")
         msg = (f"Multi-batch complete  ·  {mbr.success_count} OK  "
                f"·  {mbr.fail_count} failed across {len(mbr.datasets)} datasets"
                f"  —  Results sent to Report tab")
         self._log_text.append(msg)
-        self.status_message.emit(msg)
-        self.multi_batch_completed.emit(mbr)
+        self.multi_batch_completed.emit(mbr)   # send to Report tab immediately
+        if self._run_store:
+            self._log_text.append("Saving results…")
+            self.status_message.emit(msg + "  (saving…)")
+            self._save_worker = _SaveWorker(self._run_store, mbr, multi=True)
+            self._save_worker.save_done.connect(
+                lambda p: self.status_message.emit(f"Results saved → {Path(p).name}")
+            )
+            self._save_worker.save_done.connect(
+                lambda p: self._log_text.append(f"Saved → {Path(p).name}")
+            )
+            self._save_worker.save_error.connect(
+                lambda e: self.status_message.emit(f"Save error: {e}")
+            )
+            self._save_worker.start()
+        else:
+            self.status_message.emit(msg)
 
     def _open_history_dialog(self) -> None:
         if not self._run_store:
@@ -503,3 +551,27 @@ class _HistoryDialog(QDialog):
             return
         self._run_store.delete(self._summaries[row]["file_path"])
         self._refresh()
+
+
+# ── Background save worker ─────────────────────────────────────────────────────
+
+class _SaveWorker(QThread):
+    """Serialize and persist a BatchRunRecord / MultiDatasetBatchRun off the main thread."""
+    save_done  = pyqtSignal(str)   # file path
+    save_error = pyqtSignal(str)
+
+    def __init__(self, run_store, batch_run, *, multi: bool = False):
+        super().__init__()
+        self._store     = run_store
+        self._batch_run = batch_run
+        self._multi     = multi
+
+    def run(self) -> None:
+        try:
+            if self._multi:
+                path = self._store.save_multi(self._batch_run)
+            else:
+                path = self._store.save(self._batch_run)
+            self.save_done.emit(str(path))
+        except Exception as exc:
+            self.save_error.emit(str(exc))

@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QProgressDialog, QApplication, QComboBox,
     QDialog, QDialogButtonBox, QCheckBox,
 )
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, pyqtSlot, Qt, QThread
 from PyQt6.QtGui import QPixmap
 
 from ...core.models import BatchRunRecord, ImageRecord, MeasurementRecord, MultiDatasetBatchRun
@@ -26,6 +26,8 @@ class ReportWorkspace(QWidget):
         self._records:   list[MeasurementRecord] = []
         self._image_records: list[ImageRecord] = []
         self._run_store = run_store
+        self._load_worker   = None
+        self._export_worker = None
         self._build_ui()
 
     # ── Construction ──────────────────────────────────────────────────────────
@@ -97,33 +99,34 @@ class ReportWorkspace(QWidget):
     def load_batch_run(self, batch_run: BatchRunRecord) -> None:
         self._batch_run = batch_run
         self._multi_batch_run = None
-        results = batch_run.output_manifest.get("results", [])
-
         self._records = []
         self._image_records = []
-        seen_img: set[str] = set()
-        for i, r in enumerate(results):
-            img_id = r.get("image_id", "")
-            img_path = r.get("image_path", "")
-            if img_id not in seen_img:
-                ir = ImageRecord.from_path(img_path)
-                ir.image_id = img_id
-                self._image_records.append(ir)
-                seen_img.add(img_id)
-            for m_dict in r.get("measurements", []):
-                try:
-                    self._records.append(MeasurementRecord.from_dict(m_dict))
-                except Exception:
-                    pass
-            if i % 200 == 0:
-                QApplication.processEvents()
 
+        # Show summary immediately from metadata (no records needed)
         self._boxplot_box.setVisible(False)
         self._refresh_summary()
-        self._refresh_stats()
         self.status_message.emit(
-            f"Report loaded: {batch_run.success_count} OK, {batch_run.fail_count} failed"
+            f"Report loading… {batch_run.success_count} OK, {batch_run.fail_count} failed"
         )
+
+        results = batch_run.output_manifest.get("results", [])
+        self._load_worker = _LoadWorker(results, multi=False)
+        self._load_worker.load_done.connect(self._on_batch_load_done)
+        self._load_worker.load_error.connect(
+            lambda e: self.status_message.emit(f"Load error: {e}")
+        )
+        self._load_worker.start()
+
+    @pyqtSlot(list, list)
+    def _on_batch_load_done(self, records: list, image_records: list) -> None:
+        self._records = records
+        self._image_records = image_records
+        self._refresh_stats()
+        br = self._batch_run
+        if br:
+            self.status_message.emit(
+                f"Report loaded: {br.success_count} OK, {br.fail_count} failed"
+            )
 
     def load_multi_batch(self, mbr: MultiDatasetBatchRun) -> None:
         self._multi_batch_run = mbr
@@ -131,32 +134,37 @@ class ReportWorkspace(QWidget):
         self._records = []
         self._image_records = []
 
-        for i, ds in enumerate(mbr.datasets):
-            seen_img: set[str] = set()
-            for r in ds.output_manifest.get("results", []):
-                img_id = r.get("image_id", "")
-                img_path = r.get("image_path", "")
-                if img_id not in seen_img:
-                    ir = ImageRecord.from_path(img_path)
-                    ir.image_id = img_id
-                    self._image_records.append(ir)
-                    seen_img.add(img_id)
-                for m_dict in r.get("measurements", []):
-                    try:
-                        self._records.append(MeasurementRecord.from_dict(m_dict))
-                    except Exception:
-                        pass
-            if i % 5 == 0:
-                QApplication.processEvents()
-
+        # Show summary immediately
         self._boxplot_box.setVisible(True)
         self._refresh_summary_multi()
-        self._refresh_stats()
-        self._refresh_boxplot()
         self.status_message.emit(
-            f"Multi-batch report: {mbr.success_count}/{mbr.total_images} OK  "
+            f"Multi-batch report loading… {mbr.success_count}/{mbr.total_images} OK  "
             f"·  {len(mbr.datasets)} datasets"
         )
+
+        # Collect all results across datasets for background load
+        all_results = []
+        for ds in mbr.datasets:
+            all_results.extend(ds.output_manifest.get("results", []))
+        self._load_worker = _LoadWorker(all_results, multi=False)
+        self._load_worker.load_done.connect(self._on_multi_load_done)
+        self._load_worker.load_error.connect(
+            lambda e: self.status_message.emit(f"Load error: {e}")
+        )
+        self._load_worker.start()
+
+    @pyqtSlot(list, list)
+    def _on_multi_load_done(self, records: list, image_records: list) -> None:
+        self._records = records
+        self._image_records = image_records
+        self._refresh_stats()
+        self._refresh_boxplot()
+        mbr = self._multi_batch_run
+        if mbr:
+            self.status_message.emit(
+                f"Multi-batch report: {mbr.success_count}/{mbr.total_images} OK  "
+                f"·  {len(mbr.datasets)} datasets"
+            )
 
     def load_from_file(self, file_path: str) -> None:
         """Load a batch run from a persisted JSON file."""
@@ -299,122 +307,166 @@ class ReportWorkspace(QWidget):
             return
         out = Path(folder)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        errors: list[str] = []
+        per_dataset = dlg.per_dataset and has_multi
+
+        # Build the list of (label, callable) tasks to run in the background
+        tasks: list[tuple[str, object]] = []
 
         if dlg.export_excel:
-            try:
-                from ...output.excel_exporter import export_excel_from_records
-                if self._multi_batch_run:
-                    # Build per-dataset record lists so dataset labels propagate correctly
-                    datasets_for_excel = []
-                    for ds in self._multi_batch_run.datasets:
-                        ds_records: list[MeasurementRecord] = []
-                        ds_image_records: list[ImageRecord] = []
-                        seen_img: set[str] = set()
-                        for r in ds.output_manifest.get("results", []):
-                            img_id  = r.get("image_id", "")
-                            img_path = r.get("image_path", "")
-                            if img_id not in seen_img:
-                                ir = ImageRecord.from_path(img_path)
-                                ir.image_id = img_id
-                                ds_image_records.append(ir)
-                                seen_img.add(img_id)
-                            for m_dict in r.get("measurements", []):
-                                try:
-                                    ds_records.append(MeasurementRecord.from_dict(m_dict))
-                                except Exception:
-                                    pass
-                        datasets_for_excel.append({
-                            "records":       ds_records,
-                            "image_records": ds_image_records,
-                            "dataset_label": ds.dataset_label or "Dataset",
-                        })
-                    export_excel_from_records(
-                        [],
-                        out / f"measurements_{ts}.xlsx",
-                        datasets=datasets_for_excel,
-                    )
-                else:
-                    ds_label = (
-                        self._batch_run.dataset_label
-                        if self._batch_run and self._batch_run.dataset_label
-                        else ""
-                    )
-                    export_excel_from_records(
-                        self._records,
-                        out / f"measurements_{ts}.xlsx",
-                        self._image_records,
-                        dataset_label=ds_label,
-                    )
-            except Exception as exc:
-                errors.append(f"Excel: {exc}")
+            from ...output.excel_exporter import export_excel_from_records
+            if per_dataset and self._multi_batch_run:
+                for ds in self._multi_batch_run.datasets:
+                    ds_label = ds.dataset_label or "Dataset"
+                    ds_records, ds_image_records = _extract_ds_records(ds)
+                    ds_out = out / ds_label
+                    tasks.append((
+                        f"Excel [{ds_label}]",
+                        lambda r=ds_records, ir=ds_image_records, p=ds_out, lb=ds_label:
+                            (p.mkdir(parents=True, exist_ok=True),
+                             export_excel_from_records(r, p / f"measurements_{ts}.xlsx", ir,
+                                                       dataset_label=lb)),
+                    ))
+            elif self._multi_batch_run:
+                datasets_for_excel = [
+                    {
+                        "records":       _extract_ds_records(ds)[0],
+                        "image_records": _extract_ds_records(ds)[1],
+                        "dataset_label": ds.dataset_label or "Dataset",
+                    }
+                    for ds in self._multi_batch_run.datasets
+                ]
+                tasks.append((
+                    "Excel",
+                    lambda d=datasets_for_excel:
+                        export_excel_from_records([], out / f"measurements_{ts}.xlsx",
+                                                  datasets=d),
+                ))
+            else:
+                ds_label = (
+                    self._batch_run.dataset_label
+                    if self._batch_run and self._batch_run.dataset_label else ""
+                )
+                tasks.append((
+                    "Excel",
+                    lambda r=self._records, ir=self._image_records, lb=ds_label:
+                        export_excel_from_records(r, out / f"measurements_{ts}.xlsx",
+                                                  ir, dataset_label=lb),
+                ))
 
         if dlg.export_json:
-            try:
-                from ...output.json_exporter import export_json_from_records
-                export_json_from_records(self._records, out / f"measurements_{ts}.json",
-                                         self._image_records, self._batch_run)
-            except Exception as exc:
-                errors.append(f"JSON: {exc}")
+            from ...output.json_exporter import export_json_from_records
+            if per_dataset and self._multi_batch_run:
+                for ds in self._multi_batch_run.datasets:
+                    ds_label = ds.dataset_label or "Dataset"
+                    ds_records, ds_image_records = _extract_ds_records(ds)
+                    ds_out = out / ds_label
+                    tasks.append((
+                        f"JSON [{ds_label}]",
+                        lambda r=ds_records, ir=ds_image_records, p=ds_out:
+                            (p.mkdir(parents=True, exist_ok=True),
+                             export_json_from_records(r, p / f"measurements_{ts}.json", ir)),
+                    ))
+            else:
+                tasks.append((
+                    "JSON",
+                    lambda: export_json_from_records(
+                        self._records, out / f"measurements_{ts}.json",
+                        self._image_records, self._batch_run),
+                ))
 
         if dlg.export_html:
-            try:
-                if self._multi_batch_run:
-                    from ...output.report_generator import generate_multi_dataset_report
-                    datasets_data = []
-                    for ds in self._multi_batch_run.datasets:
-                        vals = _collect_vals_from_results(ds.output_manifest.get("results", []))
-                        vals = self._apply_outlier_filter(vals)
-                        nm_pp = _infer_nm_per_pixel(ds.output_manifest.get("results", []))
-                        datasets_data.append({
-                            "label":        ds.dataset_label or "Dataset",
-                            "values":       vals,
-                            "total_images": ds.total_images,
-                            "fail_count":   ds.fail_count,
-                            "nm_per_pixel": nm_pp,
-                        })
-                    generate_multi_dataset_report(datasets_data, out / f"report_{ts}.html")
-                else:
-                    from ...output.report_generator import generate_report_from_records
-                    generate_report_from_records(self._records, out / f"report_{ts}.html",
-                                                 self._image_records, self._batch_run)
-            except Exception as exc:
-                errors.append(f"HTML: {exc}")
+            if per_dataset and self._multi_batch_run:
+                from ...output.report_generator import generate_report_from_records
+                for ds in self._multi_batch_run.datasets:
+                    ds_label = ds.dataset_label or "Dataset"
+                    ds_records, ds_image_records = _extract_ds_records(ds)
+                    ds_out = out / ds_label
+                    tasks.append((
+                        f"HTML [{ds_label}]",
+                        lambda r=ds_records, ir=ds_image_records, p=ds_out:
+                            (p.mkdir(parents=True, exist_ok=True),
+                             generate_report_from_records(r, p / f"report_{ts}.html", ir)),
+                    ))
+            elif self._multi_batch_run:
+                from ...output.report_generator import generate_multi_dataset_report
+                datasets_data = []
+                for ds in self._multi_batch_run.datasets:
+                    vals = _collect_vals_from_results(ds.output_manifest.get("results", []))
+                    vals = self._apply_outlier_filter(vals)
+                    nm_pp = _infer_nm_per_pixel(ds.output_manifest.get("results", []))
+                    datasets_data.append({
+                        "label": ds.dataset_label or "Dataset",
+                        "values": vals,
+                        "total_images": ds.total_images,
+                        "fail_count":   ds.fail_count,
+                        "nm_per_pixel": nm_pp,
+                    })
+                tasks.append((
+                    "HTML",
+                    lambda d=datasets_data:
+                        generate_multi_dataset_report(d, out / f"report_{ts}.html"),
+                ))
+            else:
+                from ...output.report_generator import generate_report_from_records
+                tasks.append((
+                    "HTML",
+                    lambda: generate_report_from_records(
+                        self._records, out / f"report_{ts}.html",
+                        self._image_records, self._batch_run),
+                ))
 
         if dlg.export_images:
             if self._multi_batch_run:
                 for ds in self._multi_batch_run.datasets:
                     ds_label = ds.dataset_label or "dataset"
-                    try:
-                        self._export_overlays_from_results(
-                            ds.output_manifest.get("results", []),
-                            out / ds_label,
-                        )
-                    except Exception as exc:
-                        errors.append(f"Images ({ds_label}): {exc}")
+                    results = ds.output_manifest.get("results", [])
+                    img_out = out / ds_label
+                    tasks.append((
+                        f"Images [{ds_label}]",
+                        lambda r=results, p=img_out:
+                            self._export_overlays_from_results(r, p),
+                    ))
             elif self._batch_run:
-                try:
-                    self._export_overlays_from_results(
-                        self._batch_run.output_manifest.get("results", []), out
-                    )
-                except Exception as exc:
-                    errors.append(f"Images: {exc}")
+                results = self._batch_run.output_manifest.get("results", [])
+                tasks.append((
+                    "Images",
+                    lambda r=results: self._export_overlays_from_results(r, out),
+                ))
 
         if dlg.export_boxplot and self._multi_batch_run:
-            try:
-                datasets_data = []
-                for ds in self._multi_batch_run.datasets:
-                    vals = _collect_vals_from_results(ds.output_manifest.get("results", []))
-                    vals = self._apply_outlier_filter(vals)
-                    datasets_data.append({"label": ds.dataset_label or "Dataset", "values": vals})
-                from ...output.report_generator import _boxplot_b64
-                import base64
-                b64 = _boxplot_b64(datasets_data)
-                if b64:
-                    (out / f"boxplot_{ts}.png").write_bytes(base64.b64decode(b64))
-            except Exception as exc:
-                errors.append(f"Box Plot: {exc}")
+            from ...output.report_generator import _boxplot_b64
+            import base64
+            datasets_data = []
+            for ds in self._multi_batch_run.datasets:
+                vals = _collect_vals_from_results(ds.output_manifest.get("results", []))
+                vals = self._apply_outlier_filter(vals)
+                datasets_data.append({"label": ds.dataset_label or "Dataset", "values": vals})
+            tasks.append((
+                "Box Plot",
+                lambda d=datasets_data, b64=_boxplot_b64, dec=base64.b64decode:
+                    (lambda bdata: (out / f"boxplot_{ts}.png").write_bytes(dec(bdata)) if bdata else None)(b64(d)),
+            ))
 
+        if not tasks:
+            return
+
+        # Run all tasks in background with a progress dialog
+        progress_dlg = QProgressDialog("Preparing export…", None, 0, 0, self)
+        progress_dlg.setWindowTitle("Exporting…")
+        progress_dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dlg.setMinimumDuration(0)
+        progress_dlg.show()
+
+        self._export_worker = _ExportWorker(tasks)
+        self._export_worker.progress.connect(progress_dlg.setLabelText)
+        self._export_worker.finished.connect(progress_dlg.close)
+        self._export_worker.finished.connect(
+            lambda errors: self._on_export_done(errors, out)
+        )
+        self._export_worker.start()
+
+    @pyqtSlot(list)
+    def _on_export_done(self, errors: list, out: Path) -> None:
         if errors:
             QMessageBox.warning(self, "Export errors", "\n".join(errors))
         else:
@@ -589,6 +641,12 @@ class _ExportDialog(QDialog):
         self._chk_img     = QCheckBox("Overlay images  (annotated PNG per image)")
         self._chk_boxplot = QCheckBox("Box Plot (PNG)  — multi-dataset only")
         self._chk_boxplot.setEnabled(has_multi_batch)
+        self._chk_per_dataset = QCheckBox(
+            "Per-dataset output  (each dataset → its own subfolder)"
+        )
+        self._chk_per_dataset.setEnabled(has_multi_batch)
+        if has_multi_batch:
+            self._chk_per_dataset.setChecked(False)
 
         if not pandas_ok:
             _no_pd = "  ⚠ 需安裝 pandas：pip install \"pandas>=2.0\" openpyxl"
@@ -603,7 +661,8 @@ class _ExportDialog(QDialog):
             self._chk_boxplot.setChecked(True)
 
         for chk in (self._chk_excel, self._chk_json,
-                    self._chk_html, self._chk_img, self._chk_boxplot):
+                    self._chk_html, self._chk_img, self._chk_boxplot,
+                    self._chk_per_dataset):
             fv.addWidget(chk)
         layout.addWidget(formats_box)
 
@@ -649,3 +708,86 @@ class _ExportDialog(QDialog):
     @property
     def export_boxplot(self) -> bool:
         return self._chk_boxplot.isChecked() and self._chk_boxplot.isEnabled()
+
+    @property
+    def per_dataset(self) -> bool:
+        return self._chk_per_dataset.isChecked() and self._chk_per_dataset.isEnabled()
+
+
+# ── Background workers ────────────────────────────────────────────────────────
+
+class _LoadWorker(QThread):
+    """Deserialise batch results into records off the main thread."""
+    load_done  = pyqtSignal(list, list)  # records, image_records
+    load_error = pyqtSignal(str)
+
+    def __init__(self, results: list, *, multi: bool = False):
+        super().__init__()
+        self._results = results
+
+    def run(self) -> None:
+        try:
+            from ...core.models import ImageRecord, MeasurementRecord
+            records: list = []
+            image_records: list = []
+            seen_img: set = set()
+            for r in self._results:
+                img_id   = r.get("image_id", "")
+                img_path = r.get("image_path", "")
+                if img_id not in seen_img:
+                    ir = ImageRecord.from_path(img_path)
+                    ir.image_id = img_id
+                    image_records.append(ir)
+                    seen_img.add(img_id)
+                for m_dict in r.get("measurements", []):
+                    try:
+                        records.append(MeasurementRecord.from_dict(m_dict))
+                    except Exception:
+                        pass
+            self.load_done.emit(records, image_records)
+        except Exception as exc:
+            self.load_error.emit(str(exc))
+
+
+class _ExportWorker(QThread):
+    """Run a list of (label, callable) export tasks sequentially off the main thread."""
+    progress = pyqtSignal(str)   # status message for progress dialog
+    finished = pyqtSignal(list)  # list of error strings (empty = success)
+
+    def __init__(self, tasks: list):
+        super().__init__()
+        self._tasks = tasks
+
+    def run(self) -> None:
+        errors: list[str] = []
+        for label, fn in self._tasks:
+            self.progress.emit(f"正在輸出 {label}…")
+            try:
+                fn()
+            except Exception as exc:
+                errors.append(f"{label}: {exc}")
+        self.finished.emit(errors)
+
+
+# ── Dataset extraction helper ─────────────────────────────────────────────────
+
+def _extract_ds_records(ds) -> tuple:
+    """Extract (records, image_records) from a BatchRunRecord dataset."""
+    from ...core.models import ImageRecord, MeasurementRecord
+    records: list = []
+    image_records: list = []
+    seen_img: set = set()
+    for r in ds.output_manifest.get("results", []):
+        img_id   = r.get("image_id", "")
+        img_path = r.get("image_path", "")
+        if img_id not in seen_img:
+            ir = ImageRecord.from_path(img_path)
+            ir.image_id = img_id
+            image_records.append(ir)
+            seen_img.add(img_id)
+        for m_dict in r.get("measurements", []):
+            try:
+                records.append(MeasurementRecord.from_dict(m_dict))
+            except Exception:
+                pass
+    return records, image_records

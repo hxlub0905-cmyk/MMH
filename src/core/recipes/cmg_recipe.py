@@ -261,6 +261,7 @@ class CMGRecipe(BaseRecipe):
                 _agg_method   = str(_sp.get("aggregate_method", "median")).lower()
                 _lpf_enabled  = bool(_sp.get("profile_lpf_enabled", False))
                 _lpf_sigma    = float(_sp.get("profile_lpf_sigma", 1.0))
+                _x_inset      = int (_sp.get("x_inset_px", 0))
                 # Stable X anchors from pitch-phase detection (may be empty)
                 _col_centers  = context.get("mg_col_centers", [])
 
@@ -277,6 +278,7 @@ class CMGRecipe(BaseRecipe):
                     aggregate_method=_agg_method,
                     profile_lpf_enabled=_lpf_enabled,
                     profile_lpf_sigma=_lpf_sigma,
+                    x_inset=_x_inset,
                 )
 
         # For X-CD: blobs were analyzed in rotated space; back-rotate blob
@@ -445,6 +447,7 @@ class CMGRecipe(BaseRecipe):
                 "subpixel_min_grad_frac": float(card.get("subpixel_min_grad_frac", 0.10)),
                 "subpixel_peak_ratio":    float(card.get("subpixel_peak_ratio",    0.60)),
                 "border_margin_px":       int  (card.get("border_margin_px",       0)),
+                "x_inset_px":             int  (card.get("x_inset_px",             0)),
             }),
         )
 
@@ -572,6 +575,7 @@ def apply_yedge_subpixel_to_cuts(
     aggregate_method: str = "median",  # "median"/"mean"/"min"/"max"
     profile_lpf_enabled: bool = False,  # apply Gaussian LPF to 1D profile before MA
     profile_lpf_sigma: float = 1.0,     # Gaussian sigma in pixels
+    x_inset: int = 0,              # px to exclude from each side of the blob X overlap
 ) -> None:
     """Apply Y-edge refinement in place to a list of CMGCut objects.
 
@@ -599,7 +603,14 @@ def apply_yedge_subpixel_to_cuts(
 
             x_ov_start = int(max(ub.x0, lb.x0))
             x_ov_end   = int(min(ub.x1, lb.x1))
+            # Shrink the sampling zone inward by x_inset on each side so that
+            # edge columns at the boundary of one blob are not sampled.
+            if x_inset > 0:
+                x_ov_start = min(x_ov_start + x_inset, x_ov_end)
+                x_ov_end   = max(x_ov_end   - x_inset, x_ov_start)
             use_paired = x_ov_start < x_ov_end
+
+            winning_sample_x: int | None = None   # set below for min/max paired path
 
             if use_paired:
                 # Paired sampling: same x positions for both edges
@@ -661,6 +672,26 @@ def apply_yedge_subpixel_to_cuts(
 
                 up_y = _aggregate_values(up_ys, aggregate_method) if up_ys else y_up
                 lo_y = _aggregate_values(lo_ys, aggregate_method) if lo_ys else y_lo
+
+                # For min/max: the two lists are aggregated independently above, which
+                # can pair edges from different sample positions (giving a wrong CD).
+                # Re-derive by finding the paired sample with the actual min/max gap.
+                winning_sample_x: int | None = None
+                agg_lower = aggregate_method.lower()
+                if agg_lower in ("min", "max") and upper_sample_ys and lower_sample_ys:
+                    valid_pairs = [
+                        (i, upper_sample_ys[i], lower_sample_ys[i])
+                        for i in range(min(len(sample_xs), len(upper_sample_ys), len(lower_sample_ys)))
+                        if upper_sample_ys[i] is not None
+                        and lower_sample_ys[i] is not None
+                        and lower_sample_ys[i] > upper_sample_ys[i]
+                    ]
+                    if valid_pairs:
+                        key_fn = (min if agg_lower == "min" else max)
+                        best = key_fn(valid_pairs, key=lambda t: t[2] - t[1])
+                        winning_sample_x = sample_xs[best[0]]
+                        up_y = best[1]
+                        lo_y = best[2]
             else:
                 # Blobs don't overlap in X: independent column scan (fallback)
                 sample_xs = list(range(int(ub.x0), int(ub.x1)))
@@ -724,6 +755,8 @@ def apply_yedge_subpixel_to_cuts(
                     "lower_sample_ys":    lower_sample_ys,
                     "individual_cds_nm":  individual_cds_nm,
                     "aggregate_method":   aggregate_method,
+                    # X position of the winning sample (min/max only; None for mean/median)
+                    "winning_sample_x":   winning_sample_x,
                 }
 
     # Re-flag global MIN/MAX after Y-edge refinement
