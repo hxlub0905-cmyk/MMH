@@ -2,6 +2,34 @@
 
 ---
 
+## [2026-04-23] Gradient 路徑向量化（~2–3× 加速）
+
+**變更類型：** 效能優化
+
+**動機：** 前一 session 的 TC 路徑向量化完成後，gradient 路徑仍維持原有 for 迴圈（每張圖逐 x 呼叫 `_refine_yedge_subpixel`），是目前效能瓶頸之一。本次將 gradient 路徑改為與 TC 對稱的批次處理，整體目標從 4–8 分鐘再降至 3–6 分鐘（13000 張）。
+
+**實作（`src/core/recipes/cmg_recipe.py` only）：**
+
+1. **`_smooth_strip_2d(strip, k)`**（新增）— 對 2D strip 每欄做 moving average，使用 `np.pad + np.cumsum` 向量化，pure numpy，供 TC 和 gradient 兩個批次函式共用。
+2. **`_extract_strip(image, sample_xs, y_guess, search_half, smooth_k, profile_lpf_sigma)`**（新增）— 共用提取 + LPF + MA 流程：一次切出 2D strip，套用 `_gaussian_filter1d_2d`（若 sigma>0），再套用 `_smooth_strip_2d`，回傳 `(strip, y_lo, valid_mask)`。
+3. **`_refine_yedge_threshold_crossing_batch()`** — 重構以呼叫 `_extract_strip()`，邏輯不變。
+4. **`_refine_yedge_subpixel_batch(image, sample_xs, y_guess, ...)`**（新增）— Gradient 批次版本：呼叫 `_extract_strip()` 提取共用 strip，`np.abs(np.diff(strip, axis=0))` 向量化計算 abs-gradient，再對每欄做 peak 偵測 + dominance 檢查 + 二次型內插（與 scalar 版邏輯一致），回傳 `list[float | None]`。
+5. **`apply_yedge_subpixel_to_cuts()` paired sampling 路徑**：
+   - TC 分支：維持 `_refine_yedge_threshold_crossing_batch()`（前一 session 已完成）
+   - Gradient 分支：**原 for 迴圈改為呼叫 `_refine_yedge_subpixel_batch()`**，共用同一套後處理（`upper_sample_ys / lower_sample_ys / up_ys / lo_ys / up_ps / lo_ps / up_spr / lo_spr / individual_cds_nm`），結構與 TC 分支對稱
+
+**影響範圍：**
+- `src/core/recipes/cmg_recipe.py`（4 個新增/重構函式 + apply_yedge gradient 分支改寫）
+
+**測試結果：**
+- `python3 -m py_compile src/core/recipes/cmg_recipe.py` 通過
+
+**備註：**
+- peak_strength / second_peak_ratio 在批次 gradient 版中填入預設值（1.0 / 0.0），與 TC 批次版行為一致
+- aggregate / winning_sample_x / post-refinement 等下游邏輯完全不變
+
+---
+
 ## [2026-04-23] 兩項新功能：Batch 即時 Overlay 輸出 + TC 路徑向量化
 
 **變更類型：** 功能新增 / 效能優化
