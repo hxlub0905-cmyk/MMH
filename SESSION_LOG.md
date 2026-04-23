@@ -2,6 +2,41 @@
 
 ---
 
+## [2026-04-23] Measure 右側 UI 透明控件修復 + 全局邊框加深
+
+**變更類型：** UI 修復
+
+**變更摘要：**
+
+### 根本原因修復：QComboBox / QSpinBox 透明無邊框
+- **問題根因**：`control_panel.py` 的 `_add_profile()` 中三處 `setStyleSheet("QWidget { ... }")` 使用了「類型選擇器」，在 Qt QSS 的 cascade 機制下，父控件的 `QWidget { }` 規則會透過 Qt 的祖先鏈傳播至所有子 QWidget 子類（QComboBox、QSpinBox 等），覆蓋應用層級的樣式，導致這些控件顯示為透明、無邊框
+- **修法**：將三處改為「裸屬性宣告」（不帶類型選擇器），例如：
+  - `"QWidget { background:transparent; border:none; }"` → `"background:transparent;"`
+  - `"QWidget { background:#fff9f2; border:1px solid #e6dccf; ... }"` → `"background:#fff9f2; border:1px solid #c8b8a8; border-radius:8px;"`
+  裸屬性宣告僅作用於設定對象本身，不向下 cascade，子控件保留自身樣式
+- 同步修正 `min_wrap`、`max_wrap`、`f2_form_w`、`f3_form_w` 的 `"border:none;"` → `"background:transparent;"`
+- 卡片標題字體：`font-size:10px` → `font-size:11px; letter-spacing:0.5px`
+
+### 全局邊框顏色加深（styles.py）
+- `QPushButton` 邊框：`#dfd0be` → `#c8b49e`（hover：`#c8b89e` → `#b09e86`）
+- `QSpinBox`/`QDoubleSpinBox` 邊框：`#e6dccf` → `#c8b49e`
+- `QCheckBox::indicator` 邊框：`#d8cbb8` → `#c0ad96`
+- `QLineEdit` 邊框：`#dfd0be` → `#c8b49e`
+- `QComboBox` 邊框：`#dfd0be` → `#c8b49e`
+
+**影響範圍：**
+- `src/gui/control_panel.py`（移除三處 `QWidget { }` 類型選擇器 cascade，修正透明控件問題）
+- `src/gui/styles.py`（全局邊框顏色加深，與右側面板特化規則一致）
+
+**測試結果：**
+- `python3 -m py_compile` 對所有修改檔案均通過
+- `pytest`（排除 numpy/cv2 相依）→ 17/17 通過
+
+**備註：**
+- Qt QSS 核心規則：父控件使用 `QWidget { }` 類型選擇器時，其優先級高於應用層級樣式；使用裸屬性宣告則不會 cascade 至子控件
+
+---
+
 ## [2026-04-23] Measure 右側邊界強化 + Comprehensive Excel 匯出
 
 **變更類型：** UI 改善 / 功能增強

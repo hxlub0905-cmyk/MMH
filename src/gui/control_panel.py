@@ -123,8 +123,11 @@ class ControlPanel(QWidget):
 
     def _add_profile(self, name: str) -> None:
         outer = QWidget()
+        # ⚠ Use bare property (no "QWidget { }" type-selector) so the rule
+        #   applies ONLY to `outer` itself and does NOT cascade to child
+        #   widgets (QComboBox, QSpinBox …) via Qt's stylesheet inheritance.
         outer.setStyleSheet(
-            "QWidget { background:#fff9f2; border:1px solid #e6dccf; border-radius:8px; }"
+            "background:#fff9f2; border:1px solid #c8b8a8; border-radius:8px;"
         )
         outer_layout = QVBoxLayout(outer)
         outer_layout.setContentsMargins(0, 0, 0, 6)
@@ -132,14 +135,20 @@ class ControlPanel(QWidget):
 
         # Card header: title + delete button (Tier 1 colour)
         header_row = QWidget()
+        # Bare property — only this widget, NOT its children.
         header_row.setStyleSheet(
-            "QWidget { background:#fff4e8; border:none; border-radius:0; border-top-left-radius:8px; border-top-right-radius:8px; border-bottom:1px solid #efd8b8; }"
+            "background:#fff4e8;"
+            "border-top-left-radius:8px; border-top-right-radius:8px;"
+            "border-bottom:1px solid #efd8b8;"
         )
         header_hl = QHBoxLayout(header_row)
         header_hl.setContentsMargins(10, 5, 6, 5)
         header_hl.setSpacing(4)
         card_title = QLabel(name)
-        card_title.setStyleSheet("color:#c97028; font-weight:700; font-size:10px; letter-spacing:0.8px; background:transparent; border:none;")
+        card_title.setStyleSheet(
+            "color:#c97028; font-weight:700; font-size:11px;"
+            "letter-spacing:0.5px; background:transparent; border:none;"
+        )
         btn_del = QPushButton("×")
         btn_del.setFixedSize(18, 18)
         btn_del.setToolTip(f"Remove measurement '{name}'")
@@ -155,7 +164,8 @@ class ControlPanel(QWidget):
 
         # Tier 1 params: always visible
         t1_widget = QWidget()
-        t1_widget.setStyleSheet("QWidget { background:transparent; border:none; }")
+        # Bare property only — child QComboBox / QSpinBox keep their own styles.
+        t1_widget.setStyleSheet("background:transparent;")
         t1_form = QFormLayout(t1_widget)
         t1_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         t1_form.setContentsMargins(8, 6, 8, 4)
@@ -174,8 +184,8 @@ class ControlPanel(QWidget):
         min_row.addWidget(_lbl("Min")); min_row.addWidget(gl_min); min_row.addWidget(min_val)
         max_row = QHBoxLayout(); max_row.setSpacing(4)
         max_row.addWidget(_lbl("Max")); max_row.addWidget(gl_max); max_row.addWidget(max_val)
-        min_wrap = QWidget(); min_wrap.setStyleSheet("border:none;"); min_wrap.setLayout(min_row)
-        max_wrap = QWidget(); max_wrap.setStyleSheet("border:none;"); max_wrap.setLayout(max_row)
+        min_wrap = QWidget(); min_wrap.setStyleSheet("background:transparent;"); min_wrap.setLayout(min_row)
+        max_wrap = QWidget(); max_wrap.setStyleSheet("background:transparent;"); max_wrap.setLayout(max_row)
 
         min_area = QSpinBox(); min_area.setRange(1, 500_000); min_area.setValue(50); min_area.setSuffix(" px²"); _set_expanding(min_area)
 
@@ -190,7 +200,7 @@ class ControlPanel(QWidget):
         sec_filters = CollapsibleSection("Filters", tier=2, collapsed=False,
                                          content_margins=(8, 4, 8, 6))
         sec_filters.setStyleSheet("background:transparent;")
-        f2_form_w = QWidget(); f2_form_w.setStyleSheet("border:none;")
+        f2_form_w = QWidget(); f2_form_w.setStyleSheet("background:transparent;")
         f2_form = QFormLayout(f2_form_w)
         f2_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         f2_form.setContentsMargins(0, 2, 0, 2)
@@ -214,7 +224,7 @@ class ControlPanel(QWidget):
         sec_adv = CollapsibleSection("Advanced", tier=3, collapsed=True,
                                       content_margins=(8, 4, 8, 6))
         sec_adv.setStyleSheet("background:transparent;")
-        f3_form_w = QWidget(); f3_form_w.setStyleSheet("border:none;")
+        f3_form_w = QWidget(); f3_form_w.setStyleSheet("background:transparent;")
         f3_form = QFormLayout(f3_form_w)
         f3_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         f3_form.setContentsMargins(0, 2, 0, 2)
