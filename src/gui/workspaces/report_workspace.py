@@ -314,6 +314,7 @@ class ReportWorkspace(QWidget):
 
         if dlg.export_excel:
             from ...output.excel_exporter import export_excel_from_records
+            _meas_mode = dlg.excel_meas_mode
             if per_dataset and self._multi_batch_run:
                 for ds in self._multi_batch_run.datasets:
                     ds_label = ds.dataset_label or "Dataset"
@@ -321,10 +322,10 @@ class ReportWorkspace(QWidget):
                     ds_out = out / ds_label
                     tasks.append((
                         f"Excel [{ds_label}]",
-                        lambda r=ds_records, ir=ds_image_records, p=ds_out, lb=ds_label:
+                        lambda r=ds_records, ir=ds_image_records, p=ds_out, lb=ds_label, mm=_meas_mode:
                             (p.mkdir(parents=True, exist_ok=True),
                              export_excel_from_records(r, p / f"measurements_{ts}.xlsx", ir,
-                                                       dataset_label=lb)),
+                                                       dataset_label=lb, meas_mode=mm)),
                     ))
             elif self._multi_batch_run:
                 datasets_for_excel = [
@@ -337,9 +338,9 @@ class ReportWorkspace(QWidget):
                 ]
                 tasks.append((
                     "Excel",
-                    lambda d=datasets_for_excel:
+                    lambda d=datasets_for_excel, mm=_meas_mode:
                         export_excel_from_records([], out / f"measurements_{ts}.xlsx",
-                                                  datasets=d),
+                                                  datasets=d, meas_mode=mm),
                 ))
             else:
                 ds_label = (
@@ -348,9 +349,9 @@ class ReportWorkspace(QWidget):
                 )
                 tasks.append((
                     "Excel",
-                    lambda r=self._records, ir=self._image_records, lb=ds_label:
+                    lambda r=self._records, ir=self._image_records, lb=ds_label, mm=_meas_mode:
                         export_excel_from_records(r, out / f"measurements_{ts}.xlsx",
-                                                  ir, dataset_label=lb),
+                                                  ir, dataset_label=lb, meas_mode=mm),
                 ))
 
         if dlg.export_json:
@@ -648,10 +649,21 @@ class _ExportDialog(QDialog):
         if has_multi_batch:
             self._chk_per_dataset.setChecked(False)
 
+        # Measurement mode selector (only relevant for Excel)
+        meas_mode_row = QHBoxLayout()
+        meas_mode_row.addSpacing(24)
+        meas_mode_row.addWidget(QLabel("All Measurements 輸出模式："))
+        self._excel_mode_combo = QComboBox()
+        self._excel_mode_combo.addItem("全部測量值 (All)", "all")
+        self._excel_mode_combo.addItem("每張圖最小值 (Min per image)", "min_per_image")
+        self._excel_mode_combo.addItem("每張圖最大值 (Max per image)", "max_per_image")
+        meas_mode_row.addWidget(self._excel_mode_combo, 1)
+
         if not pandas_ok:
             _no_pd = "  ⚠ 需安裝 pandas：pip install \"pandas>=2.0\" openpyxl"
             self._chk_excel.setText(self._chk_excel.text() + _no_pd)
             self._chk_excel.setEnabled(False)
+            self._excel_mode_combo.setEnabled(False)
         else:
             self._chk_excel.setChecked(True)
         self._chk_json.setChecked(True)
@@ -660,9 +672,14 @@ class _ExportDialog(QDialog):
         if has_multi_batch:
             self._chk_boxplot.setChecked(True)
 
-        for chk in (self._chk_excel, self._chk_json,
-                    self._chk_html, self._chk_img, self._chk_boxplot,
-                    self._chk_per_dataset):
+        # Sync combo enabled state with Excel checkbox
+        self._chk_excel.toggled.connect(self._excel_mode_combo.setEnabled)
+
+        for chk in (self._chk_excel,):
+            fv.addWidget(chk)
+        fv.addLayout(meas_mode_row)
+        for chk in (self._chk_json, self._chk_html, self._chk_img,
+                    self._chk_boxplot, self._chk_per_dataset):
             fv.addWidget(chk)
         layout.addWidget(formats_box)
 
@@ -692,6 +709,10 @@ class _ExportDialog(QDialog):
     @property
     def export_excel(self) -> bool:
         return self._chk_excel.isChecked() and self._chk_excel.isEnabled()
+
+    @property
+    def excel_meas_mode(self) -> str:
+        return self._excel_mode_combo.currentData() or "all"
 
     @property
     def export_json(self) -> bool:

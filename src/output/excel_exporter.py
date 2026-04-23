@@ -99,6 +99,7 @@ def export_excel_from_records(
     image_records: list | None = None,
     dataset_label: str = "",
     datasets: list[dict] | None = None,
+    meas_mode: str = "all",
 ) -> None:
     """Create a comprehensive multi-sheet Excel workbook from MeasurementRecord list.
 
@@ -149,13 +150,12 @@ def export_excel_from_records(
         "cmg_id", "col_id",
         "cd_px", "cd_nm", "flag",
         "cd_line_x_px", "cd_line_y_px",
-        "upper_blob_x0", "upper_blob_y0", "upper_blob_x1", "upper_blob_y1",
-        "lower_blob_x0", "lower_blob_y0", "lower_blob_x1", "lower_blob_y1",
         "status",
     ]
     # Only include columns that exist in df (guard against missing cols)
     meas_cols = [c for c in meas_cols if c in df.columns]
     df_meas = df[meas_cols].copy()
+    df_meas = _filter_meas_by_mode(df_meas, meas_mode)
     # Drop dataset column if it's all empty (single-dataset runs)
     if "dataset" in df_meas.columns and df_meas["dataset"].astype(str).str.strip().eq("").all():
         df_meas = df_meas.drop(columns=["dataset"])
@@ -184,7 +184,7 @@ def export_excel_from_records(
             from openpyxl.styles.differential import DifferentialStyle
             from openpyxl.formatting.rule import Rule as _Rule
             flag_col_letter = _col_letter(df_meas, "flag")
-            if flag_col_letter and len(df_meas) > 0:
+            if flag_col_letter and 0 < len(df_meas) <= 50_000:
                 last_row = len(df_meas) + 1
                 last_col = get_column_letter(ws_meas.max_column)
                 cf_range = f"A2:{last_col}{last_row}"
@@ -233,6 +233,30 @@ def export_excel_from_records(
         _style_header_row(ws_stat, fill_hex=_STAT_HEADER_FILL)
         _autofit_columns(ws_stat)
         ws_stat.freeze_panes = "A2"
+
+
+# ── helper: filter All Measurements by export mode ───────────────────────────
+
+def _filter_meas_by_mode(df, mode: str):
+    """Return subset of All Measurements rows based on export mode.
+
+    "all"           — unchanged (all rows)
+    "min_per_image" — one row per (dataset, image_file) with lowest cd_nm
+    "max_per_image" — one row per (dataset, image_file) with highest cd_nm
+    """
+    if mode not in ("min_per_image", "max_per_image"):
+        return df
+    has_dataset = (
+        "dataset" in df.columns
+        and not df["dataset"].astype(str).str.strip().eq("").all()
+    )
+    group_keys = ["dataset", "image_file"] if has_dataset else ["image_file"]
+    valid = df[df["status"] != "rejected"] if "status" in df.columns else df
+    if mode == "min_per_image":
+        idx = valid.groupby(group_keys)["cd_nm"].idxmin()
+    else:
+        idx = valid.groupby(group_keys)["cd_nm"].idxmax()
+    return df.loc[idx.dropna().values].copy()
 
 
 # ── helper: build per-image summary ──────────────────────────────────────────
