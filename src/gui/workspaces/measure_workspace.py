@@ -358,6 +358,10 @@ class MeasureWorkspace(QWidget):
         lpf_hl.addWidget(self._ec_lpf_cb); lpf_hl.addWidget(self._ec_lpf_sigma)
         af.addRow("Profile LPF:", lpf_row)
 
+        self._ec_x_inset = QSpinBox()
+        self._ec_x_inset.setRange(0, 100); self._ec_x_inset.setValue(0)
+        self._ec_x_inset.setSuffix(" px"); self._ec_x_inset.setSpecialValueText("off")
+
         self._ec_overlap = QDoubleSpinBox()
         self._ec_overlap.setRange(0.0, 1.0); self._ec_overlap.setSingleStep(0.05)
         self._ec_overlap.setValue(0.5); self._ec_overlap.setDecimals(2)
@@ -370,6 +374,7 @@ class MeasureWorkspace(QWidget):
         self._ec_border.setRange(0, 200); self._ec_border.setValue(0)
         self._ec_border.setSuffix(" px"); self._ec_border.setSpecialValueText("off")
 
+        af.addRow("X inset (each side):", self._ec_x_inset)
         af.addRow("X overlap:", self._ec_overlap)
         af.addRow("Cluster tol:", self._ec_cluster_tol)
         af.addRow("Border excl.:", self._ec_border)
@@ -387,7 +392,7 @@ class MeasureWorkspace(QWidget):
             _ecw.currentIndexChanged.connect(self._schedule_preview)
         for _ecs in (self._ec_threshold_frac, self._ec_lpf_sigma, self._ec_overlap):
             _ecs.valueChanged.connect(self._schedule_preview)
-        for _eci in (self._ec_sample_n, self._ec_cluster_tol, self._ec_border):
+        for _eci in (self._ec_sample_n, self._ec_cluster_tol, self._ec_border, self._ec_x_inset):
             _eci.valueChanged.connect(self._schedule_preview)
         self._ec_lpf_cb.toggled.connect(self._schedule_preview)
 
@@ -430,6 +435,7 @@ class MeasureWorkspace(QWidget):
         self._ec_aggregate_combo.setCurrentIndex(_agg_idx if _agg_idx >= 0 else 0)
         self._ec_lpf_cb.setChecked(bool(ec.get("profile_lpf_enabled", False)))
         self._ec_lpf_sigma.setValue(float(ec.get("profile_lpf_sigma", 1.0)))
+        self._ec_x_inset.setValue(int(ec.get("x_inset_px", 0)))
         self._ec_overlap.setValue(float(ec.get("x_overlap_ratio", 0.5)))
         self._ec_cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
         self._ec_border.setValue(int(ec.get("border_margin_px", 0)))
@@ -523,6 +529,7 @@ class MeasureWorkspace(QWidget):
             "aggregate_method":     self._ec_aggregate_combo.currentData(),
             "profile_lpf_enabled":  self._ec_lpf_cb.isChecked(),
             "profile_lpf_sigma":    self._ec_lpf_sigma.value(),
+            "x_inset_px":           self._ec_x_inset.value(),
             "x_overlap_ratio":      self._ec_overlap.value(),
             "y_cluster_tol":        self._ec_cluster_tol.value(),
             "border_margin_px":     self._ec_border.value(),
@@ -587,6 +594,7 @@ class MeasureWorkspace(QWidget):
                 "aggregate_method":  self._ec_aggregate_combo.currentData(),
                 "profile_lpf_enabled": self._ec_lpf_cb.isChecked(),
                 "profile_lpf_sigma":   self._ec_lpf_sigma.value(),
+                "x_inset_px":        self._ec_x_inset.value(),
                 "x_overlap_ratio":   self._ec_overlap.value(),
                 "y_cluster_tol":     self._ec_cluster_tol.value(),
                 "border_margin_px":  self._ec_border.value(),
@@ -857,6 +865,7 @@ class MeasureWorkspace(QWidget):
                     aggregate_method=self._ec_aggregate_combo.currentData(),
                     profile_lpf_enabled=self._ec_lpf_cb.isChecked(),
                     profile_lpf_sigma=self._ec_lpf_sigma.value(),
+                    x_inset=self._ec_x_inset.value(),
                 )
 
             # Range filter: discard measurements outside [min_line_px, max_line_px]
