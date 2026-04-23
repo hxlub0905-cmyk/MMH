@@ -237,17 +237,20 @@ MMH/
 ## 執行測試
 
 ```bash
-# 執行全部 77 項測試
+# 完整測試（需 numpy + cv2 + scikit-image）
 pytest tests/ -v
 
+# 不依賴科學計算套件的測試（17 項）
+pytest tests/test_models.py tests/test_batch_run_store.py tests/test_history.py -v
+
 # 各測試模組
-pytest tests/test_cmg_analyzer.py        # 核心演算法（11 項）
+pytest tests/test_cmg_analyzer.py        # 核心演算法（11 項，需 cv2）
 pytest tests/test_models.py              # 資料模型（6 項）
-pytest tests/test_recipe_base.py         # Recipe pipeline（12 項）
-pytest tests/test_measurement_engine.py  # 引擎整合（8 項）
-pytest tests/test_subpixel_refinement.py # 次像素精細化
+pytest tests/test_recipe_base.py         # Recipe pipeline（12 項，需 numpy）
+pytest tests/test_measurement_engine.py  # 引擎整合（8 項，需 numpy）
+pytest tests/test_subpixel_refinement.py # 次像素精細化（需 numpy）
 pytest tests/test_batch_run_store.py     # 批次結果持久化（7 項）
-pytest tests/test_recipe_validator.py    # Recipe 驗證（4 項）
+pytest tests/test_recipe_validator.py    # Recipe 驗證（4 項，需 numpy）
 pytest tests/test_history.py             # 歷史統計（4 項）
 ```
 
@@ -261,6 +264,7 @@ pytest tests/test_history.py             # 歷史統計（4 項）
 | Phase F2 | ✅ 完成（2026-04-20） | X-Proj 改為 Pitch-Anchored 相位偵測，Auto-detect 準確性大幅提升 |
 | Phase G2 | ✅ 完成（2026-04-20） | Save as Recipe、表格排序、Batch 早期進度、HTML 容錯、圖片匯出進度條、Recipe Tab UI、標注字體優化 |
 | Phase B | ✅ 完成（2026-04-21） | Per-CMGCut TOP3 旗標修正、批次結果持久化（BatchRunStore）、Recipe 驗證模式（RecipeValidator + ValidationWorkspace）、歷史趨勢 Run Chart（HistoryWorkspace）、八工作區 UI、77 項測試 |
+| Bug Fix Series | ✅ 完成（2026-04-23） | CD 計算一致性（bbox edge / fallback / 精化 center_y）、Cards 路徑修正（bbox / Detail CD）、Review 批次導航（> 1000 張）、Duplicate Recipe、Edge Locator UX 提示、Mask 即時更新、歷史查詢效能（recipe_ids fast-skip）、CSV/Excel 欄位重命名（cut_id/column_id） |
 | Phase C | 規劃中 | Worker 上限保護、X-CD 標注修正、效能優化 |
 | Phase D | 規劃中 | Recipe 遷移至 SQLite、Plugin 介面、多資料夾批次 |
 
