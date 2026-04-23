@@ -559,6 +559,12 @@ class MeasureWorkspace(QWidget):
             self._run_with_cards()
 
     def _run_with_recipe(self, recipe_id: str) -> None:
+        try:
+            self._run_with_recipe_impl(recipe_id)
+        except Exception as exc:
+            QMessageBox.critical(self, "Processing error", str(exc))
+
+    def _run_with_recipe_impl(self, recipe_id: str) -> None:
         recipe = self._registry.get(recipe_id)
         if recipe is None:
             QMessageBox.warning(self, "Recipe error", "Could not load recipe.")
@@ -677,15 +683,30 @@ class MeasureWorkspace(QWidget):
             self._results.show_fail(name, "No structures detected")
 
         # Build minimal MeasurementRecord list so Compare to Reference works in cards mode too
+        import uuid as _uuid
         from ...core.models import MeasurementRecord as _MRec
         _img_id = self._current_ir.image_id if self._current_ir else ""
         self._current_records = []
         for _cut in cuts:
             for _m in _cut.measurements:
                 _status = {"MIN": "min", "MAX": "max"}.get(_m.flag or "", "normal")
+                _ub = _m.upper_blob
+                _lb = _m.lower_blob
+                _bbox = (
+                    int(min(_ub.x0, _lb.x0)),
+                    int(_ub.y0),
+                    int(max(_ub.x1, _lb.x1)),
+                    int(_lb.y1),
+                )
                 self._current_records.append(_MRec(
-                    recipe_id="",
+                    measurement_id=str(_uuid.uuid4()),
                     image_id=_img_id,
+                    recipe_id="",
+                    feature_type="",
+                    feature_id=f"feat{_m.cmg_id}_col{_m.col_id}",
+                    bbox=_bbox,
+                    center_x=float((_bbox[0] + _bbox[2]) / 2),
+                    center_y=float((_bbox[1] + _bbox[3]) / 2),
                     structure_name=getattr(_m, "structure_name", ""),
                     axis=getattr(_m, "axis", "Y"),
                     raw_px=float(_m.cd_px),
@@ -694,6 +715,11 @@ class MeasureWorkspace(QWidget):
                     col_id=_m.col_id,
                     flag=_m.flag or "",
                     status=_status,
+                    extra_metrics={
+                        "upper_bbox": (int(_ub.x0), int(_ub.y0), int(_ub.x1), int(_ub.y1)),
+                        "lower_bbox": (int(_lb.x0), int(_lb.y0), int(_lb.x1), int(_lb.y1)),
+                        **getattr(_m, "_refine_meta", {}),
+                    },
                 ))
         self._btn_compare.setEnabled(bool(self._current_records))
 

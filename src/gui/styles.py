@@ -110,7 +110,7 @@ QLabel#thresholdValue {
 QPushButton {
     background: #fffdf9;
     color: #6f6254;
-    border: 1px solid #dfd0be;
+    border: 1px solid #c8b49e;
     border-radius: 6px;
     padding: 6px 16px;
     font-weight: 500;
@@ -118,10 +118,10 @@ QPushButton {
 }
 QPushButton:hover {
     background: #fff4e8;
-    border-color: #c8b89e;
+    border-color: #b09e86;
     color: #3f3428;
 }
-QPushButton:pressed { background: #f0e0cb; border-color: #bba882; }
+QPushButton:pressed { background: #f0e0cb; border-color: #9e8a72; }
 QPushButton:disabled { color: #c8b89e; border-color: #dfd0be; background: #faf6f0; }
 
 /* Segmented view-mode buttons */
@@ -329,7 +329,7 @@ QSlider::sub-page:horizontal {
 /* ════════════════════════ SpinBox ══════════════════════════════════════ */
 QSpinBox, QDoubleSpinBox {
     background: #fffdf9;
-    border: 1px solid #e6dccf;
+    border: 1px solid #c8b49e;
     border-radius: 5px;
     padding: 4px 6px;
     color: #3f3428;
@@ -351,7 +351,7 @@ QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
 QCheckBox { spacing: 7px; color: #7c6d5b; }
 QCheckBox::indicator {
     width: 14px; height: 14px;
-    border: 1px solid #d8cbb8;
+    border: 1px solid #c0ad96;
     border-radius: 3px;
     background: #fffdf9;
 }
@@ -472,7 +472,7 @@ QTabBar::tab:hover:!selected {
 /* ════════════════════════ LineEdit ══════════════════════════════════════ */
 QLineEdit {
     background: #fffdf9;
-    border: 1px solid #dfd0be;
+    border: 1px solid #c8b49e;
     border-radius: 5px;
     padding: 4px 8px;
     color: #3f3428;
@@ -486,7 +486,7 @@ QLineEdit:read-only { background: #f5f0ea; color: #8a7a6a; }
 /* ════════════════════════ ComboBox ══════════════════════════════════════ */
 QComboBox {
     background: #fffdf9;
-    border: 1px solid #dfd0be;
+    border: 1px solid #c8b49e;
     border-radius: 5px;
     padding: 4px 28px 4px 8px;
     color: #3f3428;
@@ -589,4 +589,64 @@ QGraphicsView {
 /* ════════════════════════ ScrollArea ════════════════════════════════════ */
 QScrollArea { border: none; background: transparent; }
 QScrollArea > QWidget > QWidget { background: transparent; }
+
+/* ════════════════════════ Right panel — stronger input borders ══════════ */
+/* The right panel (#fff7ee bg) is close in tone to the default widget      */
+/* backgrounds, making 1px light borders nearly invisible. Darken them.     */
+QFrame#rightPanel QSpinBox,
+QFrame#rightPanel QDoubleSpinBox {
+    border: 1px solid #b8a898;
+    background: #fffdf9;
+    border-radius: 5px;
+}
+QFrame#rightPanel QSpinBox:focus,
+QFrame#rightPanel QDoubleSpinBox:focus {
+    border-color: #f29f4b;
+}
+QFrame#rightPanel QComboBox {
+    border: 1px solid #b8a898;
+    background: #fffdf9;
+}
+QFrame#rightPanel QComboBox:focus {
+    border-color: #f29f4b;
+}
+QFrame#rightPanel QLineEdit {
+    border: 1px solid #b8a898;
+    background: #fffdf9;
+}
+QFrame#rightPanel QLineEdit:focus {
+    border-color: #f29f4b;
+}
+QFrame#rightPanel QCheckBox::indicator {
+    border: 1px solid #b8a898;
+    border-radius: 3px;
+    background: #fffdf9;
+}
+QFrame#rightPanel QCheckBox::indicator:checked {
+    background: #e6953d;
+    border-color: #f29f4b;
+}
+
+/* ════════════════════════ Profile delete button ═════════════════════════ */
+/* Quiet by default; danger colour only on hover — avoids visual clutter   */
+/* in the section header while remaining immediately recognisable.          */
+QPushButton#profileDeleteBtn {
+    background: transparent;
+    border: none;
+    color: #c8b8a8;
+    font-size: 14px;
+    font-weight: 700;
+    padding: 0;
+    border-radius: 3px;
+    min-height: 0;
+}
+QPushButton#profileDeleteBtn:hover {
+    background: #f4d0c8;
+    color: #b04030;
+    border: 1px solid #efb6a0;
+}
+QPushButton#profileDeleteBtn:pressed {
+    background: #ead0c8;
+    color: #902820;
+}
 """

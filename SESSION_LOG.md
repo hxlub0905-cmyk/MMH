@@ -1,5 +1,153 @@
 # Session Log
 
+---
+
+## [2026-04-23] Measure 右側設定欄全面重設計：融入式 Tier 架構
+
+**變更類型：** UI 重設計
+
+**設計目標：**
+- 移除自訂卡片框線（border/border-radius outer QWidget），改為與整個面板視覺統一的 Tier-2 CollapsibleSection
+- 移除 `QFrame#rightPanel QPushButton:!checked:!disabled` 全域覆蓋，按鈕配色與其他分頁/全域統一
+- 每個測量 profile 以 Tier-2 section header 呈現，Filters/Advanced 改為 Tier-3
+
+**變更內容：**
+
+### `src/gui/collapsible.py` — 新增 `trailing_widget` 支援
+- `__init__` 加入 `trailing_widget: QWidget | None = None` 參數
+- 當提供 trailing_widget 時，header 改為 container QWidget（背景/邊框與 tier 一致）+ toggle QPushButton（background:transparent + inline hover QSS）+ trailing_widget
+- 新增 `_TIER_BG`、`_TIER_BORDER`、`_TIER_HOVER_QSS` 常數（避免 hardcode 分散各處）
+- 原有無 trailing_widget 的使用方式完全不變（向下相容）
+
+### `src/gui/control_panel.py` — 重寫 `_add_profile()`
+- **移除**：`outer` 卡片 QWidget、`header_row`、`card_title` QLabel、舊式 inline `btn_del` 樣式
+- **改為**：`CollapsibleSection(name, tier=2, trailing_widget=btn_del)` — 與 Recipe/Edge Locator 視覺統一
+- Filters section：tier=2 → tier=3（因為現在嵌套在 tier=2 profile 內）
+- Advanced section：保留 tier=3
+- `_build_measurement_profiles`：profile 間距 spacing=8 → 0（tier section 本身的 border 已提供視覺分隔）
+- 「＋ Add Measurement」按鈕：綠色 → 橙色系（與 app accent 統一）
+
+### `src/gui/styles.py`
+- **移除** `QFrame#rightPanel QPushButton:!checked:!disabled` 及 hover 規則（這是造成所有按鈕邊框突兀的根因）
+- **保留** QSpinBox/QComboBox/QLineEdit/QCheckBox::indicator 的右側面板邊框加深規則
+- **新增** `QPushButton#profileDeleteBtn`：平時無邊框靜默顯示，hover 才顯示危險紅色
+
+**影響範圍：**
+- `src/gui/collapsible.py`
+- `src/gui/control_panel.py`
+- `src/gui/styles.py`
+
+**測試結果：**
+- `python3 -m py_compile` 通過
+- `pytest`（排除 numpy/cv2 相依）→ 17/17 通過
+
+---
+
+## [2026-04-23] 修復 Run Single 閃退：MeasurementRecord 缺少必填欄位
+
+**變更類型：** Bug 修復
+
+**問題根因：**
+- `measure_workspace.py` 的 `_run_with_cards()` 中，在有量測結果時嘗試建立 `MeasurementRecord` 物件，但遺漏了 6 個必填位置參數：`measurement_id`、`feature_type`、`feature_id`、`bbox`、`center_x`、`center_y`
+- 導致 `TypeError: __init__() missing required positional arguments`，在 PyQt6 的 slot 機制下使應用程式異常終止（閃退）
+- `_run_with_recipe` 沒有任何 try/except，任何未捕獲例外都會向上傳遞
+
+**修法：**
+1. **`_run_with_cards`** — 補全所有必填欄位，從 `YCDMeasurement.upper_blob`/`lower_blob` 推導：
+   - `measurement_id`：`str(uuid.uuid4())`
+   - `feature_type`：`""`（legacy cards 沒有 recipe 定義的 feature_type）
+   - `feature_id`：`f"feat{cmg_id}_col{col_id}"`
+   - `bbox`：`(min(ub.x0, lb.x0), ub.y0, max(ub.x1, lb.x1), lb.y1)`
+   - `center_x/y`：bbox 中心點
+   - `extra_metrics`：包含 `upper_bbox`、`lower_bbox` 與 `_refine_meta`（供 CD 位置 Excel 匯出使用）
+2. **`_run_with_recipe`** — 重構為 `_run_with_recipe_impl()`，外層包一層 `try/except` 顯示錯誤 dialog
+
+**影響範圍：**
+- `src/gui/workspaces/measure_workspace.py`
+
+**測試結果：**
+- `python3 -m py_compile` 通過
+- `pytest`（排除 numpy/cv2 相依）→ 17/17 通過
+
+---
+
+## [2026-04-23] Measure 右側 UI 透明控件修復 + 全局邊框加深
+
+**變更類型：** UI 修復
+
+**變更摘要：**
+
+### 根本原因修復：QComboBox / QSpinBox 透明無邊框
+- **問題根因**：`control_panel.py` 的 `_add_profile()` 中三處 `setStyleSheet("QWidget { ... }")` 使用了「類型選擇器」，在 Qt QSS 的 cascade 機制下，父控件的 `QWidget { }` 規則會透過 Qt 的祖先鏈傳播至所有子 QWidget 子類（QComboBox、QSpinBox 等），覆蓋應用層級的樣式，導致這些控件顯示為透明、無邊框
+- **修法**：將三處改為「裸屬性宣告」（不帶類型選擇器），例如：
+  - `"QWidget { background:transparent; border:none; }"` → `"background:transparent;"`
+  - `"QWidget { background:#fff9f2; border:1px solid #e6dccf; ... }"` → `"background:#fff9f2; border:1px solid #c8b8a8; border-radius:8px;"`
+  裸屬性宣告僅作用於設定對象本身，不向下 cascade，子控件保留自身樣式
+- 同步修正 `min_wrap`、`max_wrap`、`f2_form_w`、`f3_form_w` 的 `"border:none;"` → `"background:transparent;"`
+- 卡片標題字體：`font-size:10px` → `font-size:11px; letter-spacing:0.5px`
+
+### 全局邊框顏色加深（styles.py）
+- `QPushButton` 邊框：`#dfd0be` → `#c8b49e`（hover：`#c8b89e` → `#b09e86`）
+- `QSpinBox`/`QDoubleSpinBox` 邊框：`#e6dccf` → `#c8b49e`
+- `QCheckBox::indicator` 邊框：`#d8cbb8` → `#c0ad96`
+- `QLineEdit` 邊框：`#dfd0be` → `#c8b49e`
+- `QComboBox` 邊框：`#dfd0be` → `#c8b49e`
+
+**影響範圍：**
+- `src/gui/control_panel.py`（移除三處 `QWidget { }` 類型選擇器 cascade，修正透明控件問題）
+- `src/gui/styles.py`（全局邊框顏色加深，與右側面板特化規則一致）
+
+**測試結果：**
+- `python3 -m py_compile` 對所有修改檔案均通過
+- `pytest`（排除 numpy/cv2 相依）→ 17/17 通過
+
+**備註：**
+- Qt QSS 核心規則：父控件使用 `QWidget { }` 類型選擇器時，其優先級高於應用層級樣式；使用裸屬性宣告則不會 cascade 至子控件
+
+---
+
+## [2026-04-23] Measure 右側邊界強化 + Comprehensive Excel 匯出
+
+**變更類型：** UI 改善 / 功能增強
+
+**變更摘要：**
+
+### 1. Measure 分頁右側設定欄邊界強化
+- **問題**：右側面板（`QFrame#rightPanel`，背景 `#fff7ee`）內的 SpinBox（邊框 `#e6dccf`）、ComboBox、LineEdit、CheckBox、Button 的 1px 邊框與背景色差不足，視覺上幾乎不可見
+- **修法**：在 `styles.py` 末尾新增 `QFrame#rightPanel` 子選擇器規則，將所有互動控件的邊框色統一加深至 `#b8a898`（原 `#e6dccf`/`#dfd0be`），hover 時進一步加深至 `#9a8878`，focus 時仍以 accent 橘色（`#f29f4b`）顯示
+- SpinBox、ComboBox、LineEdit、Button、CheckBox::indicator 均已覆蓋
+
+### 2. CSV + Excel 整合為一份 Comprehensive Excel
+- **動機**：使用者希望一份不用看圖就能掌握所有 data 的總表，尤其在多組 dataset 情境下
+- **`src/output/_common.py`**：
+  - `records_to_dataframe()` 新增 `dataset_label` 參數
+  - 新增欄位：`cd_px`、`cd_nm`（主名稱）、`cd_line_x_px`、`cd_line_y_px`（CD 線相對圖左上角的 XY 座標，單位 px）、`upper_blob_x0/y0/x1/y1`、`lower_blob_x0/y0/x1/y1`（blob bounding box 分解欄位）、`dataset`
+  - 保留 `y_cd_px`、`y_cd_nm`、`upper_bbox`、`lower_bbox` 舊欄位供 CSV 相容
+- **`src/output/excel_exporter.py`**：全面改寫 `export_excel_from_records()`：
+  - 新增 `datasets: list[dict] | None` 參數，支援多資料集輸入（每個 dict 含 `records`、`image_records`、`dataset_label`）
+  - **Sheet 1「All Measurements」**：完整量測資料 + CD 線位置 + blob bbox，MIN 行橘色、MAX 行藍色；凍結表頭，自動欄寬
+  - **Sheet 2「Image Summary」**：每張圖一列，包含 mean、median、std、3-sigma，以及 MIN CD 值/位置（XY, cmg_id, col_id）與 MAX CD 值/位置；MIN 欄橘色、MAX 欄藍色，一眼找到極值位置，不用看圖
+  - **Sheet 3「Statistics」**：依 recipe_name 分組的統計摘要（N、Mean、Median、Q25/Q75、Std、3σ、Min、Max、影像數）
+- **`src/gui/workspaces/report_workspace.py`**：
+  - `_ExportDialog` 將 CSV + Excel 兩個 checkbox 合併為一個「Comprehensive Excel」checkbox（附描述說明三個工作表內容）
+  - 多資料集（`MultiDatasetBatchRun`）匯出時，逐 dataset 重建 record 列表並帶入 `dataset_label`，傳入 `datasets` 參數確保「dataset」欄正確填入
+  - `export_csv` property 直接回傳 `False`（CSV 已整合進 Excel）
+
+**影響範圍：**
+- `src/gui/styles.py`（右側面板控件邊框覆蓋規則）
+- `src/output/_common.py`（新增欄位 + `dataset_label` 參數）
+- `src/output/excel_exporter.py`（全面改寫 `export_excel_from_records()`，新增 multi-sheet + multi-dataset 支援）
+- `src/gui/workspaces/report_workspace.py`（合併 CSV/Excel checkbox，更新多資料集匯出邏輯）
+
+**測試結果：**
+- `python3 -m py_compile` 對所有修改檔案均通過
+- `pytest tests/test_models.py tests/test_batch_run_store.py tests/test_history.py` → 17/17 通過
+- （numpy 相依測試因環境未安裝 numpy 跳過，與先前 session 一致）
+
+**備註：**
+- CD 線位置（`cd_line_x_px`、`cd_line_y_px`）來自 `MeasurementRecord.center_x/center_y`，對 Y-CD 為 gap 中心點，原點為圖左上角
+- 舊 `export_excel()`（舊版 results list 路徑）不受影響，保留向後相容
+
 每次對本專案進行任何變更（功能新增、Bug 修復、重構、文件更新），
 都必須在本文件**最上方**新增一筆 session 記錄。
 
