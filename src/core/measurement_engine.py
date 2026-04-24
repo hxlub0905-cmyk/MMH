@@ -41,6 +41,7 @@ class MeasurementEngine:
         on_progress: Callable[[int, int, str, str, dict], None] | None = None,
         max_workers: int | None = None,
         output_dir: Path | None = None,
+        abort_check: Callable[[], bool] | None = None,
     ) -> BatchRunRecord:
         """Run all recipe_ids against all image_records in parallel.
 
@@ -73,12 +74,15 @@ class MeasurementEngine:
         total = len(args_list)
         done = 0
 
-        with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        pool = ProcessPoolExecutor(max_workers=max_workers)
+        try:
             future_map = {
                 pool.submit(_worker_run_image, args): args["image_path"]
                 for args in args_list
             }
             for future in as_completed(future_map):
+                if abort_check and abort_check():
+                    break
                 done += 1
                 result_dict = future.result()
                 results.append(result_dict)
@@ -93,6 +97,8 @@ class MeasurementEngine:
                         "image_path": result_dict["image_path"],
                         "error": result_dict.get("error", ""),
                     })
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
         batch.end_time = datetime.now(timezone.utc).isoformat()
         batch.output_manifest["results"] = results
@@ -106,6 +112,7 @@ class MeasurementEngine:
         on_progress: Callable[[int, int, str, str, dict], None] | None = None,
         max_workers: int | None = None,
         output_dir: Path | None = None,
+        abort_check: Callable[[], bool] | None = None,
     ) -> MultiDatasetBatchRun:
         """Run run_batch() sequentially for each dataset and aggregate results.
 
@@ -120,6 +127,8 @@ class MeasurementEngine:
         total_all = sum(len(ds["image_records"]) for ds in datasets)
         offset = 0
         for i, ds in enumerate(datasets):
+            if abort_check and abort_check():
+                break
             label = ds.get("label", f"Dataset {i+1}")
             if on_dataset_start:
                 on_dataset_start(i + 1, len(datasets), label)
@@ -140,6 +149,7 @@ class MeasurementEngine:
                 on_progress=_wrapped if on_progress else None,
                 max_workers=max_workers,
                 output_dir=Path(output_dir) / ds_label if output_dir else None,
+                abort_check=abort_check,
             )
             br.dataset_label = label
             mbr.datasets.append(br)

@@ -60,6 +60,7 @@ class BatchWorkspace(QWidget):
         self._THROTTLE = 50    # update log/list every N images
         self._LIST_CAP = 500   # max QListWidget items (keeps most recent)
         self._overlay_output_dir: str = ""
+        self._aborting: bool = False
         self._build_ui()
         self._add_dataset_row()   # start with one empty row
 
@@ -123,12 +124,26 @@ class BatchWorkspace(QWidget):
         ctrl_row.addWidget(QLabel("Workers:"))
         ctrl_row.addWidget(self._worker_spin)
         ctrl_row.addStretch()
-        run_btn = QPushButton("Run Batch")
-        run_btn.setObjectName("successBtn")
-        run_btn.setFixedWidth(130)
-        run_btn.setFixedHeight(36)
-        run_btn.clicked.connect(self._run_batch)
-        ctrl_row.addWidget(run_btn)
+        self._run_btn = QPushButton("Run Batch")
+        self._run_btn.setObjectName("successBtn")
+        self._run_btn.setFixedWidth(130)
+        self._run_btn.setFixedHeight(36)
+        self._run_btn.clicked.connect(self._run_batch)
+        ctrl_row.addWidget(self._run_btn)
+
+        self._abort_btn = QPushButton("Abort")
+        self._abort_btn.setFixedWidth(80)
+        self._abort_btn.setFixedHeight(36)
+        self._abort_btn.setEnabled(False)
+        self._abort_btn.setStyleSheet(
+            "QPushButton { background:#feeee8; border:1px solid #cc7b6c; color:#a03020;"
+            " border-radius:6px; padding:6px 12px; font-weight:500; }"
+            "QPushButton:hover { background:#fdddd4; border-color:#b05040; }"
+            "QPushButton:pressed { background:#f4c0b0; }"
+            "QPushButton:disabled { color:#c8b89e; border-color:#dfd0be; background:#faf6f0; }"
+        )
+        self._abort_btn.clicked.connect(self._on_abort_clicked)
+        ctrl_row.addWidget(self._abort_btn)
         root.addLayout(ctrl_row)
 
         # ── Overlay 選項列（包在 QFrame 內） ──────────────────────────────────
@@ -331,10 +346,14 @@ class BatchWorkspace(QWidget):
         self._image_list.clear()
         self._progress_count = 0
         self._batch_start_time = time.monotonic()
+        self._aborting = False
         self._lbl_eta.setText("ETA: —")
         total_images = sum(len(r["image_records"]) for r in valid_rows)
         self._progress.setMaximum(total_images)
         self._progress.setValue(0)
+        self._run_btn.setEnabled(False)
+        self._abort_btn.setEnabled(True)
+        self._abort_btn.setText("Abort")
 
         output_dir = (
             Path(self._overlay_output_dir)
@@ -419,6 +438,30 @@ class BatchWorkspace(QWidget):
 
     @pyqtSlot(object)
     def _on_single_finished(self, batch_run: BatchRunRecord) -> None:
+        self._run_btn.setEnabled(True)
+        self._abort_btn.setEnabled(False)
+        self._abort_btn.setText("Abort")
+        if self._aborting:
+            done = batch_run.success_count + batch_run.fail_count
+            msg = (f"Batch aborted — {done}/{batch_run.total_images} processed  "
+                   f"·  {batch_run.success_count} OK · {batch_run.fail_count} failed")
+            self._lbl_eta.setText("ETA: —")
+            self._lbl_status.setText(f"⚠ Aborted — {done}/{batch_run.total_images} processed")
+            self._lbl_status.setStyleSheet(
+                "font-size:11px; font-weight:500; color:#a05020; background:transparent;"
+            )
+            self._log_text.append(msg)
+            self.status_message.emit(msg)
+            if batch_run.success_count + batch_run.fail_count > 0 and self._run_store:
+                self._save_worker = _SaveWorker(self._run_store, batch_run, multi=False)
+                self._save_worker.save_done.connect(
+                    lambda p: self._log_text.append(f"Partial results saved → {Path(p).name}")
+                )
+                self._save_worker.save_error.connect(
+                    lambda e: self.status_message.emit(f"Save error: {e}")
+                )
+                self._save_worker.start()
+            return
         self._progress.setValue(self._progress.maximum())
         self._lbl_eta.setText("ETA: done")
         msg = (f"Batch complete  ·  {batch_run.success_count} OK  "
@@ -453,6 +496,30 @@ class BatchWorkspace(QWidget):
 
     @pyqtSlot(object)
     def _on_multi_finished(self, mbr: MultiDatasetBatchRun) -> None:
+        self._run_btn.setEnabled(True)
+        self._abort_btn.setEnabled(False)
+        self._abort_btn.setText("Abort")
+        if self._aborting:
+            done = mbr.success_count + mbr.fail_count
+            msg = (f"Multi-batch aborted — {done} processed across {len(mbr.datasets)} datasets"
+                   f"  ·  {mbr.success_count} OK · {mbr.fail_count} failed")
+            self._lbl_eta.setText("ETA: —")
+            self._lbl_status.setText(f"⚠ Aborted — {done} processed")
+            self._lbl_status.setStyleSheet(
+                "font-size:11px; font-weight:500; color:#a05020; background:transparent;"
+            )
+            self._log_text.append(msg)
+            self.status_message.emit(msg)
+            if done > 0 and self._run_store:
+                self._save_worker = _SaveWorker(self._run_store, mbr, multi=True)
+                self._save_worker.save_done.connect(
+                    lambda p: self._log_text.append(f"Partial results saved → {Path(p).name}")
+                )
+                self._save_worker.save_error.connect(
+                    lambda e: self.status_message.emit(f"Save error: {e}")
+                )
+                self._save_worker.start()
+            return
         self._progress.setValue(self._progress.maximum())
         self._lbl_eta.setText("ETA: done")
         msg = (f"Multi-batch complete  ·  {mbr.success_count} OK  "
@@ -477,6 +544,17 @@ class BatchWorkspace(QWidget):
         else:
             self.status_message.emit(msg)
 
+    def _on_abort_clicked(self) -> None:
+        if self._worker and self._worker.isRunning():
+            self._aborting = True
+            self._worker.request_abort()
+            self._abort_btn.setEnabled(False)
+            self._abort_btn.setText("Aborting…")
+            self._lbl_status.setText("Aborting… (finishing current image)")
+            self._lbl_status.setStyleSheet(
+                "font-size:11px; font-weight:500; color:#a05020; background:transparent;"
+            )
+
     def _open_history_dialog(self) -> None:
         if not self._run_store:
             return
@@ -500,6 +578,9 @@ class BatchWorkspace(QWidget):
 
     @pyqtSlot(str)
     def _on_batch_error(self, err: str) -> None:
+        self._run_btn.setEnabled(True)
+        self._abort_btn.setEnabled(False)
+        self._abort_btn.setText("Abort")
         self._log_text.append(f"ERROR: {err}")
         self.status_message.emit(f"Batch error: {err}")
 
@@ -525,6 +606,10 @@ class _BatchWorker(QThread):
         self._recipe_ids    = recipe_ids
         self._max_workers   = max_workers
         self._output_dir    = output_dir
+        self._abort         = False
+
+    def request_abort(self) -> None:
+        self._abort = True
 
     def run(self) -> None:
         try:
@@ -535,6 +620,7 @@ class _BatchWorker(QThread):
                     self.progress.emit(done, total, name, status, result_dict),
                 max_workers=self._max_workers,
                 output_dir=self._output_dir,
+                abort_check=lambda: self._abort,
             )
             self.finished.emit(batch_run)
         except Exception as exc:
@@ -559,6 +645,10 @@ class _MultiBatchWorker(QThread):
         self._datasets    = datasets
         self._max_workers = max_workers
         self._output_dir  = output_dir
+        self._abort       = False
+
+    def request_abort(self) -> None:
+        self._abort = True
 
     def run(self) -> None:
         try:
@@ -570,6 +660,7 @@ class _MultiBatchWorker(QThread):
                     self.progress.emit(done, total, name, status, result_dict),
                 max_workers=self._max_workers,
                 output_dir=self._output_dir,
+                abort_check=lambda: self._abort,
             )
             self.finished.emit(mbr)
         except Exception as exc:
