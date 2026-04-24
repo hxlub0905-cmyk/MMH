@@ -603,14 +603,16 @@ class _BatchWorker(QThread):
         recipe_ids: list[str],
         max_workers: int,
         output_dir: Path | None = None,
+        quality_lap_threshold: float | None = None,
     ):
         super().__init__()
-        self._engine        = engine
-        self._image_records = image_records
-        self._recipe_ids    = recipe_ids
-        self._max_workers   = max_workers
-        self._output_dir    = output_dir
-        self._abort         = False
+        self._engine               = engine
+        self._image_records        = image_records
+        self._recipe_ids           = recipe_ids
+        self._max_workers          = max_workers
+        self._output_dir           = output_dir
+        self._quality_lap_threshold = quality_lap_threshold
+        self._abort                = False
 
     def request_abort(self) -> None:
         self._abort = True
@@ -625,6 +627,7 @@ class _BatchWorker(QThread):
                 max_workers=self._max_workers,
                 output_dir=self._output_dir,
                 abort_check=lambda: self._abort,
+                quality_lap_threshold=self._quality_lap_threshold,
             )
             self.finished.emit(batch_run)
         except Exception as exc:
@@ -643,13 +646,15 @@ class _MultiBatchWorker(QThread):
         datasets: list[dict],
         max_workers: int,
         output_dir: Path | None = None,
+        quality_lap_threshold: float | None = None,
     ):
         super().__init__()
-        self._engine      = engine
-        self._datasets    = datasets
-        self._max_workers = max_workers
-        self._output_dir  = output_dir
-        self._abort       = False
+        self._engine               = engine
+        self._datasets             = datasets
+        self._max_workers          = max_workers
+        self._output_dir           = output_dir
+        self._quality_lap_threshold = quality_lap_threshold
+        self._abort                = False
 
     def request_abort(self) -> None:
         self._abort = True
@@ -665,6 +670,7 @@ class _MultiBatchWorker(QThread):
                 max_workers=self._max_workers,
                 output_dir=self._output_dir,
                 abort_check=lambda: self._abort,
+                quality_lap_threshold=self._quality_lap_threshold,
             )
             self.finished.emit(mbr)
         except Exception as exc:
