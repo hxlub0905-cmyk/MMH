@@ -293,20 +293,48 @@ class ReportWorkspace(QWidget):
         for label, value in rows:
             self._summary_layout.addRow(QLabel(label), QLabel(value))
 
+        # Per-dataset breakdown table
+        sep_lbl = QLabel("── Per-Dataset Breakdown ──")
+        sep_lbl.setStyleSheet("color:#9a8a7a; font-size:11px; margin-top:6px;")
+        self._summary_layout.addRow(sep_lbl)
+        for ds in mbr.datasets:
+            label = ds.dataset_label or "Dataset"
+            ok_pct = (100 * ds.success_count / ds.total_images) if ds.total_images else 0.0
+            val_lbl = QLabel(
+                f"<span style='color:#2a7a2a'><b>{ds.success_count}</b></span> OK  "
+                f"<span style='color:#cc0000'><b>{ds.fail_count}</b></span> Fail  "
+                f"/ {ds.total_images} total  ({ok_pct:.0f}%)"
+            )
+            val_lbl.setTextFormat(Qt.TextFormat.RichText)
+            self._summary_layout.addRow(QLabel(f"  {label}:"), val_lbl)
+
     def _refresh_stats(self) -> None:
         _clear_vbox(self._stats_vbox)
         self._hl_vals = []
         self._detail_vals = {}
 
         if self._multi_batch_run:
+            self._stats_box.setTitle("Per-Dataset CD Statistics")
             for ds in self._multi_batch_run.datasets:
                 vals = _collect_vals_from_results(ds.output_manifest.get("results", []))
                 vals = self._apply_outlier_filter(vals)
-                grp = QGroupBox(ds.dataset_label or "Dataset")
-                fl = QFormLayout(grp)
-                _fill_stats_form(fl, vals)
+                ok_pct = (
+                    100 * ds.success_count / ds.total_images
+                    if ds.total_images else 0.0
+                )
+                grp_title = (
+                    f"{ds.dataset_label or 'Dataset'}"
+                    f"  ·  {ds.success_count}/{ds.total_images} OK ({ok_pct:.0f}%)"
+                    f"  ·  {len(vals)} measurements"
+                )
+                grp = QGroupBox(grp_title)
+                grp_vbox = QVBoxLayout(grp)
+                grp_vbox.setContentsMargins(8, 4, 8, 8)
+                grp_vbox.setSpacing(6)
+                _build_dataset_stats_inline(grp_vbox, vals)
                 self._stats_vbox.addWidget(grp)
         else:
+            self._stats_box.setTitle("CD Statistics")
             ok_vals = [r.calibrated_nm for r in self._records if r.status not in ("rejected",)]
             ok_vals = self._apply_outlier_filter(ok_vals)
             self._build_stats_cards(ok_vals)
@@ -701,6 +729,87 @@ def _fill_stats_form(fl: QFormLayout, vals: list[float]) -> None:
     ]
     for label, value in rows:
         fl.addRow(QLabel(label), QLabel(value))
+
+
+def _build_dataset_stats_inline(vbox: QVBoxLayout, vals: list[float]) -> None:
+    """Render compact highlight cards + detail rows for one dataset inside vbox."""
+    if not vals:
+        placeholder = QLabel("No measurements")
+        placeholder.setStyleSheet("color:#9a8a7a; font-size:11px; padding:4px;")
+        vbox.addWidget(placeholder)
+        return
+
+    import statistics as _st
+    n = len(vals)
+    mean = _st.mean(vals)
+    stdev = _st.stdev(vals) if n > 1 else 0.0
+    median = _st.median(vals)
+    if n >= 2:
+        qs = _st.quantiles(vals, n=4)
+        q25, q75 = qs[0], qs[2]
+    else:
+        q25 = q75 = vals[0]
+
+    # Compact highlight row (4 key metrics side-by-side)
+    hl_widget = QWidget()
+    hl_layout = QHBoxLayout(hl_widget)
+    hl_layout.setContentsMargins(0, 0, 0, 0)
+    hl_layout.setSpacing(6)
+    hl_defs = [
+        (f"{mean:.3f} nm",    "Mean CD",  "#fff4e6", "#efd8b8", "#8a6830"),
+        (f"{stdev*3:.3f} nm", "3-Sigma",  "#fff4e6", "#efd8b8", "#8a6830"),
+        (f"{min(vals):.3f} nm","Min CD",  "#f0f7fc", "#c8dcea", "#4a7a9a"),
+        (f"{max(vals):.3f} nm","Max CD",  "#f0f7fc", "#c8dcea", "#4a7a9a"),
+    ]
+    for val_str, lbl_str, bg, bd, color in hl_defs:
+        frame = QFrame()
+        frame.setStyleSheet(
+            f"background:{bg}; border:0.5px solid {bd}; border-radius:6px;"
+        )
+        fl = QVBoxLayout(frame)
+        fl.setContentsMargins(10, 6, 10, 6)
+        fl.setSpacing(1)
+        v_lbl = QLabel(val_str)
+        v_lbl.setStyleSheet(
+            f"font-size:15px; font-weight:500; color:{color}; background:transparent;"
+        )
+        d_lbl = QLabel(lbl_str)
+        d_lbl.setStyleSheet(
+            f"font-size:10px; color:{color}; background:transparent;"
+        )
+        fl.addWidget(v_lbl)
+        fl.addWidget(d_lbl)
+        hl_layout.addWidget(frame)
+    vbox.addWidget(hl_widget)
+
+    # Detail row (remaining metrics)
+    detail_widget = QWidget()
+    dg = QHBoxLayout(detail_widget)
+    dg.setContentsMargins(0, 0, 0, 0)
+    dg.setSpacing(4)
+    detail_defs = [
+        ("Count", str(n)),
+        ("Median", f"{median:.3f} nm"),
+        ("Std Dev", f"{stdev:.3f} nm"),
+        ("Q25", f"{q25:.3f} nm"),
+        ("Q75", f"{q75:.3f} nm"),
+    ]
+    for key, value in detail_defs:
+        row_frame = QFrame()
+        row_frame.setStyleSheet("background:#f7f4ef; border-radius:4px;")
+        rf = QHBoxLayout(row_frame)
+        rf.setContentsMargins(6, 3, 6, 3)
+        k_lbl = QLabel(key)
+        k_lbl.setStyleSheet("font-size:10px; color:#9a8a7a; background:transparent;")
+        v_lbl = QLabel(value)
+        v_lbl.setStyleSheet(
+            "font-size:10px; font-weight:500; color:#3f3428; background:transparent;"
+        )
+        rf.addWidget(k_lbl)
+        rf.addWidget(v_lbl)
+        dg.addWidget(row_frame)
+    dg.addStretch()
+    vbox.addWidget(detail_widget)
 
 
 def _clear_form(layout) -> None:

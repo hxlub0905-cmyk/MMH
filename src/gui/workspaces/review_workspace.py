@@ -35,6 +35,7 @@ class ReviewWorkspace(QWidget):
         self._batch_records: dict[int, list[MeasurementRecord]] = {}  # lazy cache; capped at _RECORD_CACHE_MAX
         self._entry_index_map: list[int] = []
         self._RECORD_CACHE_MAX = 200   # LRU eviction threshold for _batch_records
+        self._list_ok_shown: int = 0   # how many OK items are currently visible in the list
 
         # Cached current view (for overlay re-render without re-loading image)
         self._cur_raw   = None
@@ -59,9 +60,22 @@ class ReviewWorkspace(QWidget):
         list_panel = QGroupBox("Batch Images")
         lv = QVBoxLayout(list_panel)
         lv.setContentsMargins(4, 8, 4, 4)
+        lv.setSpacing(2)
         self._img_list = QListWidget()
         self._img_list.currentRowChanged.connect(self._on_batch_row_changed)
         lv.addWidget(self._img_list)
+
+        self._view_more_btn = QPushButton("View more…")
+        self._view_more_btn.setFixedHeight(24)
+        self._view_more_btn.setStyleSheet(
+            "QPushButton { color:#5a7aaa; font-size:11px; background:#eef3fa;"
+            " border:1px solid #c0d0e8; border-radius:4px; padding:0 6px; }"
+            "QPushButton:hover { background:#ddeaf8; }"
+        )
+        self._view_more_btn.clicked.connect(self._load_more_ok_items)
+        self._view_more_btn.setVisible(False)
+        lv.addWidget(self._view_more_btn)
+
         self._list_panel = list_panel
         self._list_panel.setVisible(False)
         self._list_panel.setMinimumWidth(180)
@@ -252,10 +266,14 @@ class ReviewWorkspace(QWidget):
         )
 
     def _populate_img_list(self, entries: list) -> None:
-        """Add entries to _img_list, capping at _LIST_LIMIT to stay responsive."""
+        """Add entries to _img_list, capping OK items at _LIST_LIMIT to stay responsive.
+
+        Failures are always shown.  A 'View more…' button below the list lets
+        the user load the next group of _LIST_LIMIT OK items on demand.
+        """
         self._entry_index_map = []
+        self._list_ok_shown = 0
         limit = self._LIST_LIMIT
-        shown = 0
         for i, entry in enumerate(entries):
             if entry.get("_separator"):
                 item = QListWidgetItem(f"── {entry['label']} ──")
@@ -268,27 +286,68 @@ class ReviewWorkspace(QWidget):
             status = entry.get("status", "?")
             name = Path(entry.get("image_path", "?")).name
             # Always show failures; show OK entries up to the limit
-            if status == "OK" and shown >= limit:
+            if status == "OK" and self._list_ok_shown >= limit:
                 continue
             if status == "OK":
                 item = QListWidgetItem(f"●  {name}")
                 item.setForeground(QColor("#7abf9a"))
+                self._list_ok_shown += 1
             else:
                 item = QListWidgetItem(f"✕  {name}")
                 item.setForeground(QColor("#cc7b6c"))
             self._img_list.addItem(item)
             self._entry_index_map.append(i)
-            shown += 1
 
-        total = len([e for e in entries if not e.get("_separator")])
-        if shown < total:
-            note = QListWidgetItem(
-                f"… {total - shown} more images (all failures shown above)"
+        total_ok = sum(
+            1 for e in entries
+            if not e.get("_separator") and e.get("status") == "OK"
+        )
+        remaining = total_ok - self._list_ok_shown
+        if remaining > 0:
+            self._view_more_btn.setText(
+                f"View more…  ({self._list_ok_shown}/{total_ok} shown)"
             )
-            note.setFlags(note.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-            note.setForeground(Qt.GlobalColor.gray)
-            self._img_list.addItem(note)
-            self._entry_index_map.append(-1)
+            self._view_more_btn.setVisible(True)
+        else:
+            self._view_more_btn.setVisible(False)
+
+    def _load_more_ok_items(self) -> None:
+        """Append the next _LIST_LIMIT OK items to the image list."""
+        entries = self._batch_entries
+        ok_skipped = 0
+        ok_added   = 0
+        limit      = self._LIST_LIMIT
+
+        self._img_list.setUpdatesEnabled(False)
+        for i, entry in enumerate(entries):
+            if entry.get("_separator") or entry.get("status") != "OK":
+                continue
+            if ok_skipped < self._list_ok_shown:
+                ok_skipped += 1
+                continue
+            if ok_added >= limit:
+                break
+            name = Path(entry.get("image_path", "?")).name
+            item = QListWidgetItem(f"●  {name}")
+            item.setForeground(QColor("#7abf9a"))
+            self._img_list.addItem(item)
+            self._entry_index_map.append(i)
+            ok_added += 1
+
+        self._img_list.setUpdatesEnabled(True)
+        self._list_ok_shown += ok_added
+
+        total_ok = sum(
+            1 for e in entries
+            if not e.get("_separator") and e.get("status") == "OK"
+        )
+        remaining = total_ok - self._list_ok_shown
+        if remaining > 0:
+            self._view_more_btn.setText(
+                f"View more…  ({self._list_ok_shown}/{total_ok} shown)"
+            )
+        else:
+            self._view_more_btn.setVisible(False)
 
     def load_multi_batch(self, mbr: MultiDatasetBatchRun) -> None:
         """Load combined results from a multi-dataset batch run for browsing."""
@@ -323,11 +382,13 @@ class ReviewWorkspace(QWidget):
         self._focused = None
         self._batch_entries = []
         self._batch_records = {}
+        self._list_ok_shown = 0
         self._cur_raw  = None
         self._cur_mask = None
         self._cur_cuts = []
         self._results.clear()
         self._img_list.clear()
+        self._view_more_btn.setVisible(False)
         self._list_panel.setVisible(False)
         self._batch_nav.setVisible(False)
         self._overlay_widget.setVisible(False)
