@@ -98,9 +98,11 @@ class MeasurementEngine:
                         "error": result_dict.get("error", ""),
                     })
         finally:
+            # Set end_time before shutdown so it is always stamped even when
+            # abort_check triggers a break or an unhandled exception propagates.
+            batch.end_time = datetime.now(timezone.utc).isoformat()
             pool.shutdown(wait=False, cancel_futures=True)
 
-        batch.end_time = datetime.now(timezone.utc).isoformat()
         batch.output_manifest["results"] = results
         return batch
 

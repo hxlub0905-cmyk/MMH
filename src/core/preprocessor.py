@@ -1,9 +1,12 @@
 """Pre-processing pipeline: blur → CLAHE → GL-range mask → morphological ops."""
 
 from __future__ import annotations
+import logging
 from dataclasses import dataclass
 import cv2
 import numpy as np
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -84,4 +87,12 @@ def apply_column_strip_mask(
         x1 = min(W - edge_margin_px, xc + hw + 1)
         if x1 > x0:
             strip[:, x0:x1] = 255
-    return cv2.bitwise_and(mask, strip)
+    result = cv2.bitwise_and(mask, strip)
+    if not result.any():
+        _log.warning(
+            "apply_column_strip_mask: resulting strip mask is all zeros "
+            "(col_centers=%s, half_width=%d, margin=%d). "
+            "Check col_mask_width_px and xproj settings.",
+            col_centers, half_width, margin,
+        )
+    return result

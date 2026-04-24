@@ -28,10 +28,11 @@ class BatchRunStore:
             return None
         try:
             entries: list[dict] = json.loads(ip.read_text(encoding="utf-8"))
-            # Validate that every file_path in the index still exists
-            paths_in_index = {e["file_path"] for e in entries}
+            # Normalise paths before comparing so Windows drive-letter casing and
+            # forward/backslash differences don't cause spurious full rebuilds.
+            paths_in_index = {str(Path(e["file_path"]).resolve()) for e in entries}
             actual_files = {
-                str(f) for f in self._dir.glob("*.json")
+                str(f.resolve()) for f in self._dir.glob("*.json")
                 if f.name != _INDEX_FILE
             }
             if paths_in_index != actual_files:
@@ -93,7 +94,10 @@ class BatchRunStore:
 
     def _append_to_index(self, entry: dict) -> None:
         """Add a single entry to the index (fast path after save)."""
-        existing = self._read_index() or []
+        existing = self._read_index()
+        if existing is None:
+            # Index is stale or missing — rebuild from disk so we don't lose entries.
+            existing = self._rebuild_index()
         # Remove any stale entry with the same file_path then append fresh one
         existing = [e for e in existing if e.get("file_path") != entry.get("file_path")]
         existing.append(entry)

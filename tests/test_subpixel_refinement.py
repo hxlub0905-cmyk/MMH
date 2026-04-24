@@ -340,14 +340,14 @@ class TestEdgeMethodSelection:
                 "BBox mode must not populate refine_used"
 
     def test_subpixel_has_refine_fields(self, tmp_path):
-        result = self._run_pipeline(tmp_path, "subpixel")
+        result = self._run_pipeline(tmp_path, "gradient")
         assert result.records
         for rec in result.records:
             assert "refine_used" in rec.extra_metrics, \
-                "Subpixel mode must populate refine_used"
+                "Gradient mode must populate refine_used"
 
     def test_both_methods_produce_positive_cd(self, tmp_path):
-        for method in ("bbox", "subpixel"):
+        for method in ("bbox", "gradient"):
             result = self._run_pipeline(tmp_path, method)
             for rec in result.records:
                 assert rec.raw_px > 0, f"{method} produced non-positive cd_px"
