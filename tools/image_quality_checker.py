@@ -61,6 +61,11 @@ def compute_quality(path: str) -> dict:
         return {"error": "Cannot load image", "laplacian_var": 0.0,
                 "tenengrad": 0.0, "fft_hf_ratio": 0.0}
 
+    # Pre-process: median blur (ksize=5) to suppress salt-and-pepper noise
+    # before sharpness metrics are evaluated — avoids noise being mistaken
+    # for genuine high-frequency edge content.
+    img = cv2.medianBlur(img, 5)
+
     # 1. Laplacian variance
     lap = cv2.Laplacian(img.astype(np.float64), cv2.CV_64F)
     laplacian_var = float(lap.var())
