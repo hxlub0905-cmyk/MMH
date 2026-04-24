@@ -129,6 +129,12 @@ class MeasurementRecord:
     @staticmethod
     def from_dict(d: dict) -> "MeasurementRecord":
         bbox_raw = d.get("bbox", [0, 0, 0, 0])
+        # Restore bbox-like fields in extra_metrics from list → tuple after JSON round-trip.
+        # JSON serialises tuples as arrays; callers downstream expect 4-int tuples.
+        _extra = dict(d.get("extra_metrics", {}))
+        for _key in ("upper_bbox", "lower_bbox"):
+            if _key in _extra and isinstance(_extra[_key], list):
+                _extra[_key] = tuple(int(v) for v in _extra[_key])
         return MeasurementRecord(
             measurement_id=d["measurement_id"],
             image_id=d["image_id"],
@@ -145,7 +151,7 @@ class MeasurementRecord:
             confidence=float(d.get("confidence", 1.0)),
             status=d.get("status", "normal"),
             review_state=d.get("review_state", "unreviewed"),
-            extra_metrics=d.get("extra_metrics", {}),
+            extra_metrics=_extra,
             cmg_id=int(d.get("cmg_id", 0)),
             col_id=int(d.get("col_id", 0)),
             flag=d.get("flag", ""),

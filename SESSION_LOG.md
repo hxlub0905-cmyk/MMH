@@ -2,6 +2,56 @@
 
 ---
 
+## [2026-04-24] Bug Fix Series — C1~C4、M1~M7、m1~m3
+
+**變更類型：** 多項 Bug 修復
+
+**修復摘要：**
+
+### 嚴重性 C（正確性）
+| 編號 | 位置 | 問題 | 修復 |
+|------|------|------|------|
+| C1 | `src/core/models.py` `MeasurementRecord.from_dict` | JSON round-trip 後 `extra_metrics` 中的 `upper_bbox`/`lower_bbox` 維持 list 型別，下游期待 tuple | `from_dict` 中對已知 bbox key 做 `tuple(int(v) for v in ...)` 轉換 |
+| C2 | `src/core/batch_run_store._read_index` | Windows 上路徑分隔符或大小寫差異導致 `paths_in_index != actual_files` 永遠成立，每次都觸發全量重建 | 以 `Path(p).resolve()` 正規化後再比較 |
+| C3 | `src/core/measurement_engine.run_batch` | `abort_check` 觸發 break 或子行程拋出例外時，`batch.end_time` 在 `finally` 之後才賦值，因此可能永遠未被設定 | 將 `batch.end_time = ...` 移至 `finally` 區塊內、`pool.shutdown` 之前 |
+| C4 | `src/core/recipes/cmg_recipe.apply_yedge_subpixel_to_cuts` 非配對 fallback | `upper_sample_ys`/`lower_sample_ys` 為空 list，而 `sample_xs` 有值，Detail CD 視圖繪製錯位虛線 | fallback 路徑填入 `[None] * len(sample_xs)` 使長度對齊 |
+
+### 嚴重性 M（中等）
+| 編號 | 位置 | 問題 | 修復 |
+|------|------|------|------|
+| M1 | `src/gui/workspace_host.py` | class docstring 缺失，TAB 常數未文件化；AGENTS.md 描述 8 個 workspace 但實際只有 6 個 | 補齊 class docstring 與 6-tab 表格說明；AGENTS.md 同步更正為 6-tab 架構 |
+| M2 | `src/gui/workspaces/review_workspace._batch_records` | 批次 Review 中 `_batch_records` 快取無上限，瀏覽大量影像時記憶體持續累積 | 加入 `_RECORD_CACHE_MAX = 200` LRU 驅逐：超過上限時刪除最舊條目 |
+| M3 | `src/gui/workspaces/batch_workspace._run_batch` | 第一次批次完成後 `self._progress` 的 `objectName` 設為 `"progressDone"`（綠色），第二次執行時進度條從綠色開始 | 每次執行開頭呼叫 `setObjectName("") + unpolish/polish` 重置樣式 |
+| M4 | `src/core/recipes/cmg_recipe._smooth_strip_2d` docstring | 說 "for odd k ≥ 3" 令人誤解，實際上 k 在函式內永遠被強制為奇數，且傳回形狀對任何 k>1 都是 (n_rows-1, n_cols) | 改為明確說明：k 內部強制奇數；k>1 → (n-1, n_cols)；k≤1 → (n, n_cols) |
+| M5 | `src/output/excel_exporter._filter_meas_by_mode` | `groupby().idxmin/idxmax()` 在含 NaN 的 `cd_nm` 欄位時可能回傳不正確索引 | 在 groupby 前插入 `valid = valid.dropna(subset=["cd_nm"])` |
+| M6 | `tests/test_subpixel_refinement.py` `TestEdgeMethodSelection` | 測試仍用舊 key `"subpixel"`，應改用現行 `"gradient"` | `test_subpixel_has_refine_fields` 與 `test_both_methods_produce_positive_cd` 改用 `"gradient"` |
+| M7 | `src/core/recipes/cmg_recipe.py`（`apply_yedge_subpixel_to_cuts` 及 `compute_metrics` range filter 後） | 兩處皆呼叫 per-cut `_flag_top3`，導致同一張影像可能出現多組 MIN/MAX | 改為 `_flag_global_minmax(all_measurements)` 確保全圖僅一個 MIN、一個 MAX |
+
+### 嚴重性 m（輕微）
+| 編號 | 位置 | 問題 | 修復 |
+|------|------|------|------|
+| m1 | `src/core/annotator.draw_overlays_multi` | `_flag_global_minmax` 就地修改 measurements，未警告呼叫者 | 加入 `# WARNING: _flag_global_minmax mutates m.flag in place` 說明 |
+| m2 | `src/core/preprocessor.apply_column_strip_mask` | 結果遮罩全零時無任何警告，偵錯困難 | `result.any()` 為 False 時以 `logging.warning` 記錄欄位設定建議 |
+| m3 | `src/core/batch_run_store._append_to_index` | `_read_index()` 回傳 None（index 陳舊）時使用 `or []` 空列表，導致舊索引條目遺失 | 改為呼叫 `_rebuild_index()` 從磁碟重建完整索引後再 append |
+
+**影響範圍：**
+- `src/core/models.py`（C1）
+- `src/core/batch_run_store.py`（C2、m3）
+- `src/core/measurement_engine.py`（C3）
+- `src/core/recipes/cmg_recipe.py`（C4、M4、M7）
+- `src/gui/workspace_host.py`（M1）
+- `src/gui/workspaces/review_workspace.py`（M2）
+- `src/gui/workspaces/batch_workspace.py`（M3）
+- `src/output/excel_exporter.py`（M5）
+- `tests/test_subpixel_refinement.py`（M6）
+- `src/core/annotator.py`（m1）
+- `src/core/preprocessor.py`（m2）
+- `AGENTS.md`、`README.md`（M1 同步文件）
+
+**測試結果：** py_compile 全部通過；需科學計算套件環境才能跑完整 pytest
+
+---
+
 ## [2026-04-23] UI 全面重設計（§1-§8 企劃書實作）
 
 **變更類型：** UI 重設計

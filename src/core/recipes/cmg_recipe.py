@@ -40,9 +40,10 @@ def _gaussian_filter1d_2d(arr: np.ndarray, sigma: float) -> np.ndarray:
 def _smooth_strip_2d(strip: np.ndarray, k: int) -> np.ndarray:
     """Per-column moving average on a 2-D strip, pure numpy.
 
-    Returns shape (n_rows - 1, n_cols) for odd k ≥ 3 — the last row of the
-    search window is dropped, which is acceptable since crossings always occur
-    well inside the window.
+    k is forced to the nearest odd integer ≥ 3 internally.
+    Returns shape (n_rows - 1, n_cols) for any k > 1 after forcing, or
+    (n_rows, n_cols) unchanged when k ≤ 1.  The one-row loss is intentional:
+    edge crossings always occur well inside the search window.
     """
     if k <= 1:
         return strip
@@ -551,9 +552,8 @@ class CMGRecipe(BaseRecipe):
                 if kept:
                     filtered.append(_CMGCut(cmg_id=cut.cmg_id, measurements=kept))
             cuts = filtered
-            # Re-flag per-cut TOP3 after range filter
-            for cut in cuts:
-                _flag_top3(cut.measurements)
+            # Re-flag globally after range filter so exactly one MIN/MAX per image.
+            _flag_global_minmax([m for cut in cuts for m in cut.measurements])
 
         context["cmg_cuts"] = cuts
 
@@ -958,10 +958,10 @@ def apply_yedge_subpixel_to_cuts(
                         up_y = best[1]
                         lo_y = best[2]
             else:
-                # Blobs don't overlap in X: independent column scan (fallback)
+                # Blobs don't overlap in X: independent column scan (fallback).
+                # upper/lower_sample_ys are padded with None to match sample_xs
+                # length so Detail CD view dashed lines stay aligned.
                 sample_xs = list(range(int(ub.x0), int(ub.x1)))
-                upper_sample_ys = []
-                lower_sample_ys = []
                 individual_cds_nm = []
                 up_y, up_ys, up_ps, up_spr = _collect_edge_by_columns(
                     raw_img, ub.x0, ub.x1, y_up, method,
@@ -975,6 +975,9 @@ def apply_yedge_subpixel_to_cuts(
                     min_grad_frac, peak_ratio, threshold_frac,
                     profile_lpf_sigma=_lpf_sigma,
                 )
+                # Pad with None so len(upper_sample_ys) == len(sample_xs)
+                upper_sample_ys: list = [None] * len(sample_xs)
+                lower_sample_ys: list = [None] * len(sample_xs)
 
             cd_ref = lo_y - up_y
             if cd_ref > 0.0:
@@ -1028,9 +1031,8 @@ def apply_yedge_subpixel_to_cuts(
                     "winning_sample_x":   winning_sample_x,
                 }
 
-    # Re-flag per-cut TOP3 after Y-edge refinement
-    for cut in cuts:
-        _flag_top3(cut.measurements)
+    # Re-flag globally so each image has exactly one MIN and one MAX.
+    _flag_global_minmax([m for cut in cuts for m in cut.measurements])
 
 
 # ── Coordinate helpers ────────────────────────────────────────────────────────

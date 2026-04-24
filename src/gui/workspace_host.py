@@ -17,16 +17,25 @@ from ..core.batch_run_store    import BatchRunStore
 
 
 class WorkspaceHost(QTabWidget):
-    """Owns shared services (registry, calibration, engine) and routes signals."""
+    """Owns shared services (registry, calibration, engine) and routes signals.
+
+    Six-tab layout (indices match addTab order below):
+      TAB_BROWSE  (0) — file browser + calibration selection
+      TAB_RECIPE  (1) — recipe CRUD editor
+      TAB_MEASURE (2) — single-image measurement
+      TAB_BATCH   (3) — batch processing
+      TAB_REVIEW  (4) — result review & image-by-image navigation
+      TAB_REPORT  (5) — statistics & multi-format export
+    """
 
     status_message = pyqtSignal(str)
 
-    TAB_BROWSE   = 0
-    TAB_RECIPE   = 1
-    TAB_MEASURE  = 2
-    TAB_BATCH    = 3
-    TAB_REVIEW   = 4
-    TAB_REPORT   = 5
+    TAB_BROWSE  = 0
+    TAB_RECIPE  = 1
+    TAB_MEASURE = 2
+    TAB_BATCH   = 3
+    TAB_REVIEW  = 4
+    TAB_REPORT  = 5
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)

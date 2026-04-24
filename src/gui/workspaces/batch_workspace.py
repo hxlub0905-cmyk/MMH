@@ -351,6 +351,10 @@ class BatchWorkspace(QWidget):
         total_images = sum(len(r["image_records"]) for r in valid_rows)
         self._progress.setMaximum(total_images)
         self._progress.setValue(0)
+        # Reset progress bar styling so it does not start green on the second run.
+        self._progress.setObjectName("")
+        self._progress.style().unpolish(self._progress)
+        self._progress.style().polish(self._progress)
         self._run_btn.setEnabled(False)
         self._abort_btn.setEnabled(True)
         self._abort_btn.setText("Abort")

@@ -252,6 +252,8 @@ def _filter_meas_by_mode(df, mode: str):
     )
     group_keys = ["dataset", "image_file"] if has_dataset else ["image_file"]
     valid = df[df["status"] != "rejected"] if "status" in df.columns else df
+    # Drop rows with missing cd_nm before groupby to avoid idxmin/idxmax NaN errors.
+    valid = valid.dropna(subset=["cd_nm"])
     if mode == "min_per_image":
         idx = valid.groupby(group_keys)["cd_nm"].idxmin()
     else:

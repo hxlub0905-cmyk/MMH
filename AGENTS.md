@@ -1,7 +1,7 @@
 # AGENTS.md — SEM MM 開發指南
 
 本文件供 AI Agent 或開發者快速掌握 SEM MM 專案的架構、慣例與開發方式。
-最後更新：2026-04-23（Phase C 部分完成：Overlay 即時輸出 + TC 向量化 + Gradient 向量化）
+最後更新：2026-04-24（Bug Fix Series C1–C4 / M1–M7 / m1–m3）
 
 ---
 
@@ -19,7 +19,7 @@
 
 | 項目 | 說明 |
 |------|------|
-| 版本階段 | **Phase A + F2 + G2 + B + Bug Fix Series + Phase C（部分）已完成** |
+| 版本階段 | **Phase A + F2 + G2 + B + Bug Fix Series + Phase C（部分）+ Bug Fix C1–C4/M1–M7/m1–m3 已完成** |
 | 核心演算法 | CMG Y-CD / X-CD 量測（完整保留，以 Recipe 包裝） |
 | X-Proj 偵測 | Pitch-anchored 相位偵測（`detect_mg_column_centers_pitch_phase()`） |
 | 架構模型 | Recipe-driven SEM Metrology Platform |
@@ -62,38 +62,39 @@
 
 ---
 
-## 架構概覽（Phase A）
+## 架構概覽（Phase A + Bug Fix Series）
+
+六個工作區（TAB 索引與 workspace_host.py 常數對應）：
 
 ```
 main.py
   └─ MainWindow (src/gui/main_window.py)  ← ~70 行殼層
-       └─ WorkspaceHost (src/gui/workspace_host.py)  ← QTabWidget + 信號匯流
-            ├─ BrowseWorkspace      (workspaces/browse_workspace.py)
+       └─ WorkspaceHost (src/gui/workspace_host.py)  ← QTabWidget（6 tab）+ 信號匯流
+            ├─ TAB_BROWSE  (0) BrowseWorkspace  (workspaces/browse_workspace.py)
             │    ← FileTreePanel + ImageViewer（預覽）+ CalibrationManager
-            ├─ RecipeWorkspace      (workspaces/recipe_workspace.py)
+            ├─ TAB_RECIPE  (1) RecipeWorkspace  (workspaces/recipe_workspace.py)
             │    ← Recipe CRUD 編輯器，存至 ~/.mmh/recipes/*.json
-            ├─ ValidationWorkspace  (workspaces/validation_workspace.py)  ← Phase B 新增
-            │    ← Golden Sample 驗證，Bias / Precision 統計，Export CSV
-            ├─ MeasureWorkspace     (workspaces/measure_workspace.py)
+            ├─ TAB_MEASURE (2) MeasureWorkspace (workspaces/measure_workspace.py)
             │    ← ImageViewer + ResultsPanel + ControlPanel（舊版 cards）
             │       + Recipe 選擇器（新路徑）
-            ├─ ReviewWorkspace      (workspaces/review_workspace.py)
-            │    ← 單張影像 Review（Phase A 基礎版）
-            ├─ BatchWorkspace       (workspaces/batch_workspace.py)
+            ├─ TAB_BATCH   (3) BatchWorkspace   (workspaces/batch_workspace.py)
             │    ← Batch 執行 + _BatchWorker(QThread) + ProcessPoolExecutor
             │       + Load History 按鈕（_HistoryDialog）
-            ├─ ReportWorkspace      (workspaces/report_workspace.py)
-            │    ← 統計 + 匯出按鈕（使用 _from_records 路徑）
-            │       + Load from History 按鈕
-            └─ HistoryWorkspace     (workspaces/history_workspace.py)  ← Phase B 新增
-                 ← Run Chart 趨勢圖（matplotlib），批次清單，雙擊載入至 Report
+            ├─ TAB_REVIEW  (4) ReviewWorkspace  (workspaces/review_workspace.py)
+            │    ← 單張影像 Review + 批次瀏覽（LRU 快取 200 筆）
+            └─ TAB_REPORT  (5) ReportWorkspace  (workspaces/report_workspace.py)
+                 ← 統計 + 匯出按鈕（使用 _from_records 路徑）
+                    + Load from History 按鈕
 
 共用服務（由 WorkspaceHost 持有，各 Workspace 透過建構子注入）：
   RecipeRegistry      src/core/recipe_registry.py   → ~/.mmh/recipes/*.json
   CalibrationManager  src/core/calibration.py        → ~/.mmh/calibrations/*.json
   MeasurementEngine   src/core/measurement_engine.py → 執行 Recipe pipeline
-  BatchRunStore       src/core/batch_run_store.py    → ~/.mmh/runs/*.json  ← Phase B 新增
+  BatchRunStore       src/core/batch_run_store.py    → ~/.mmh/runs/*.json
 ```
+
+> **注意**：ValidationWorkspace 與 HistoryWorkspace 已規劃為未來擴充（Phase D），
+> 目前尚未實作；README 描述的「八工作區」為規格目標，非現行狀態。
 
 ### 工作區信號流
 
@@ -470,7 +471,7 @@ pytest tests/ -v
 | 項目 | 規則 |
 |------|------|
 | `analyze()` gap edge | `upper.y1` / `lower.y0`（不可改回 `cy±height/2`，兩者不等） |
-| Recipe path re-flag | 精化後及 range filter 後均用 `_flag_top3(cut.measurements)`（per-cut），`analyze()` Step 5 仍用 global |
+| Recipe path re-flag | 精化後及 range filter 後均用 `_flag_global_minmax(all_measurements)`（全圖單一 MIN/MAX）；`analyze()` Step 5 同樣用 global |
 | Cards path `bbox` | `(min_x, ub.y1, max_x, lb.y0)`（gap 邊緣，不含 blob 本身高度） |
 | `center_y` 精化後 | `compute_metrics()` 在 `records.append(rec)` 前若 `y_upper_edge` 有值則覆寫 `rec.center_y` |
 | `store_meta` | Cards 路徑的 `apply_yedge_subpixel_to_cuts()` 必須 `store_meta=True`（Detail CD 需要） |
@@ -507,6 +508,20 @@ pytest tests/ -v
 | 已修復 | batch_run_store.py | get_stats_for_recipe 大量歷史記錄卡頓，缺快速跳過（L2） | ✅ |
 | 已修復 | measure_validate_dialog.py | Compare to Reference N 顯示不準（V5/V6） | ✅ |
 | 已修復 | _common.py / excel_exporter.py | CSV/Excel 欄位命名：cmg_id→cut_id, col_id→column_id（W1） | ✅ |
+| 已修復 | models.py | JSON round-trip 後 extra_metrics bbox fields 為 list 非 tuple（C1） | ✅ |
+| 已修復 | batch_run_store.py | Windows 路徑差異導致 index 每次全量重建（C2） | ✅ |
+| 已修復 | measurement_engine.py | abort_check 時 batch.end_time 未設定（C3） | ✅ |
+| 已修復 | cmg_recipe.py | 非配對 fallback upper/lower_sample_ys 空 list 導致 Detail CD 錯位（C4） | ✅ |
+| 已修復 | workspace_host.py | TAB 常數未文件化、AGENTS.md 描述 8 workspace 但只有 6 個（M1） | ✅ |
+| 已修復 | review_workspace.py | _batch_records 快取無上限（M2） | ✅ |
+| 已修復 | batch_workspace.py | 進度條第二次執行從綠色開始（M3） | ✅ |
+| 已修復 | cmg_recipe.py | _smooth_strip_2d docstring 不準確（M4） | ✅ |
+| 已修復 | excel_exporter.py | _filter_meas_by_mode groupby 前未 dropna（M5） | ✅ |
+| 已修復 | test_subpixel_refinement.py | TestEdgeMethodSelection 仍用舊 key "subpixel"（M6） | ✅ |
+| 已修復 | cmg_recipe.py | 精化後 re-flag 用 per-cut _flag_top3，每圖多組 MIN/MAX（M7） | ✅ |
+| 已修復 | annotator.py | draw_overlays_multi 缺 _flag_global_minmax 就地修改警告（m1） | ✅ |
+| 已修復 | preprocessor.py | apply_column_strip_mask 結果全零時無警告（m2） | ✅ |
+| 已修復 | batch_run_store.py | _append_to_index 在 index stale 時用空 list 遺失舊條目（m3） | ✅ |
 | 待修 | review_workspace.py | Review 工作流程為基礎版，缺 Accept/Reject 操作 | 待修 |
 | 待修 | annotator.py | X-CD 標注 overlay 座標對齊待驗證 | 待修 |
 | Phase C | measure/batch | Worker 數可調已實作，但無上限保護 | 待改善 |

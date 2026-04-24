@@ -32,8 +32,9 @@ class ReviewWorkspace(QWidget):
 
         # Batch mode state
         self._batch_entries: list[dict] = []
-        self._batch_records: dict[int, list[MeasurementRecord]] = {}  # lazy cache
+        self._batch_records: dict[int, list[MeasurementRecord]] = {}  # lazy cache; capped at _RECORD_CACHE_MAX
         self._entry_index_map: list[int] = []
+        self._RECORD_CACHE_MAX = 200   # LRU eviction threshold for _batch_records
 
         # Cached current view (for overlay re-render without re-loading image)
         self._cur_raw   = None
@@ -368,6 +369,11 @@ class ReviewWorkspace(QWidget):
                     recs.append(MeasurementRecord.from_dict(m_dict))
                 except Exception:
                     pass
+            # Evict oldest entries when cache exceeds the LRU cap to prevent
+            # memory accumulation during long batch review sessions.
+            if len(self._batch_records) >= self._RECORD_CACHE_MAX:
+                oldest_key = next(iter(self._batch_records))
+                del self._batch_records[oldest_key]
             self._batch_records[idx] = recs
         records = self._batch_records[idx]
         image_path = entry.get("image_path", "")

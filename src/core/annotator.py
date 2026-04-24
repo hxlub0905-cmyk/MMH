@@ -97,6 +97,8 @@ def draw_overlays_multi(
 
     # Re-flag globally so exactly one MIN and one MAX exist across all layers,
     # regardless of how many independent analyze() calls contributed cuts.
+    # WARNING: _flag_global_minmax mutates m.flag on every YCDMeasurement in place;
+    # callers must not rely on pre-existing flag values after this call.
     from .cmg_analyzer import _flag_global_minmax
     all_ms = [m for cuts, _ in layers for cut in cuts for m in cut.measurements]
     if all_ms:
