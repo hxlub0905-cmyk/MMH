@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QGroupBox, QCheckBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor
 
 from ..image_viewer import ImageViewer
 from ..results_panel import ResultsPanel
@@ -158,8 +159,9 @@ class ReviewWorkspace(QWidget):
         self._btn_detail_cd.toggled.connect(self._refresh_annotated)
         ov.addWidget(self._btn_detail_cd)
         hbox.addWidget(self._overlay_widget)
+        hbox.addStretch()
 
-        # Batch navigation
+        # Batch navigation (right-aligned)
         self._prev_btn = QPushButton("◀")
         self._next_btn = QPushButton("▶")
         self._prev_btn.setFixedWidth(28)
@@ -181,7 +183,6 @@ class ReviewWorkspace(QWidget):
         self._batch_nav.setVisible(False)
         hbox.addWidget(self._batch_nav)
 
-        hbox.addStretch()
         self._info_label = QLabel("No result loaded.")
         self._info_label.setStyleSheet("color:#9f8f7b; font-size:11px;")
         hbox.addWidget(self._info_label)
@@ -268,10 +269,12 @@ class ReviewWorkspace(QWidget):
             # Always show failures; show OK entries up to the limit
             if status == "OK" and shown >= limit:
                 continue
-            item = QListWidgetItem(f"[{status}]  {name}")
-            item.setForeground(
-                Qt.GlobalColor.darkRed if status != "OK" else Qt.GlobalColor.darkGreen
-            )
+            if status == "OK":
+                item = QListWidgetItem(f"●  {name}")
+                item.setForeground(QColor("#7abf9a"))
+            else:
+                item = QListWidgetItem(f"✕  {name}")
+                item.setForeground(QColor("#cc7b6c"))
             self._img_list.addItem(item)
             self._entry_index_map.append(i)
             shown += 1
@@ -411,9 +414,7 @@ class ReviewWorkspace(QWidget):
             self._results.show_fail(name, err)
 
         n = len(records)
-        self._info_label.setText(
-            f"{name}  ·  {status}  ·  {n} measurement(s)"
-        )
+        self._info_label.setText(f"{name}  ·  {status}  ·  {n} meas")
 
     # ── Mode handlers ─────────────────────────────────────────────────────────
 

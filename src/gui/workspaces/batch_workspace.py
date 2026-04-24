@@ -81,14 +81,17 @@ class BatchWorkspace(QWidget):
         hdr_row = QHBoxLayout(hdr)
         hdr_row.setContentsMargins(0, 0, 0, 0)
         hdr_row.setSpacing(4)
-        for text, stretch in [("Label", 2), ("Folder", 4), ("Recipe", 3), ("", 1)]:
+        hdr_defs = [("Label", 2), ("Folder", 4), ("Recipe", 3), ("", 1)]
+        for text, stretch in hdr_defs:
             lbl = QLabel(text)
-            lbl.setStyleSheet("color:#888; font-size:10px; font-weight:bold;")
+            lbl.setStyleSheet(
+                "font-size:10px; color:#9a8a7a; font-weight:500; background:transparent;"
+            )
             hdr_row.addWidget(lbl, stretch)
         ds_vbox.addWidget(hdr)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color:#3a3a3a;")
+        sep.setStyleSheet("color:#e8d8c8; background:#e8d8c8; max-height:1px;")
         ds_vbox.addWidget(sep)
 
         # Scroll area for rows
@@ -121,12 +124,14 @@ class BatchWorkspace(QWidget):
         ctrl_row.addWidget(self._worker_spin)
         ctrl_row.addStretch()
         run_btn = QPushButton("Run Batch")
-        run_btn.setFixedWidth(120)
+        run_btn.setObjectName("successBtn")
+        run_btn.setFixedWidth(130)
+        run_btn.setFixedHeight(36)
         run_btn.clicked.connect(self._run_batch)
         ctrl_row.addWidget(run_btn)
         root.addLayout(ctrl_row)
 
-        # ── Overlay 選項列 ────────────────────────────────────────────────────
+        # ── Overlay 選項列（包在 QFrame 內） ──────────────────────────────────
         self._chk_overlay = QCheckBox("邊跑邊輸出 Overlay Image")
         self._chk_overlay.setChecked(False)
         self._chk_overlay.stateChanged.connect(self._on_overlay_toggled)
@@ -138,15 +143,24 @@ class BatchWorkspace(QWidget):
         self._overlay_folder_label = QLabel("（未選擇）")
         self._overlay_folder_label.setStyleSheet("color:#9f8f7b; font-size:11px;")
 
-        overlay_row = QHBoxLayout()
-        overlay_row.addWidget(self._chk_overlay)
-        overlay_row.addWidget(self._overlay_folder_btn)
-        overlay_row.addWidget(self._overlay_folder_label, stretch=1)
-        root.addLayout(overlay_row)
+        overlay_frame = QFrame()
+        overlay_frame.setStyleSheet(
+            "background:#fdf8f2; border:0.5px solid #e8d8c8; border-radius:7px;"
+        )
+        ol = QHBoxLayout(overlay_frame)
+        ol.setContentsMargins(12, 7, 12, 7)
+        ol.setSpacing(8)
+        ol.addWidget(self._chk_overlay)
+        ol.addWidget(self._overlay_folder_btn)
+        ol.addWidget(self._overlay_folder_label, stretch=1)
+        root.addWidget(overlay_frame)
 
         # ── Progress ──────────────────────────────────────────────────────────
         prog_box = QGroupBox("Progress")
         pv = QVBoxLayout(prog_box)
+        self._lbl_status = QLabel("")
+        self._lbl_status.setStyleSheet("font-size:11px; color:#7a6a5a; background:transparent;")
+        pv.addWidget(self._lbl_status)
         self._progress = QProgressBar()
         self._progress.setTextVisible(True)
         pv.addWidget(self._progress)
@@ -184,9 +198,12 @@ class BatchWorkspace(QWidget):
         label_edit = QLineEdit(f"Dataset {idx + 1}")
         label_edit.setFixedWidth(90)
 
-        folder_label = QLabel("(no folder)")
+        folder_label = QLabel("選擇資料夾…")
         folder_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        folder_label.setStyleSheet("color:#aaa; font-size:11px;")
+        folder_label.setStyleSheet(
+            "background:#f5f0ea; border:0.5px dashed #c8b8a8; border-radius:5px; "
+            "color:#b0a090; padding:3px 10px; font-size:11px;"
+        )
 
         folder_btn = QPushButton("…")
         folder_btn.setFixedWidth(28)
@@ -233,10 +250,14 @@ class BatchWorkspace(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "Select Input Folder")
         if folder:
             row.folder_ref[0] = folder
-            name = Path(folder).name
-            row.folder_label.setText(name)
+            paths = scan_folder(folder)
+            n = len(paths)
+            row.folder_label.setText(f"{Path(folder).name}  ·  {n} files")
             row.folder_label.setToolTip(folder)
-            row.folder_label.setStyleSheet("color:#ccc; font-size:11px;")
+            row.folder_label.setStyleSheet(
+                "background:#ffffff; border:0.5px solid #c8b8a8; border-radius:5px; "
+                "color:#3f3428; padding:3px 10px; font-size:11px;"
+            )
 
     def _populate_recipe_combo(self, combo: QComboBox) -> None:
         combo.blockSignals(True)
@@ -371,11 +392,17 @@ class BatchWorkspace(QWidget):
             mins, secs = divmod(int(remaining), 60)
             self._lbl_eta.setText(f"ETA: {mins}m {secs:02d}s  ({rate:.1f} img/s)")
 
+        self._lbl_status.setText(f"[{done}/{total}]  {name}")
+
         # Throttle heavy UI updates — only on first, every THROTTLE-th, failures, or last
         if self._progress_count % self._THROTTLE == 1 or status != "OK" or done == total:
             self._log_text.append(f"[{done}/{total}] {name}  [{status}]")
-            item = QListWidgetItem(f"[{status}]  {name}")
-            item.setForeground(Qt.GlobalColor.red if status != "OK" else Qt.GlobalColor.darkGreen)
+            if status == "OK":
+                item = QListWidgetItem(f"●  {name}")
+                item.setForeground(Qt.GlobalColor.darkGreen)
+            else:
+                item = QListWidgetItem(f"✕  {name}")
+                item.setForeground(Qt.GlobalColor.red)
             if self._image_list.count() >= self._LIST_CAP:
                 self._image_list.takeItem(0)
             self._image_list.addItem(item)
@@ -397,6 +424,15 @@ class BatchWorkspace(QWidget):
         msg = (f"Batch complete  ·  {batch_run.success_count} OK  "
                f"·  {batch_run.fail_count} failed  —  Results sent to Review tab")
         self._log_text.append(msg)
+        self._lbl_status.setText(
+            f"✓ Batch complete — {batch_run.success_count} OK · {batch_run.fail_count} failed"
+        )
+        self._lbl_status.setStyleSheet(
+            "font-size:11px; font-weight:500; color:#3e7f5d; background:transparent;"
+        )
+        self._progress.setObjectName("progressDone")
+        self._progress.style().unpolish(self._progress)
+        self._progress.style().polish(self._progress)
         self.batch_completed.emit(batch_run)   # send to Report tab immediately
         if self._run_store:
             self._log_text.append("Saving results…")

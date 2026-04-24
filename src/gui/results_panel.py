@@ -22,8 +22,8 @@ class _NumericItem(QTableWidgetItem):
             return super().__lt__(other)
 
 _ROW_COLOURS = {
-    "MIN": QColor(255, 244, 232),
-    "MAX": QColor(236, 245, 252),
+    "MIN": QColor(0xFF, 0xF8, 0xF0),   # #fff8f0
+    "MAX": QColor(0xF0, 0xF7, 0xFC),   # #f0f7fc
 }
 _FLAG_TEXT = {
     "MIN": QColor(210, 122, 52),
@@ -69,11 +69,11 @@ class ResultsPanel(QWidget):
         stats_hl.setContentsMargins(10, 5, 10, 5)
         stats_hl.setSpacing(8)
 
-        self._chip_mean    = _chip("—")
-        self._chip_sigma   = _chip("—")
-        self._chip_min     = _chip("—")
-        self._chip_max     = _chip("—")
-        self._chip_outlier = _chip("—", alert=False)
+        self._chip_mean    = _chip("—", name="statChip")
+        self._chip_sigma   = _chip("—", name="statChip")
+        self._chip_min     = _chip("—", name="statChipMin")
+        self._chip_max     = _chip("—", name="statChipMax")
+        self._chip_outlier = _chip("—", name="statChip")
 
         for label, chip in (("Mean", self._chip_mean), ("σ", self._chip_sigma),
                             ("Min", self._chip_min),  ("Max", self._chip_max),
@@ -227,9 +227,13 @@ class ResultsPanel(QWidget):
         self._chip_max.setText(f"{max_v:.2f} nm")
         has_outliers = flagged > 0
         self._chip_outlier.setText(str(flagged))
-        self._chip_outlier.setObjectName("statChipAlert" if has_outliers else "statChip")
+        new_name = "statChipAlert" if has_outliers else "statChip"
+        self._chip_outlier.setObjectName(new_name)
         self._chip_outlier.style().unpolish(self._chip_outlier)
         self._chip_outlier.style().polish(self._chip_outlier)
+        for chip in (self._chip_mean, self._chip_sigma, self._chip_min, self._chip_max):
+            chip.style().unpolish(chip)
+            chip.style().polish(chip)
         self._stats_bar.setVisible(True)
 
     def _on_state_filter_changed(self) -> None:
@@ -238,7 +242,10 @@ class ResultsPanel(QWidget):
         self.state_filter_changed.emit("" if txt == "All states" else txt)
 
 
-def _chip(text: str, alert: bool = False) -> QLabel:
+def _chip(text: str, alert: bool = False, name: str | None = None) -> QLabel:
     lbl = QLabel(text)
-    lbl.setObjectName("statChipAlert" if alert else "statChip")
+    if name is not None:
+        lbl.setObjectName(name)
+    else:
+        lbl.setObjectName("statChipAlert" if alert else "statChip")
     return lbl
