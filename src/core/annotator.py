@@ -95,6 +95,13 @@ def draw_overlays_multi(
     if opts is None:
         opts = OverlayOptions()
 
+    # Re-flag globally so exactly one MIN and one MAX exist across all layers,
+    # regardless of how many independent analyze() calls contributed cuts.
+    from .cmg_analyzer import _flag_global_minmax
+    all_ms = [m for cuts, _ in layers for cut in cuts for m in cut.measurements]
+    if all_ms:
+        _flag_global_minmax(all_ms)
+
     canvas = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
     h      = img_gray.shape[0]
     fs     = max(0.18, h / 3200)

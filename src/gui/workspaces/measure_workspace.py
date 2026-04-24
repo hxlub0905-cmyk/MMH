@@ -923,6 +923,11 @@ class MeasureWorkspace(QWidget):
             cmg_offset += len(cuts)
             cuts_all.extend(cuts)
 
+        # Re-flag globally so exactly one MIN and one MAX exist across all cards.
+        if cuts_all:
+            from ...core.cmg_analyzer import _flag_global_minmax
+            _flag_global_minmax([m for cut in cuts_all for m in cut.measurements])
+
         return full_mask, cuts_all, profile_masks
 
     def _render_layered_annotated(self) -> np.ndarray:

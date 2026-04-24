@@ -681,11 +681,4 @@ QFrame#rightPanel QCheckBox::indicator:checked {
     background: #e6953d;
     border-color: #f29f4b;
 }
-QFrame#rightPanel QPushButton {
-    background: #f0e8e0;
-    border: 1.5px solid #8a7060;
-    color: #4a3828;
-}
-QFrame#rightPanel QPushButton:hover { border-color: #6a5040; }
-QFrame#rightPanel QPushButton:focus { border-color: #f29f4b; }
 """
