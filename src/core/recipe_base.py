@@ -54,6 +54,7 @@ class MeasurementRecipe:
     target_layer: str = ""
     structure_name: str = ""              # User-defined structure label, e.g. "CMG", "PEPI", "MG"
     axis_mode: str = "Y"                  # "Y" | "X"
+    nm_per_pixel: float = 1.0             # Pixel calibration — nm per pixel
     preprocess_config: RecipeConfig = field(default_factory=RecipeConfig)
     detector_config: RecipeConfig = field(default_factory=RecipeConfig)
     edge_locator_config: RecipeConfig = field(default_factory=RecipeConfig)
@@ -77,6 +78,7 @@ class MeasurementRecipe:
             "target_layer": self.target_layer,
             "structure_name": self.structure_name,
             "axis_mode": self.axis_mode,
+            "nm_per_pixel": self.nm_per_pixel,
             "preprocess_config": self.preprocess_config.to_dict(),
             "detector_config": self.detector_config.to_dict(),
             "edge_locator_config": self.edge_locator_config.to_dict(),
@@ -101,6 +103,7 @@ class MeasurementRecipe:
             target_layer=d.get("target_layer", ""),
             structure_name=structure_name,
             axis_mode=axis_mode,
+            nm_per_pixel=float(d.get("nm_per_pixel", 1.0)),
             preprocess_config=RecipeConfig.from_dict(d.get("preprocess_config", {})),
             detector_config=RecipeConfig.from_dict(d.get("detector_config", {})),
             edge_locator_config=RecipeConfig.from_dict(d.get("edge_locator_config", {})),

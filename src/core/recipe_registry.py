@@ -87,6 +87,7 @@ class RecipeRegistry:
             recipe_type="CMG_YCD",
             structure_name="CMG",
             axis_mode="Y",
+            nm_per_pixel=1.0,
             preprocess_config=RecipeConfig(data={
                 "gl_min": 100,
                 "gl_max": 220,

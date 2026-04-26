@@ -477,6 +477,8 @@ pytest tests/ -v
 | `store_meta` | Cards 路徑的 `apply_yedge_subpixel_to_cuts()` 必須 `store_meta=True`（Detail CD 需要） |
 | DataFrame 欄位 | `records_to_dataframe()` 輸出 `cut_id`/`column_id`（不是 `cmg_id`/`col_id`）；13 欄標準順序 |
 | Index recipe_ids | `BatchRunStore` 儲存時 index entry 含 `recipe_ids`；`get_stats_for_recipe()` 以此快速跳過無關記錄 |
+| **KLARF Export YREL 換算** | **`YREL_new = YREL_orig - dy_nm`（負號，Y 軸翻轉，勿改為加號）** |
+| **KLARF Export XREL 換算** | **`XREL_new = XREL_orig + dx_nm`（正號，X 方向一致）** |
 
 ---
 
@@ -592,3 +594,57 @@ pytest tests/ -v
 - 新增 Recipe 類型前，請先確認 `BaseRecipe` 的 6-stage pipeline 是否滿足需求；若需擴充 pipeline（如新增 Stage），請同步更新 `BaseRecipe` 並確保 `CMGRecipe` 不受影響
 - `src/_compat.py` 是過渡期產物，Phase B 之後應逐步減少對它的依賴
 - Windows 上 `ProcessPoolExecutor` 需要 `if __name__ == "__main__":` 保護（`main.py` 已處理），新增的 worker 函式必須放在模組頂層（picklable）
+
+---
+
+## KLARF Export 功能說明
+
+### 座標系方向差異對照表
+
+| 座標系 | 原點 | X 方向 | Y 方向 |
+|--------|------|--------|--------|
+| 影像座標系 | 左上角 | 向右為正 | **向下為正** |
+| KLARF 座標系 | 左下角（die corner） | 向右為正 | **向上為正** |
+
+### 完整換算公式
+
+```
+Step 1 — 計算影像內 pixel offset（以影像中心為基準）：
+    dx_px = center_x - W/2
+    dy_px = center_y - H/2       # 正值代表 gap 在影像中心下方
+
+Step 2 — 換算成 nm：
+    dx_nm = dx_px × nm_per_pixel
+    dy_nm = dy_px × nm_per_pixel
+
+Step 3 — 更新 KLARF 座標：
+    XREL_new = XREL_orig + dx_nm    # X 方向一致，取加號
+    YREL_new = YREL_orig - dy_nm    # Y 軸翻轉，取減號 ⚠️
+```
+
+### 各變數來源
+
+| 變數 | 來源 |
+|------|------|
+| `center_x`, `center_y` | `MeasurementRecord.center_x / center_y`（gap 中心像素座標） |
+| `W`, `H` | `cv2.imread(image_path).shape[:2]`（影像寬高） |
+| `nm_per_pixel` | `MeasurementRecord.calibrated_nm / raw_px`（由量測值反推） |
+| `XREL_orig`, `YREL_orig` | 原始 KLARF defect row 的 XREL / YREL 欄位 |
+
+### ⚠️ 警告：YREL 公式為減號
+
+**`YREL_new = YREL_orig - dy_nm`**
+
+原因：影像 Y 軸向下（dy_px > 0 → gap 在影像中心下方），
+KLARF Y 軸向上（gap 在影像中心下方 → KLARF Y 值較小 → 需要減去 dy_nm）。
+
+**任何將此符號改為加號的 PR 均屬錯誤，請立即回報。**
+
+### nm/pixel 統一整合（2026-04-26 後）
+
+| 位置 | nm/px 來源 |
+|------|-----------|
+| Recipe 編輯器 | `MeasurementRecipe.nm_per_pixel` 欄位（Identity 卡片，可儲存） |
+| Measure Workspace | Recipe nm/px 自動帶入 spinbox，使用者可臨時覆蓋（不存回 Recipe） |
+| Batch Workspace | 每個 dataset row 從 Recipe 自動帶入，使用者可 override（僅本次 Batch） |
+| KlarfTopNExporter | 從 `MeasurementRecord.calibrated_nm / raw_px` 反推（不需額外輸入） |

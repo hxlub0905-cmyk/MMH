@@ -2,6 +2,69 @@
 
 ---
 
+## [2026-04-26] KLARF Export 功能 + nm/px 統一整合
+
+**變更類型：** 新功能
+
+**新增功能摘要：**
+
+### KLARF Export（Export Top-N by CD）
+
+新增 Review SEM 用 KLARF 輸出功能，協助工程師找出 Y-CD 量測值與特定缺陷（如 CMGF）之間的相關性。
+
+**核心邏輯**：解析輸入 KLARF → 與 SEM MM Batch 量測結果匹配 → 依 CD 升/降冪排序 → 取前 N 筆 → 座標修正至 gap 中心 → 輸出新 KLARF。
+
+**座標換算設計決策（Y 軸翻轉）**：
+- 影像座標系：左上角原點，Y 向下為正
+- KLARF 座標系：左下角原點（die corner），Y 向上為正
+- 因此 `YREL_new = YREL_orig - dy_nm`（減號），`XREL_new = XREL_orig + dx_nm`（加號）
+- **此符號設計為刻意，勿修改為加號**
+
+新增檔案：
+- `src/core/klarf_parser.py`：KlarfParser — token-scan 解析 KLARF 1.8 格式，動態 column header，處理 ImageInfo block
+- `src/core/klarf_writer.py`：KlarfWriter — 原子寫入，只修改 XREL/YREL，其餘欄位原樣輸出
+- `src/core/klarf_exporter.py`：KlarfTopNExporter — 主要 export 邏輯，支援 ascending/descending 排序，dry_run 模式
+- `src/gui/klarf_export_dialog.py`：KlarfExportDialog — QSplitter 版面，背景執行，preview table，stat cards
+
+修改檔案：
+- `src/gui/workspaces/report_workspace.py`：新增「輸出 KLARF…」按鈕、`_open_klarf_export_dialog()`、`set_latest_batch_run()`
+- `src/gui/workspace_host.py`：`batch_completed` / `multi_batch_completed` 額外連接 `report.set_latest_batch_run`
+- `src/gui/styles.py`：新增 `QPushButton#klarfExportBtn` QSS（綠色系）
+
+### nm/px 統一整合
+
+將原本分散在 BrowseWorkspace / ControlPanel 的 nm/px 設定統一進入 Recipe 流程，確保 Batch 時每張圖使用正確的校正值。
+
+**流程**：Recipe 儲存 nm/px 預設值 → Measure/Batch workspace 自動帶入 → 使用者可臨時覆蓋 → ImageRecord.pixel_size_nm 全程攜帶正確值 → KlarfTopNExporter 直接使用。
+
+修改檔案：
+- `src/core/recipe_base.py`：`MeasurementRecipe` 新增頂層欄位 `nm_per_pixel: float = 1.0`；`to_dict()`/`from_dict()` 支援（舊 JSON 向下相容，fallback 1.0）
+- `src/core/recipe_registry.py`：`create_default_cmg()` 設定 `nm_per_pixel=1.0`
+- `src/core/recipes/cmg_recipe.py`：`_card_to_descriptor()` 從 card dict 讀取 `nm_per_pixel`
+- `src/gui/workspaces/recipe_workspace.py`：Identity 卡片新增 nm/px QDoubleSpinBox；save/load 同步
+- `src/gui/workspaces/measure_workspace.py`：Recipe 選擇器下方新增 nm/px override spinbox + hint label；`_run_with_recipe_impl()` / `_run_with_cards()` 使用 spinbox 值；同步 Ruler nm/px
+- `src/gui/workspaces/batch_workspace.py`：`_DatasetRow` 新增 `nm_px_spin`/`nm_px_hint`；recipe 切換自動帶入；`_run_batch()` 使用 per-row 值（不再使用 CalibrationManager）
+
+**影響範圍：**
+- `src/core/recipe_base.py`
+- `src/core/recipe_registry.py`
+- `src/core/recipes/cmg_recipe.py`
+- `src/core/klarf_parser.py`（新）
+- `src/core/klarf_writer.py`（新）
+- `src/core/klarf_exporter.py`（新）
+- `src/gui/styles.py`
+- `src/gui/klarf_export_dialog.py`（新）
+- `src/gui/workspace_host.py`
+- `src/gui/workspaces/recipe_workspace.py`
+- `src/gui/workspaces/measure_workspace.py`
+- `src/gui/workspaces/batch_workspace.py`
+- `src/gui/workspaces/report_workspace.py`
+- `AGENTS.md`
+
+**測試結果：** py_compile 全部通過；GUI 變更需 PyQt6 環境驗證
+
+---
+
 ## [2026-04-24] Bug Fix Series — C1~C4、M1~M7、m1~m3
 
 **變更類型：** 多項 Bug 修復

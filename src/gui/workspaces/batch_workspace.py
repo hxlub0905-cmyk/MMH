@@ -9,7 +9,7 @@ from typing import NamedTuple
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QPushButton, QCheckBox,
-    QComboBox, QSpinBox, QProgressBar, QTextEdit,
+    QComboBox, QSpinBox, QDoubleSpinBox, QProgressBar, QTextEdit,
     QListWidget, QListWidgetItem, QFileDialog,
     QMessageBox, QLineEdit, QScrollArea, QSizePolicy,
     QFrame, QDialog, QTableWidget, QTableWidgetItem, QAbstractItemView,
@@ -31,7 +31,9 @@ class _DatasetRow(NamedTuple):
     remove_btn:   QPushButton
     container:    QWidget
     folder_btn:   QPushButton
-    folder_ref:   list  # [str] mutable slot for folder path
+    folder_ref:   list           # [str] mutable slot for folder path
+    nm_px_spin:   QDoubleSpinBox # nm/pixel override for this dataset
+    nm_px_hint:   QLabel         # "Recipe 預設：X nm/px" hint label
 
 
 class BatchWorkspace(QWidget):
@@ -82,7 +84,7 @@ class BatchWorkspace(QWidget):
         hdr_row = QHBoxLayout(hdr)
         hdr_row.setContentsMargins(0, 0, 0, 0)
         hdr_row.setSpacing(4)
-        hdr_defs = [("Label", 2), ("Folder", 4), ("Recipe", 3), ("", 1)]
+        hdr_defs = [("Label", 2), ("Folder", 4), ("Recipe", 3), ("nm/px", 1), ("", 1)]
         for text, stretch in hdr_defs:
             lbl = QLabel(text)
             lbl.setStyleSheet(
@@ -227,6 +229,17 @@ class BatchWorkspace(QWidget):
         recipe_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._populate_recipe_combo(recipe_combo)
 
+        nm_px_spin = QDoubleSpinBox()
+        nm_px_spin.setRange(0.0001, 10000.0)
+        nm_px_spin.setDecimals(4)
+        nm_px_spin.setValue(1.0)
+        nm_px_spin.setFixedWidth(95)
+        nm_px_spin.setToolTip("nm/pixel — 覆蓋 Recipe 預設值（僅本次 Batch 有效）")
+
+        nm_px_hint = QLabel("1.0")
+        nm_px_hint.setStyleSheet("color:#b0a090; font-size:10px; background:transparent;")
+        nm_px_hint.setFixedWidth(40)
+
         remove_btn = QPushButton("✕")
         remove_btn.setFixedWidth(28)
 
@@ -234,6 +247,8 @@ class BatchWorkspace(QWidget):
         row_layout.addWidget(folder_label, 4)
         row_layout.addWidget(folder_btn, 0)
         row_layout.addWidget(recipe_combo, 3)
+        row_layout.addWidget(nm_px_spin, 0)
+        row_layout.addWidget(nm_px_hint, 0)
         row_layout.addWidget(remove_btn, 0)
 
         dr = _DatasetRow(
@@ -244,11 +259,26 @@ class BatchWorkspace(QWidget):
             container=container,
             folder_btn=folder_btn,
             folder_ref=folder_ref,
+            nm_px_spin=nm_px_spin,
+            nm_px_hint=nm_px_hint,
         )
         self._dataset_rows.append(dr)
 
         folder_btn.clicked.connect(lambda _, r=dr: self._browse_folder(r))
         remove_btn.clicked.connect(lambda _, r=dr: self._remove_dataset_row(r))
+
+        # Auto-fill nm/px when recipe changes
+        def _on_recipe_changed(_idx: int, _dr=dr) -> None:
+            rid = _dr.recipe_combo.currentData()
+            if rid:
+                desc = self._registry.get_descriptor(rid)
+                if desc:
+                    nmpx = float(getattr(desc, "nm_per_pixel", 1.0))
+                    _dr.nm_px_spin.setValue(nmpx)
+                    _dr.nm_px_hint.setText(f"{nmpx:.4g}")
+        recipe_combo.currentIndexChanged.connect(_on_recipe_changed)
+        # Trigger once to fill initial value
+        _on_recipe_changed(0)
 
         # Insert before the stretch item at the end
         self._rows_layout.insertWidget(self._rows_layout.count() - 1, container)
@@ -295,6 +325,13 @@ class BatchWorkspace(QWidget):
                     if dr.recipe_combo.itemData(i) == cur_id:
                         dr.recipe_combo.setCurrentIndex(i)
                         break
+            # Update nm/px hint from currently selected recipe
+            rid = dr.recipe_combo.currentData()
+            if rid:
+                desc = self._registry.get_descriptor(rid)
+                if desc:
+                    nmpx = float(getattr(desc, "nm_per_pixel", 1.0))
+                    dr.nm_px_hint.setText(f"{nmpx:.4g}")
 
     # ── Overlay 設定 ──────────────────────────────────────────────────────────
 
@@ -314,8 +351,6 @@ class BatchWorkspace(QWidget):
     # ── Batch execution ───────────────────────────────────────────────────────
 
     def _run_batch(self) -> None:
-        cal = self._cal_manager.get_default()
-
         valid_rows = []
         for dr in self._dataset_rows:
             folder = dr.folder_ref[0]
@@ -328,12 +363,14 @@ class BatchWorkspace(QWidget):
             if not paths:
                 self._log_text.append(f"[WARN] No images in: {folder}")
                 continue
+            # Use per-dataset nm/px spinbox value (auto-filled from recipe, overridable)
+            nm_px = dr.nm_px_spin.value()
             valid_rows.append({
                 "label": dr.label_edit.text().strip() or f"Dataset {len(valid_rows)+1}",
                 "folder": folder,
                 "recipe_ids": [recipe_id],
                 "image_records": [
-                    ImageRecord.from_path(p, pixel_size_nm=cal.nm_per_pixel) for p in paths
+                    ImageRecord.from_path(p, pixel_size_nm=nm_px) for p in paths
                 ],
             })
 
