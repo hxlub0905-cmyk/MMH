@@ -146,15 +146,13 @@ class KlarfTopNExporter:
 
         for item in selected:
             d = dict(item["defect"])
-            # Update XREL / YREL columns (case-sensitive lookup, try both)
-            if "XREL" in d:
-                d["XREL"] = str(int(round(item["xrel_new"])))
-            elif "xrel" in d:
-                d["xrel"] = str(int(round(item["xrel_new"])))
-            if "YREL" in d:
-                d["YREL"] = str(int(round(item["yrel_new"])))
-            elif "yrel" in d:
-                d["yrel"] = str(int(round(item["yrel_new"])))
+            # Update XREL / YREL columns (case-insensitive key lookup)
+            xrel_key = next((k for k in d if k.lower() == "xrel"), None)
+            yrel_key = next((k for k in d if k.lower() == "yrel"), None)
+            if xrel_key:
+                d[xrel_key] = str(int(round(item["xrel_new"])))
+            if yrel_key:
+                d[yrel_key] = str(int(round(item["yrel_new"])))
             output_defects.append(d)
 
             preview_rows.append({

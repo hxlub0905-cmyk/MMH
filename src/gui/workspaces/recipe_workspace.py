@@ -4,6 +4,16 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
+# Canonical edge_locator_config keys; deprecated keys from old recipes are
+# filtered out on save to prevent indefinite accumulation.
+_EC_CANONICAL_KEYS = {
+    "ycd_edge_method", "threshold_frac", "sample_lines_mode",
+    "aggregate_method", "profile_lpf_enabled", "profile_lpf_sigma",
+    "x_overlap_ratio", "y_cluster_tol", "border_margin_px", "x_inset_px",
+    "subpixel_half_col", "subpixel_search_half", "subpixel_proximity",
+    "subpixel_smooth_k", "subpixel_min_grad_frac", "subpixel_peak_ratio",
+}
+
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QListWidget, QListWidgetItem, QGroupBox, QFormLayout,
@@ -604,9 +614,10 @@ class RecipeWorkspace(QWidget):
                 "max_line_px": self._max_line_px.value(),
             }),
             edge_locator_config=RecipeConfig(data={
-                # Carry forward all existing keys (e.g. subpixel_* set via JSON),
-                # then override the ones the UI explicitly controls.
-                **(desc.edge_locator_config.to_dict() if desc else {}),
+                # Carry forward only canonical keys (filters out deprecated keys
+                # accumulated from old recipe versions), then override UI-controlled keys.
+                **{k: v for k, v in (desc.edge_locator_config.to_dict() if desc else {}).items()
+                   if k in _EC_CANONICAL_KEYS},
                 "ycd_edge_method":   self._edge_method.currentData(),
                 "threshold_frac":    self._threshold_frac.value(),
                 "sample_lines_mode": (self._sample_n.value()

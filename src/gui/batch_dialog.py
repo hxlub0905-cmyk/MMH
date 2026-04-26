@@ -91,12 +91,8 @@ def _process_one(args: tuple) -> dict:
                 norm_x = bool(card.get("col_mask_normalize_x", True))
                 blobs  = regularize_blobs_to_columns(blobs, col_centers, half_w, tol, norm_x)
             if axis.startswith("X"):
-                blobs = [Blob(
-                    label=b.label,
-                    x0=b.y0, y0=(h - 1) - (b.x1 - 1),
-                    x1=b.y1, y1=(h - 1) - b.x0 + 1,
-                    area=b.area, cx=b.cy, cy=(h - 1) - b.cx
-                ) for b in blobs]
+                from ..core.recipes.cmg_recipe import _rot_blob_to_ori
+                blobs = [_rot_blob_to_ori(b, h) for b in blobs]
             c = analyze(blobs, nm_per_pixel)
             if card.get("range_enabled", False):
                 c = _filter_by_range(

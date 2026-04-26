@@ -2,6 +2,52 @@
 
 ---
 
+## [2026-04-27] Bug Fix Series Round2 — H1/H3/M1/M2/M3/M4/L1/L2（共 9 項）
+
+**變更類型：** Bug 修復
+
+**修復摘要：**
+
+### 高優先（H）
+| 編號 | 位置 | 問題 | 修復 |
+|------|------|------|------|
+| H1 | `src/core/measurement_engine.py` `_worker_run_image` | `cv2.imwrite()` 失敗時靜默回傳 False，下游誤以為檔案已寫出 | 加 `ret = cv2.imwrite(...); if not ret: raise IOError(...)` |
+| H3 | `src/core/image_loader.py` `load_grayscale` | `img.ptp()` 在 NumPy 2.0 已移除，非 uint8 影像崩潰 | 改用 `img.max() - img.min()` |
+
+### 中優先（M）
+| 編號 | 位置 | 問題 | 修復 |
+|------|------|------|------|
+| M1 | `src/gui/workspaces/report_workspace.py` `_export_dialog_clicked` | tasks 為空時靜默 return，使用者不知為何沒有動作 | 加 `QMessageBox.information(...)` 提示 |
+| M2 | `src/gui/batch_dialog.py` `_process_one` | X 軸 blob 座標轉換公式與 `_rot_blob_to_ori()` 不一致，差 1px 系統性偏移 | 改為 `from ..core.recipes.cmg_recipe import _rot_blob_to_ori; blobs = [_rot_blob_to_ori(b, h) for b in blobs]` |
+| M3 | `src/gui/file_tree_panel.py` | 缺少 `root_path()` 方法，`browse_workspace._update_file_count()` 永遠顯示空白 | `__init__` 加 `self._root`，`set_root()` 記錄路徑，新增 `root_path()` 方法 |
+| M4 | `src/output/report_generator.py` `_render_html` / `generate_multi_dataset_report` | fail_list 路徑與 dataset label 未做 `html.escape()`，特殊字元破壞 HTML | `import html as _html`；兩處均改用 `_html.escape()` |
+
+### 低優先（L）
+| 編號 | 位置 | 問題 | 修復 |
+|------|------|------|------|
+| L1 | `src/gui/workspaces/recipe_workspace.py` `_save_recipe` | 展開舊 `edge_locator_config` 時廢棄 key 永久保留，隨版本累積 | 新增 `_EC_CANONICAL_KEYS`（16 個已知 key）常數；`_save_recipe()` 展開時加 `if k in _EC_CANONICAL_KEYS` 過濾 |
+| L2 | `src/core/klarf_exporter.py` | XREL/YREL 只比對全大/全小寫，混合大小寫靜默略過 | 改用 `next((k for k in d if k.lower() == "xrel"), None)` 大小寫不敏感查詢 |
+| L2 | `src/core/klarf_writer.py` `_serialise_defect` | 同上，defect dict 查詢 `defect.get("XREL", defect.get("xrel", ...))` 漏掉混合大小寫 | 改用 `next((defect[k] for k in defect if k.lower() == "xrel"), "0")` |
+
+**備註：**
+- L3（quality_score PASS 路徑缺 key）：確認現行程式碼 line 227 已在 FAIL 判斷前設定 quality_score，此 bug 已是修復狀態，略過。
+- H2（batch_run_store 原子寫入）：整合進 Step 2 SQLite 遷移，不另行修復 JSON 路徑。
+
+**影響範圍：**
+- `src/core/measurement_engine.py`（H1）
+- `src/core/image_loader.py`（H3）
+- `src/gui/workspaces/report_workspace.py`（M1）
+- `src/gui/batch_dialog.py`（M2）
+- `src/gui/file_tree_panel.py`（M3）
+- `src/output/report_generator.py`（M4）
+- `src/gui/workspaces/recipe_workspace.py`（L1）
+- `src/core/klarf_exporter.py`（L2）
+- `src/core/klarf_writer.py`（L2）
+
+**測試結果：** py_compile 全部通過；pytest 17/17 通過
+
+---
+
 ## [2026-04-26] KLARF Export 功能 + nm/px 統一整合
 
 **變更類型：** 新功能

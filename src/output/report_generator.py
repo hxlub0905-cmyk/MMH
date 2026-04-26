@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import base64
+import html as _html
 import io
 import statistics as _stats
 from datetime import datetime
@@ -173,7 +174,7 @@ def generate_multi_dataset_report(
         )
         dataset_sections += f"""
 <div class="dataset-section">
-  <h2>{label}</h2>
+  <h2>{_html.escape(label)}</h2>
   <p style="color:#666;font-size:13px">nm/pixel: {nm_pp}</p>
   <div class="summary">
     <div class="card"><div class="val">{n_total}</div>Total</div>
@@ -295,7 +296,9 @@ def _render_html(
     stat_rows = "".join(
         f"<tr><td>{k}</td><td><b>{v}</b></td></tr>" for k, v in stats.items()
     )
-    fail_items = "".join(f"<li>{name}</li>" for name in fail_list) or "<li>None</li>"
+    fail_items = "".join(
+        f"<li>{_html.escape(name)}</li>" for name in fail_list
+    ) or "<li>None</li>"
     hist_tag = (
         f'<img src="data:image/png;base64,{hist_b64}" alt="histogram" style="max-width:700px">'
         if hist_b64 else

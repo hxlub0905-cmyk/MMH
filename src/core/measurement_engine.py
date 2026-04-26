@@ -287,7 +287,11 @@ def _worker_run_image(args: dict) -> dict:
                         annotated = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
                     stem = Path(image_path).stem
                     out_path = str(out_dir / f"{stem}_annotated.png")
-                    cv2.imwrite(out_path, annotated)
+                    ret = cv2.imwrite(out_path, annotated)
+                    if not ret:
+                        raise IOError(
+                            f"cv2.imwrite 寫入失敗，請確認路徑與磁碟空間：{out_path}"
+                        )
                     result["overlay_path"] = out_path
                 except Exception as exc:
                     result["overlay_path"] = None
