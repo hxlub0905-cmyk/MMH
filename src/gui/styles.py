@@ -681,4 +681,22 @@ QFrame#rightPanel QCheckBox::indicator:checked {
     background: #e6953d;
     border-color: #f29f4b;
 }
+
+/* KLARF Export button */
+QPushButton#klarfExportBtn {
+    background: #E1F5EE;
+    border: 1px solid #1D9E75;
+    color: #085041;
+    border-radius: 7px;
+    padding: 8px 0;
+    font-weight: 600;
+    font-size: 13px;
+}
+QPushButton#klarfExportBtn:hover {
+    background: #9FE1CB;
+    border-color: #0F6E56;
+}
+QPushButton#klarfExportBtn:pressed {
+    background: #5DCAA5;
+}
 """

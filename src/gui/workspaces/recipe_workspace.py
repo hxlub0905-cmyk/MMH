@@ -121,6 +121,13 @@ class RecipeWorkspace(QWidget):
         self._axis_combo.currentIndexChanged.connect(self._on_struct_axis_changed)
         self._name_edit.textEdited.connect(self._on_name_manually_edited)
 
+        self._nm_per_pixel_spin = QDoubleSpinBox()
+        self._nm_per_pixel_spin.setRange(0.0001, 10000.0)
+        self._nm_per_pixel_spin.setDecimals(4)
+        self._nm_per_pixel_spin.setValue(1.0)
+        self._nm_per_pixel_spin.setSuffix(" nm/px")
+        self._nm_per_pixel_spin.setFixedWidth(130)
+
         struct_row = QHBoxLayout()
         struct_row.addWidget(self._struct_edit)
         struct_row.addWidget(QLabel("Axis:"))
@@ -129,6 +136,7 @@ class RecipeWorkspace(QWidget):
         id_form.addRow("Name:", self._name_edit)
         id_form.addRow("Target layer:", self._layer_edit)
         id_form.addRow("Structure:", struct_row)
+        id_form.addRow("nm / pixel:", self._nm_per_pixel_spin)
         ov.addWidget(id_frame)
 
         # ── Pill selector + stacked parameter sections ────────────────────────
@@ -391,6 +399,7 @@ class RecipeWorkspace(QWidget):
         self._layer_edit.setText(desc.target_layer)
         self._struct_edit.setText(desc.structure_name)
         self._axis_combo.setCurrentText(desc.axis_mode)
+        self._nm_per_pixel_spin.setValue(float(getattr(desc, "nm_per_pixel", 1.0)))
 
         pc = desc.preprocess_config
         self._gl_min.setValue(int(pc.get("gl_min", 100)))
@@ -487,6 +496,7 @@ class RecipeWorkspace(QWidget):
             recipe_type="CMG_YCD",
             structure_name="CMG",
             axis_mode="Y",
+            nm_per_pixel=1.0,
             preprocess_config=RecipeConfig(data={
                 "gl_min": 100, "gl_max": 220,
                 "gauss_kernel": 3, "morph_open_k": 3, "morph_close_k": 5,
@@ -555,6 +565,7 @@ class RecipeWorkspace(QWidget):
             target_layer=self._layer_edit.text().strip(),
             structure_name=struct,
             axis_mode=axis,
+            nm_per_pixel=self._nm_per_pixel_spin.value(),
             preprocess_config=RecipeConfig(data={
                 "gl_min": self._gl_min.value(),
                 "gl_max": self._gl_max.value(),

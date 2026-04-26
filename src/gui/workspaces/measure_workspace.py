@@ -267,6 +267,24 @@ class MeasureWorkspace(QWidget):
         cr.addWidget(lbl_r); cr.addWidget(self._recipe_combo)
         bl.addWidget(combo_row)
 
+        # nm/px override row
+        nmpx_row = QWidget(); nmpx_row.setStyleSheet("border:none; background:transparent;")
+        nr = QHBoxLayout(nmpx_row); nr.setContentsMargins(0, 0, 0, 0); nr.setSpacing(6)
+        lbl_nm = QLabel("nm / pixel")
+        lbl_nm.setStyleSheet("color:#9f8f7b; font-size:11px; font-weight:600; background:transparent;")
+        self._nm_px_spin = QDoubleSpinBox()
+        self._nm_px_spin.setRange(0.0001, 10000.0)
+        self._nm_px_spin.setDecimals(4)
+        self._nm_px_spin.setValue(1.0)
+        self._nm_px_spin.setSuffix(" nm/px")
+        self._nm_px_spin.setFixedWidth(130)
+        self._nm_px_hint = QLabel("Recipe 預設：1.0 nm/px")
+        self._nm_px_hint.setStyleSheet("color:#b0a090; font-size:10px; background:transparent;")
+        nr.addWidget(lbl_nm)
+        nr.addWidget(self._nm_px_spin)
+        nr.addWidget(self._nm_px_hint, stretch=1)
+        bl.addWidget(nmpx_row)
+
         # Primary action: Run Single — full width, green accent
         run_btn = QPushButton("▶   Run Single  (F5)")
         run_btn.setObjectName("successBtn")
@@ -429,13 +447,17 @@ class MeasureWorkspace(QWidget):
         self._ec_tc_widget.setVisible(method == "threshold_crossing")
 
     def _on_recipe_combo_changed(self) -> None:
-        """When a recipe is selected, populate edge-locator panel from its saved values."""
+        """When a recipe is selected, populate edge-locator panel and nm/px from saved values."""
         rid = self._selected_recipe_id()
         if rid is None:
             return
         desc = self._registry.get_descriptor(rid)
         if desc is None:
             return
+        # Update nm/px spinbox from recipe
+        nmpx = float(getattr(desc, "nm_per_pixel", 1.0))
+        self._nm_px_spin.setValue(nmpx)
+        self._nm_px_hint.setText(f"Recipe 預設：{nmpx:.4g} nm/px")
         ec = desc.edge_locator_config
         _method = str(ec.get("ycd_edge_method", "threshold_crossing")).lower()
         if _method == "subpixel":
@@ -632,8 +654,10 @@ class MeasureWorkspace(QWidget):
         )
         recipe = _CMGRecipe(descriptor=_patched_desc)
 
-        # Sync nm/pixel from ControlPanel to ImageRecord
-        self._current_ir.pixel_size_nm = self._ctrl.get_nm_per_pixel()
+        # Sync nm/pixel from the Recipe nm/px spinbox (temporary override — not saved back)
+        nm_px = self._nm_px_spin.value()
+        self._current_ir.pixel_size_nm = nm_px
+        self._viewer.set_nm_per_pixel(nm_px)
         result = self._engine.run_single(self._current_ir, recipe)
 
         if result.error:
@@ -682,6 +706,10 @@ class MeasureWorkspace(QWidget):
         if not self._ctrl.get_measurement_cards():
             QMessageBox.information(self, "No measurements", "Add a measurement profile first.")
             return
+        # Sync nm/px to ImageRecord and Ruler (temporary — not saved)
+        if self._current_ir is not None:
+            self._current_ir.pixel_size_nm = self._nm_px_spin.value()
+        self._viewer.set_nm_per_pixel(self._nm_px_spin.value())
         try:
             mask, cuts, profile_masks = self._analyze_with_cards(self._current_raw, preview_only=False)
         except Exception as exc:
@@ -780,7 +808,8 @@ class MeasureWorkspace(QWidget):
         cards = self._ctrl.get_measurement_cards()
         base_params = self._ctrl.get_preprocess_params()
         min_area_default = self._ctrl.get_min_area()
-        nm_px = self._ctrl.get_nm_per_pixel()
+        # Use nm/px spinbox value; ControlPanel scale kept as fallback legacy path
+        nm_px = self._nm_px_spin.value()
 
         # Edge-locator panel values (shared with recipe mode)
         _ec_method          = self._ec_method.currentData()

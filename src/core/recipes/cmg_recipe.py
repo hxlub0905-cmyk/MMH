@@ -646,6 +646,7 @@ class CMGRecipe(BaseRecipe):
             recipe_type=recipe_type,
             structure_name=struct,
             axis_mode=axis_mode,
+            nm_per_pixel=float(card.get("nm_per_pixel", 1.0)),
             preprocess_config=RecipeConfig(data={
                 "gl_min": int(card.get("gl_min", 100)),
                 "gl_max": int(card.get("gl_max", 220)),

@@ -115,6 +115,20 @@ class ReportWorkspace(QWidget):
         # Export button
         export_box = QGroupBox("Export")
         ev = QVBoxLayout(export_box)
+        ev.setSpacing(6)
+
+        # KLARF export (prominent, above other export buttons)
+        klarf_btn = QPushButton("輸出 KLARF…")
+        klarf_btn.setObjectName("klarfExportBtn")
+        klarf_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        klarf_btn.setFixedHeight(40)
+        klarf_btn.clicked.connect(self._open_klarf_export_dialog)
+        ev.addWidget(klarf_btn)
+        klarf_hint = QLabel("依最小 Y-CD 位置產生 Review SEM 用 KLARF")
+        klarf_hint.setStyleSheet("color:#9a8a7a; font-size:10px;")
+        klarf_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ev.addWidget(klarf_hint)
+
         export_row = QHBoxLayout()
         self._outlier_combo_export = None  # use the one from filter_box
         export_row.addStretch()
@@ -208,6 +222,22 @@ class ReportWorkspace(QWidget):
                 f"Multi-batch report: {mbr.success_count}/{mbr.total_images} OK  "
                 f"·  {len(mbr.datasets)} datasets"
             )
+
+    def set_latest_batch_run(self, batch_run) -> None:
+        """Called by WorkspaceHost when a batch completes — stores the result for KLARF export."""
+        from ...core.models import MultiDatasetBatchRun
+        if isinstance(batch_run, MultiDatasetBatchRun):
+            self._multi_batch_run = batch_run
+        else:
+            self._batch_run = batch_run
+
+    def _open_klarf_export_dialog(self) -> None:
+        from ..klarf_export_dialog import KlarfExportDialog
+        dlg = KlarfExportDialog(run_store=self._run_store, parent=self)
+        current = self._multi_batch_run or self._batch_run
+        if current is not None:
+            dlg.set_batch_run(current)
+        dlg.exec()
 
     def load_from_file(self, file_path: str) -> None:
         """Load a batch run from a persisted JSON file."""
