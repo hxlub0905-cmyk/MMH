@@ -1,4 +1,4 @@
-"""Tests for BatchRunStore persistence."""
+"""Tests for BatchRunStore SQLite persistence."""
 from __future__ import annotations
 
 import sys
@@ -42,12 +42,13 @@ def _make_multi(run_id: str = "multi-run-1", start_time: str = "2026-01-02T00:00
 
 class TestBatchRunStore:
     def test_save_and_load_single(self, tmp_path):
-        store = BatchRunStore(runs_dir=tmp_path)
+        store = BatchRunStore(db_path=tmp_path / "test.db")
         batch = _make_batch()
-        path = store.save(batch)
-        assert path.exists()
+        batch_id = store.save(batch)
+        assert isinstance(batch_id, str)
+        assert batch_id == batch.batch_id
 
-        loaded = store.load(str(path))
+        loaded = store.load(batch_id)
         assert isinstance(loaded, BatchRunRecord)
         assert loaded.batch_id == batch.batch_id
         assert loaded.input_folder == batch.input_folder
@@ -57,12 +58,13 @@ class TestBatchRunStore:
         assert loaded.start_time == batch.start_time
 
     def test_save_and_load_multi(self, tmp_path):
-        store = BatchRunStore(runs_dir=tmp_path)
+        store = BatchRunStore(db_path=tmp_path / "test.db")
         mbr = _make_multi()
-        path = store.save_multi(mbr)
-        assert path.exists()
+        batch_id = store.save_multi(mbr)
+        assert isinstance(batch_id, str)
+        assert batch_id == f"multi_{mbr.run_id}"
 
-        loaded = store.load(str(path))
+        loaded = store.load(batch_id)
         assert isinstance(loaded, MultiDatasetBatchRun)
         assert loaded.run_id == mbr.run_id
         assert len(loaded.datasets) == 2
@@ -70,7 +72,7 @@ class TestBatchRunStore:
         assert loaded.datasets[1].batch_id == "batch-b"
 
     def test_list_runs_sorted(self, tmp_path):
-        store = BatchRunStore(runs_dir=tmp_path)
+        store = BatchRunStore(db_path=tmp_path / "test.db")
         # Older batch
         store.save(_make_batch("old-batch", "2026-01-01T00:00:00+00:00"))
         # Newer batch
@@ -83,27 +85,27 @@ class TestBatchRunStore:
         assert summaries[0]["batch_id"] == "new-batch"
 
     def test_delete(self, tmp_path):
-        store = BatchRunStore(runs_dir=tmp_path)
+        store = BatchRunStore(db_path=tmp_path / "test.db")
         batch = _make_batch()
-        path = store.save(batch)
+        batch_id = store.save(batch)
         assert len(store.list_runs()) == 1
 
-        deleted = store.delete(str(path))
+        deleted = store.delete(batch_id)
         assert deleted is True
         assert len(store.list_runs()) == 0
 
     def test_delete_nonexistent(self, tmp_path):
-        store = BatchRunStore(runs_dir=tmp_path)
-        result = store.delete(str(tmp_path / "nonexistent.json"))
+        store = BatchRunStore(db_path=tmp_path / "test.db")
+        result = store.delete("nonexistent-batch-id")
         assert result is False
 
     def test_get_stats_for_recipe_empty(self, tmp_path):
-        store = BatchRunStore(runs_dir=tmp_path)
+        store = BatchRunStore(db_path=tmp_path / "test.db")
         stats = store.get_stats_for_recipe(None)
         assert stats == []
 
     def test_get_stats_for_recipe_no_measurements(self, tmp_path):
-        store = BatchRunStore(runs_dir=tmp_path)
+        store = BatchRunStore(db_path=tmp_path / "test.db")
         store.save(_make_batch())
         stats = store.get_stats_for_recipe(None)
         # Batch has empty results → no stats entries

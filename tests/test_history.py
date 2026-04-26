@@ -65,13 +65,13 @@ def _make_batch_with_measurements(
 class TestGetStatsForRecipe:
     def test_get_stats_for_recipe_empty(self, tmp_path):
         """No history → empty list, no crash."""
-        store = BatchRunStore(runs_dir=tmp_path)
+        store = BatchRunStore(db_path=tmp_path / "test.db")
         stats = store.get_stats_for_recipe(None)
         assert stats == []
 
     def test_get_stats_for_recipe_no_filter(self, tmp_path):
         """Two batches with measurements → two stat entries."""
-        store = BatchRunStore(runs_dir=tmp_path)
+        store = BatchRunStore(db_path=tmp_path / "test.db")
         store.save(_make_batch_with_measurements(
             "b1", "recipe-A", 100.0, "2026-01-01T00:00:00+00:00"
         ))
@@ -86,7 +86,7 @@ class TestGetStatsForRecipe:
 
     def test_get_stats_for_recipe_filters(self, tmp_path):
         """Two batches with different recipe_ids → filter keeps only matching."""
-        store = BatchRunStore(runs_dir=tmp_path)
+        store = BatchRunStore(db_path=tmp_path / "test.db")
         store.save(_make_batch_with_measurements(
             "b1", "recipe-A", 100.0, "2026-01-01T00:00:00+00:00"
         ))
@@ -103,7 +103,7 @@ class TestGetStatsForRecipe:
 
     def test_get_stats_sorted_ascending(self, tmp_path):
         """Stats are returned in ascending start_time order."""
-        store = BatchRunStore(runs_dir=tmp_path)
+        store = BatchRunStore(db_path=tmp_path / "test.db")
         store.save(_make_batch_with_measurements(
             "b1", "recipe-A", 100.0, "2026-01-02T00:00:00+00:00"
         ))

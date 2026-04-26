@@ -2,6 +2,52 @@
 
 ---
 
+## [2026-04-27] BatchRunStore 遷移至 SQLite（Phase D）
+
+**變更類型：** 重構（持久化層升級）
+
+**動機：**
+JSON 路徑在大批次（13000 張 × 每張 20 筆 = 26 萬筆資料）序列化時，因 Python GIL 導致 UI 主執行緒卡頓數秒。SQLite bulk insert 大幅加快寫入速度，並將所有歷史資料整合為單一 `~/.mmh/runs.db` 檔案。
+
+**實作重點：**
+
+### `src/core/batch_run_store.py`（完整改寫）
+- 移除所有 JSON 檔案相關邏輯（`runs_dir`、`_index_path`、`_rebuild_index` 等）
+- 改為 `sqlite3`（Python 內建，無額外相依）
+- `__init__` 改接 `db_path: Path | None`，預設 `~/.mmh/runs.db`
+- `_get_conn()`：thread-local connection；啟用 WAL + NORMAL sync + FK ON + Row factory
+- `_init_db()`：CREATE TABLE IF NOT EXISTS 三張表 + 六個索引（冪等）
+- **Schema**：`batch_runs`（meta）、`image_results`（每張圖一行）、`measurements`（每筆量測一行）
+- `save(batch_run)` → 一個 transaction；INSERT OR REPLACE batch_runs + executemany image_results + executemany measurements；回傳 `batch_id: str`（原回傳 Path）
+- `save_multi(mbr)` → 同一 transaction 寫 parent + N 個 child datasets；回傳 `"multi_{run_id}"`
+- `list_runs()` → `WHERE parent_run_id IS NULL ORDER BY start_time DESC`；`"file_path"` 欄位改存 `batch_id`（外部呼叫方透明相容）
+- `load(batch_id)` → 依 type 重建 `BatchRunRecord` 或 `MultiDatasetBatchRun`，含完整 `output_manifest["results"]`
+- `delete(batch_id)` → multi type 先刪子 datasets，再刪 parent
+- `get_stats_for_recipe()` → SQL JOIN + Python `statistics.stdev()`（SQLite 無內建 STDEV）
+
+### `tests/test_batch_run_store.py`（更新）
+- `BatchRunStore(runs_dir=tmp_path)` → `BatchRunStore(db_path=tmp_path/"test.db")`
+- `save()` 回傳 `str` batch_id（移除 `path.exists()` 斷言）
+- `load(str(path))` → `load(batch_id)`
+- `delete(str(path))` → `delete(batch_id)`
+- `test_delete_nonexistent`：改傳不存在的 batch_id 字串
+
+### `tests/test_history.py`（更新）
+- 同上，`BatchRunStore(db_path=...)` 介面
+
+**API 相容性：**
+- `batch_workspace.py`、`report_workspace.py`、`klarf_export_dialog.py` **無需改動**：這三個檔案都使用 `summaries[row]["file_path"]` 傳給 `store.load()`，現在 `"file_path"` 存的是 batch_id，load() 也改吃 batch_id，透明相容。
+- 舊 `~/.mmh/runs/*.json` 直接忽略，不做遷移。
+
+**影響範圍：**
+- `src/core/batch_run_store.py`（完整重寫）
+- `tests/test_batch_run_store.py`
+- `tests/test_history.py`
+
+**測試結果：** py_compile 通過；pytest 17/17 通過；功能驗證腳本（save/list/load/delete）通過
+
+---
+
 ## [2026-04-27] Bug Fix Series Round2 — H1/H3/M1/M2/M3/M4/L1/L2（共 9 項）
 
 **變更類型：** Bug 修復
