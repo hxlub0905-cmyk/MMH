@@ -42,6 +42,7 @@ class MeasurementEngine:
         max_workers: int | None = None,
         output_dir: Path | None = None,
         abort_check: Callable[[], bool] | None = None,
+        quality_lap_threshold: float | None = None,
     ) -> BatchRunRecord:
         """Run all recipe_ids against all image_records in parallel.
 
@@ -66,7 +67,8 @@ class MeasurementEngine:
         )
 
         args_list = [
-            _make_worker_args(ir, recipes, output_dir=output_dir)
+            _make_worker_args(ir, recipes, output_dir=output_dir,
+                              quality_lap_threshold=quality_lap_threshold)
             for ir in image_records
         ]
 
@@ -115,6 +117,7 @@ class MeasurementEngine:
         max_workers: int | None = None,
         output_dir: Path | None = None,
         abort_check: Callable[[], bool] | None = None,
+        quality_lap_threshold: float | None = None,
     ) -> MultiDatasetBatchRun:
         """Run run_batch() sequentially for each dataset and aggregate results.
 
@@ -152,6 +155,7 @@ class MeasurementEngine:
                 max_workers=max_workers,
                 output_dir=Path(output_dir) / ds_label if output_dir else None,
                 abort_check=abort_check,
+                quality_lap_threshold=quality_lap_threshold,
             )
             br.dataset_label = label
             mbr.datasets.append(br)
@@ -166,14 +170,20 @@ def _make_worker_args(
     image_record: ImageRecord,
     recipes: list[BaseRecipe],
     output_dir: Path | None = None,
+    quality_lap_threshold: float | None = None,
 ) -> dict:
     """Serialise ImageRecord + recipes to a plain dict for subprocess pickling."""
+    from .image_quality import DEFAULT_LAP_THRESHOLD
     return {
         "image_path": image_record.file_path,
         "image_id": image_record.image_id,
         "pixel_size_nm": float(image_record.pixel_size_nm),
         "recipe_descriptors": [r.recipe_descriptor.to_dict() for r in recipes],
         "output_dir": str(output_dir) if output_dir else None,
+        "quality_lap_threshold": (
+            quality_lap_threshold if quality_lap_threshold is not None
+            else DEFAULT_LAP_THRESHOLD
+        ),
     }
 
 
@@ -200,6 +210,30 @@ def _worker_run_image(args: dict) -> dict:
     try:
         ir = ImageRecord.from_path(image_path, pixel_size_nm=args["pixel_size_nm"])
         ir.image_id = args["image_id"]
+
+        # ── Image quality gate ────────────────────────────────────────────────
+        # Run before the heavy recipe pipeline; low-quality images skip
+        # measurement entirely and are reported as FAIL.
+        from .image_quality import check_lap_quality
+        import cv2 as _cv2
+        _raw = _cv2.imread(image_path, _cv2.IMREAD_UNCHANGED)
+        if _raw is not None:
+            if _raw.ndim == 3:
+                _raw = _cv2.cvtColor(_raw, _cv2.COLOR_BGR2GRAY)
+            import numpy as _np
+            if _raw.dtype != _np.uint8:
+                _raw = _cv2.normalize(_raw, None, 0, 255, _cv2.NORM_MINMAX).astype(_np.uint8)
+            lap_score = check_lap_quality(_raw)
+            result["quality_score"] = round(lap_score, 2)
+            thr = float(args.get("quality_lap_threshold", 140.0))
+            if lap_score < thr:
+                result["status"] = "FAIL"
+                result["error"] = (
+                    f"Low image quality: Laplacian var={lap_score:.1f} "
+                    f"< threshold {thr:.1f}"
+                )
+                return result
+        # ─────────────────────────────────────────────────────────────────────
 
         all_records: list[MeasurementRecord] = []
         all_cuts: list = []
