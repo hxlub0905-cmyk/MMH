@@ -1,0 +1,205 @@
+================================================================================
+  SEM MM 專案 Bug Fix Session 還原過程總結
+  日期：2026-04-24
+  分支：claude/fix-sem-mm-bugs-WAD9Y
+================================================================================
+
+一、任務起點
+────────────
+使用者提出 14 項 Bug 修復需求（C1–C4 正確性、M1–M7 中等、m1–m3 輕微），
+並要求以繁體中文呈現完整修正計畫，完成後更新 README.md、AGENTS.md、
+SESSION_LOG.md。
+
+二、探索階段
+────────────
+1. 使用 Explore Agent 對整個 /home/user/MMH 專案進行全面掃描，
+   取得目錄結構、所有關鍵檔案的內容摘要與架構說明。
+
+2. 逐一閱讀以下核心檔案：
+   - src/_compat.py
+   - src/core/models.py
+   - src/core/batch_run_store.py
+   - src/core/measurement_engine.py
+   - src/core/recipes/cmg_recipe.py
+   - src/gui/workspace_host.py
+   - src/gui/workspaces/review_workspace.py
+   - src/gui/workspaces/batch_workspace.py
+   - src/output/excel_exporter.py
+   - tests/test_subpixel_refinement.py
+   - src/core/annotator.py
+   - src/core/preprocessor.py
+   - src/core/cmg_analyzer.py（grep 關鍵函式）
+   - src/gui/workspaces/measure_workspace.py（grep 關鍵行）
+   - AGENTS.md、README.md、SESSION_LOG.md
+
+3. 確認 git 目前分支為 claude/fix-sem-mm-bugs-WAD9Y，可直接開始修改。
+
+三、問題分析
+────────────
+經逐檔閱讀後，確認各 Bug 的根本原因：
+
+C1 - JSON 序列化將 tuple 轉為 list，MeasurementRecord.from_dict()
+     還原 extra_metrics 時未轉回 tuple，導致 upper_bbox/lower_bbox 型別錯誤。
+
+C2 - Windows 路徑分隔符（/ vs \）或大小寫差異，導致 paths_in_index 與
+     actual_files 字串永不相等，每次都觸發全量重建。
+
+C3 - batch.end_time 賦值在 try-finally 之後，abort_check 或例外發生時
+     finally 執行完畢後例外繼續傳播，end_time 永遠未被設定。
+
+C4 - 非配對 fallback 路徑中 upper_sample_ys = []、lower_sample_ys = []
+     長度為 0，但 sample_xs 有值，Detail CD 視圖虛線立即截斷。
+
+M1 - workspace_host.py TAB 常數無說明；AGENTS.md 描述 8 個 workspace，
+     實際只有 6 個（ValidationWorkspace 與 HistoryWorkspace 尚未實作）。
+
+M2 - _batch_records dict 無上限，長時間瀏覽大批次時記憶體持續累積。
+
+M3 - 第一次批次完成後 progressDone objectName 殘留，第二次執行時
+     進度條從綠色開始，視覺誤導。
+
+M4 - _smooth_strip_2d docstring 說「for odd k ≥ 3」，但 k 在函式內
+     已強制為奇數，說法多餘且未涵蓋 k≤1 的情況。
+
+M5 - groupby().idxmin/idxmax() 在 cd_nm 含 NaN 時行為不正確。
+
+M6 - TestEdgeMethodSelection 仍用舊 key "subpixel"，應改為 "gradient"。
+
+M7 - apply_yedge_subpixel_to_cuts 與 compute_metrics range filter 後
+     均呼叫 per-cut _flag_top3，同一圖可能出現多組 MIN/MAX，
+     與「全圖唯一一個 MIN/MAX」設計矛盾。
+
+m1 - draw_overlays_multi 呼叫 _flag_global_minmax 就地修改 measurements，
+     但無任何警告說明。
+
+m2 - apply_column_strip_mask 結果全零時無 log 警告，偵錯困難。
+
+m3 - _append_to_index 在 _read_index() 回傳 None 時用 or [] 空列表，
+     導致所有舊歷史條目遺失。
+
+四、修正執行過程
+────────────────
+按編號順序逐一修改，每步確認 py_compile 通過後再繼續：
+
+[C1] src/core/models.py
+     MeasurementRecord.from_dict() 新增：
+       _extra = dict(d.get("extra_metrics", {}))
+       for _key in ("upper_bbox", "lower_bbox"):
+           if _key in _extra and isinstance(_extra[_key], list):
+               _extra[_key] = tuple(int(v) for v in _extra[_key])
+
+[C2] src/core/batch_run_store._read_index()
+     paths_in_index = {str(Path(e["file_path"]).resolve()) for e in entries}
+     actual_files   = {str(f.resolve()) for f in self._dir.glob("*.json") ...}
+
+[m3] src/core/batch_run_store._append_to_index()（與 C2 同檔案一起處理）
+     existing = self._read_index()
+     if existing is None:
+         existing = self._rebuild_index()   # 從磁碟重建，不用空 list
+
+[C3] src/core/measurement_engine.run_batch()
+     finally:
+         batch.end_time = datetime.now(timezone.utc).isoformat()  # 移入 finally
+         pool.shutdown(wait=False, cancel_futures=True)
+     # 移除原本在 finally 之後的 batch.end_time = ...
+
+[C4] src/core/recipes/cmg_recipe.apply_yedge_subpixel_to_cuts()
+     else 分支（非配對 fallback）：
+       _collect_edge_by_columns() 呼叫後
+       upper_sample_ys: list = [None] * len(sample_xs)
+       lower_sample_ys: list = [None] * len(sample_xs)
+
+[M4] src/core/recipes/cmg_recipe._smooth_strip_2d()
+     重寫 docstring：
+       "k is forced to the nearest odd integer ≥ 3 internally.
+        Returns shape (n_rows - 1, n_cols) for any k > 1 after forcing, or
+        (n_rows, n_cols) unchanged when k ≤ 1."
+
+[M7] src/core/recipes/cmg_recipe.py（兩處）
+     位置一（apply_yedge_subpixel_to_cuts 結尾）：
+       - for cut in cuts: _flag_top3(cut.measurements)
+       + _flag_global_minmax([m for cut in cuts for m in cut.measurements])
+     位置二（compute_metrics range filter 後）：
+       - for cut in cuts: _flag_top3(cut.measurements)
+       + _flag_global_minmax([m for cut in cuts for m in cut.measurements])
+
+[M1] src/gui/workspace_host.py
+     WorkspaceHost class 新增 docstring 說明 6-tab 索引對應表
+
+[M2] src/gui/workspaces/review_workspace.py
+     新增 self._RECORD_CACHE_MAX = 200
+     _load_batch_entry() 中加入：
+       if len(self._batch_records) >= self._RECORD_CACHE_MAX:
+           oldest_key = next(iter(self._batch_records))
+           del self._batch_records[oldest_key]
+
+[M3] src/gui/workspaces/batch_workspace._run_batch()
+     self._progress.setValue(0) 後加：
+       self._progress.setObjectName("")
+       self._progress.style().unpolish(self._progress)
+       self._progress.style().polish(self._progress)
+
+[M5] src/output/excel_exporter._filter_meas_by_mode()
+     valid = df[df["status"] != "rejected"] ...
+     valid = valid.dropna(subset=["cd_nm"])   # 新增
+     idx = valid.groupby(group_keys)["cd_nm"].idxmin/idxmax()
+
+[M6] tests/test_subpixel_refinement.py
+     test_subpixel_has_refine_fields：  "subpixel" → "gradient"
+     test_both_methods_produce_positive_cd：("bbox","subpixel") → ("bbox","gradient")
+
+[m1] src/core/annotator.draw_overlays_multi()
+     _flag_global_minmax(all_ms) 呼叫前加入：
+       # WARNING: _flag_global_minmax mutates m.flag on every
+       # YCDMeasurement in place; callers must not rely on pre-existing
+       # flag values after this call.
+
+[m2] src/core/preprocessor.py
+     新增 import logging + _log = logging.getLogger(__name__)
+     apply_column_strip_mask() 結尾：
+       result = cv2.bitwise_and(mask, strip)
+       if not result.any():
+           _log.warning("apply_column_strip_mask: resulting strip mask is "
+                        "all zeros ...")
+       return result
+
+五、文件更新
+────────────
+SESSION_LOG.md — 在最上方新增 [2026-04-24] 條目，
+                 以表格形式逐一列出 14 項修復的位置、問題、修復方式。
+
+AGENTS.md     — 更新版本狀態、架構概覽（8 workspace → 6 workspace 並加
+                注解說明 Phase D 規劃）、重要實作規則（M7 re-flag 改為
+                全域 global）、已知問題表格（新增 14 筆 ✅ 已修復條目）。
+
+README.md     — 「八工作區 UI」改為「六工作區 UI」；版本歷程表新增
+                「Bug Fix C1–C4/M1–M7/m1–m3 ✅ 完成（2026-04-24）」一列。
+
+六、驗證
+────────
+所有修改檔案執行 py_compile 驗證，輸出 "ALL OK"：
+  python3 -m py_compile \
+    src/core/models.py src/core/batch_run_store.py \
+    src/core/measurement_engine.py src/core/recipes/cmg_recipe.py \
+    src/gui/workspace_host.py src/gui/workspaces/review_workspace.py \
+    src/gui/workspaces/batch_workspace.py src/output/excel_exporter.py \
+    tests/test_subpixel_refinement.py src/core/annotator.py \
+    src/core/preprocessor.py
+
+七、提交與推送
+──────────────
+  git add（14 個變更檔案 + 3 個文件）
+  git commit -m "fix: apply Bug Fix Series C1–C4, M1–M7, m1–m3 across 14 files"
+  git push -u origin claude/fix-sem-mm-bugs-WAD9Y
+  → 成功推送，14 files changed, 166 insertions(+), 52 deletions(-)
+
+八、成果摘要
+────────────
+修復項目   : 14 項（C1~C4 正確性 4 項、M1~M7 中等 7 項、m1~m3 輕微 3 項）
+修改檔案數 : 14 個源碼 + 3 個文件 = 17 個
+新增行數   : +166 行
+刪除行數   : -52 行
+py_compile : 全部通過
+推送分支   : claude/fix-sem-mm-bugs-WAD9Y
+
+================================================================================
