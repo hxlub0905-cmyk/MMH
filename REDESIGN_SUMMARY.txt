@@ -1,0 +1,194 @@
+================================================================================
+  MMH SEM MM UI 全面重設計 — 實作摘要
+  日期：2026-04-27
+  Branch：claude/redesign-sem-ui-3XbkV
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+一、任務說明
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+依照「SEM MM UI 重設計企劃書 v1.0」（§0～§10），在完全不影響功能的前提下，
+全面升級 6 個 Workspace 及共用模組的視覺風格。
+
+可修改範圍（共 9 個檔案）：
+  - src/gui/styles.py
+  - src/gui/workspaces/browse_workspace.py
+  - src/gui/workspaces/recipe_workspace.py
+  - src/gui/workspaces/measure_workspace.py
+  - src/gui/workspaces/batch_workspace.py
+  - src/gui/workspaces/review_workspace.py
+  - src/gui/workspaces/report_workspace.py
+  - src/gui/results_panel.py
+  - SESSION_LOG.md
+
+絕對禁止修改：src/core/、src/_compat.py、src/output/、main.py、tests/
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+二、執行流程概述
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+步驟 0：探索程式碼庫
+  - 讀取所有 9 個目標檔案的完整內容
+  - 確認 git branch 已在 claude/redesign-sem-ui-3XbkV
+  - 確認 SESSION_LOG.md 已存在
+
+步驟 1：styles.py — 全面重寫
+  - 捨棄舊色彩常數，導入新 Design Token 體系（§1）
+  - 保留 MIN_COLOUR / MAX_COLOUR / NORM_COLOUR 等向後相容別名
+  - 全新 STYLE QSS 字串（§2），涵蓋：
+      QWidget、QTabBar/QTabWidget、QPushButton（default / primaryBtn /
+      successBtn / segLeft/Mid/Right / detailCD / profileDeleteBtn）、
+      CollapsibleSection headers（tier 1/2/3）、QLabel#statChip/Min/Max/Alert、
+      QProgressBar / #progressDone、QSpinBox、QCheckBox、QComboBox、
+      QLineEdit、QTableWidget、QListWidget、QTreeWidget、QScrollBar、
+      QSplitter、QTextEdit、QDialog、QMenu、QStatusBar 等
+  → py_compile 通過
+
+步驟 2：results_panel.py — 行顏色 + Chip objectName
+  - _ROW_COLOURS: MIN #fff8f0, MAX #f0f7fc
+  - _chip_min → objectName="statChipMin"
+  - _chip_max → objectName="statChipMax"
+  - _update_stats_bar：更新 objectName 後對所有 chip 執行 unpolish/polish
+  → py_compile 通過
+
+步驟 3：browse_workspace.py — 全面改版
+  - 左側 QFrame#leftPanel, setFixedWidth(180)
+  - Open Folder 按鈕：primaryBtn、setFixedHeight(32)、SizePolicy Expanding
+  - 新增 FILES 標題 QLabel（uppercase, muted）
+  - 新增 _file_count_label（"N files"）
+  - ImageViewer 深色背景 (#2a2420)
+  - Viewer Header 加入 _img_info_label（檔名 · 寬×高）
+  - Calibration GroupBox → 橫排 QHBoxLayout：
+      QLabel("Calibration") → combo → QLabel("nm/px") → spin → save btn
+  - Send to Measure → primaryBtn
+  → py_compile 通過
+
+步驟 4：recipe_workspace.py — 三處重大重構
+  a) 左側欄：QFrame#leftPanel, setFixedWidth(200)
+     "SAVED RECIPES" 標題 label（uppercase, 0.06em）
+     Delete 按鈕標示紅色
+  b) Identity 區塊：QGroupBox → 帶樣式的 QFrame
+     background:#fff8f2; border:0.5px solid #e8d8c8; border-radius:8px
+  c) 參數頁籤：QTabWidget → Pill 選單 + QStackedWidget
+     - pill_container: background:#f0ece6; border-radius:8px
+     - 4 個 QPushButton（Preprocessing/Detection/Strip Mask/Analysis）
+     - _switch_pill(idx)：切換樣式（選中白底橙文 / 未選透明灰文）
+     - 以 _StackShim 類別讓原有 tabs.addTab() 呼叫自動轉為 addWidget
+  d) Save Recipe：primaryBtn, setFixedHeight(40), Expanding
+  → py_compile 通過
+
+步驟 5：measure_workspace.py — 三處修改
+  a) Overlay checkboxes 前加色點：
+     Lines/Values → QLabel("●") color:#8ccaa6
+     Boxes → QLabel("●") color:#c8b8a8
+  b) Viewer Header 右側加 _viewer_info_label（"name · N cuts · M meas"）
+     在 _run_with_recipe_impl() 及 _run_with_cards() 末尾更新
+  c) Run Single 按鈕：runSingle → successBtn, setFixedHeight(36)
+  d) Edge Locator hint label 樣式微調
+  → py_compile 通過
+
+步驟 6：batch_workspace.py — 五處修改
+  a) Column headers：font-size:10px; color:#9a8a7a; font-weight:500
+     分隔線：color:#e8d8c8; max-height:1px
+  b) folder_label 空白狀態：dashed border, muted 色, "選擇資料夾…"
+     folder_label 填入後：solid border, 深色文字, "Name · N files"
+     _browse_folder() 同步呼叫 scan_folder() 取得檔案數
+  c) Run Batch：objectName="successBtn", width=130, height=36
+  d) Overlay 選項列包入 QFrame：background:#fdf8f2; border:0.5px solid #e8d8c8
+  e) Progress 區塊新增 _lbl_status QLabel（在 QProgressBar 之前）
+     _on_progress() 更新 "[done/total]  name"
+     _on_single_finished()：
+       - _lbl_status 顯示綠色完成訊息（font-weight:500; color:#3e7f5d）
+       - _progress.setObjectName("progressDone") + unpolish/polish
+     圖片列表項目改為 "●  name"（綠） / "✕  name"（紅）
+  → py_compile 通過
+
+步驟 7：review_workspace.py — 兩處修改
+  a) _populate_img_list()：
+     OK   → QListWidgetItem("●  name"), QColor("#7abf9a")
+     FAIL → QListWidgetItem("✕  name"), QColor("#cc7b6c")
+  b) _build_header()：
+     nav 按鈕（◀ ▲ ▶）移到 hbox.addStretch() 之後（右對齊）
+  c) _load_batch_entry() info label：格式改為 "name · status · N meas"
+  → py_compile 通過
+
+步驟 8：report_workspace.py — 三處新增／修改
+  a) Summary Cards（4 個）插入 scroll inner 最頂部（在 filter_box 之前）：
+     Total images / OK / Failed / Measurements
+     QFrame, background:#f5f1eb; border-radius:8px
+     val_lbl font-size:22px; desc_lbl font-size:11px
+     _refresh_summary() 更新 card_vals[0..2]
+     _on_batch_load_done() 更新 card_vals[3]（measurements 數）
+  b) CD Statistics 重設計（單批次路徑）：
+     _refresh_stats() 單批次呼叫 _build_stats_cards(vals)
+     【Highlight Cards 2×2 grid】Mean/3σ（橙底）、Min/Max（藍底）
+     【Detail Rows 2×N grid】Median / Std Dev / Q25 / Q75 / Count
+  c) Export 列重排：
+     Load from History… 加入同列，Export 改為 primaryBtn, 120×36
+  → py_compile 通過
+
+步驟 9：驗收
+  py_compile 全部通過（8 個檔案）
+  pytest tests/test_models.py tests/test_batch_run_store.py tests/test_history.py
+  → 17/17 PASSED
+
+步驟 10：SESSION_LOG.md 更新 + git commit + push
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+三、Commit 資訊
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Branch : claude/redesign-sem-ui-3XbkV
+Hash   : 2314708
+Message: feat(ui): full visual redesign per §1-§8 spec — new design tokens,
+         pill selectors, summary cards
+Stats  : 9 files changed, 715 insertions(+), 354 deletions(-)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+四、設計決策備注
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. styles.py 向後相容別名
+   舊常數 MIN_COLOUR / MAX_COLOUR / NORM_COLOUR / BG_BASE / BORDER 等
+   以 alias 形式保留，確保 core/annotator.py 等不在修改範圍的模組不受影響。
+
+2. recipe_workspace.py 的 _StackShim
+   為避免大規模重寫四個 tab 的內容建立程式碼，使用一個輕量的 shim 類別，
+   讓原有 tabs.addTab(widget, label) 呼叫自動轉為 QStackedWidget.addWidget(widget)，
+   保留所有 widget 建立邏輯不變。
+
+3. report_workspace.py _build_stats_cards()
+   單批次路徑獨立出一個方法，多批次路徑仍沿用原有 QFormLayout 顯示各 dataset，
+   避免影響多批次比較功能。
+
+4. batch_workspace.py scan_folder()
+   _browse_folder() 選完資料夾後立即呼叫 scan_folder() 取得檔案數，
+   並顯示於 folder_label（"Name · N files"），方便用戶確認資料夾內容。
+
+5. 未修改 workspace_host.py
+   現有 Tab 標籤文字（Browse/Recipe/Measure/Batch/Review/Report）
+   符合企劃書規格，無需變動。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+五、測試結果
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+py_compile:
+  src/gui/styles.py                          OK
+  src/gui/results_panel.py                   OK
+  src/gui/workspaces/browse_workspace.py     OK
+  src/gui/workspaces/recipe_workspace.py     OK
+  src/gui/workspaces/measure_workspace.py    OK
+  src/gui/workspaces/batch_workspace.py      OK
+  src/gui/workspaces/review_workspace.py     OK
+  src/gui/workspaces/report_workspace.py     OK
+
+pytest:
+  tests/test_models.py                       6/6  PASSED
+  tests/test_batch_run_store.py              7/7  PASSED
+  tests/test_history.py                      4/4  PASSED
+  ─────────────────────────────────────────────────
+  Total                                     17/17 PASSED  (0.19s)
+
+================================================================================
