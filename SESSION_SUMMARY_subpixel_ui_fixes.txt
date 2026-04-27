@@ -1,0 +1,267 @@
+================================================================================
+  MMH 專案 — 本次對話工作總結
+  Branch: claude/upgrade-ycd-subpixel-aswvP
+  日期: 2026-04-27
+================================================================================
+
+一、背景
+────────────────────────────────────────────────────────────────────────────────
+MMH（Mass Measurement Hub）是一套 SEM（掃描電子顯微鏡）影像的半導體量測工具，
+核心功能為對 CMG（Cut Metal Gate）結構進行 Y-CD / X-CD 量測。
+
+本次對話共完成三個工作任務，對應三個 commit：
+
+  commit 3ba6e37 — feat(cmg): upgrade Y-CD to subpixel-level edge refinement
+  commit 079e41b — refine(cmg): strengthen subpixel Y-CD edge stability (7 constraints)
+  commit 02e96d0 — fix(ui): 4 fixes — wasCanceled, HTML report, legend spacing, UI theme
+
+
+================================================================================
+任務一：CMG Y-CD 從 pixel-level 升級到 subpixel-level（第一輪）
+================================================================================
+
+【問題描述】
+原始 Y-CD 計算方式使用 threshold mask 連通元件的 bbox edge（整數精度）：
+  upper_edge = upper_blob.cy + (upper_blob.height / 2.0)  ≈ y1
+  lower_edge = lower_blob.cy - (lower_blob.height / 2.0)  ≈ y0
+  cd_px = lower_edge - upper_edge
+
+此方法解析度受 binary mask 量化限制，CD 結果只能到整數像素。
+
+【解決方案】
+僅修改 src/core/recipes/cmg_recipe.py，新增 subpixel edge refine 機制。
+
+不修改任何 upstream 模組（cmg_analyzer.py、preprocess、detect_features、
+blob 結構、MeasurementRecord schema、UI/render）。
+
+【新增 Helper Function: _refine_yedge_subpixel()】
+位置：cmg_recipe.py 底部（_rot_blob_to_ori 之前）
+
+演算法流程：
+  Step 1  驗證 image 輸入，若為 3-channel 則轉灰階
+  Step 2  建立窄條 column ROI：x ∈ [x_center - half_col, x_center + half_col]
+  Step 3  建立 Y 搜尋窗：y ∈ [y_guess - search_half, y_guess + search_half]
+  Step 4  對 X 方向取平均 → 得到 1D float64 profile I(y)
+  Step 5  Moving-average 平滑（kernel 大小由 smooth_k 控制，強制奇數）
+  Step 6  計算絕對梯度：abs_grad = |np.gradient(profile)|
+  Step 7  在 [margin, n-margin] 內找 argmax（避免邊界 artifact）
+  Step 8  若梯度 < min_grad → fallback 回傳 y_guess
+  Step 9  Quadratic subpixel interpolation：
+            a, b, c = abs_grad[peak-1], abs_grad[peak], abs_grad[peak+1]
+            delta = 0.5*(a-c) / (a-2b+c)  if |denom| > 1e-12
+            refined = y_lo + peak + delta
+  Step 10 Clamp 到窗內，回傳 float
+
+【compute_metrics() 插入塊】
+插入點：cuts = analyze(...) 之後，X-CD back-rotation 之前。
+
+  if axis == "Y" and context.get("raw") is not None:
+      for each measurement m:
+          x_ctr = (upper_blob.cx + lower_blob.cx) / 2.0
+          y_up  = upper_blob.cy + upper_blob.height / 2.0  # same as analyze()
+          y_lo  = lower_blob.cy - lower_blob.height / 2.0
+          up_ref = _refine_yedge_subpixel(raw, x_ctr, y_up, ...)
+          lo_ref = _refine_yedge_subpixel(raw, x_ctr, y_lo, ...)
+          if lo_ref - up_ref > 0:
+              m.cd_px = lo_ref - up_ref
+              m.cd_nm = m.cd_px * nm_per_pixel
+      # Re-flag MIN/MAX per cut based on refined values
+
+【Fallback 條件】
+  - raw image 為 None 或格式錯誤
+  - column ROI 或 Y 窗太小（< 3 rows）
+  - 梯度 < min_grad（預設 5.0）
+  - refined gap ≤ 0（blobs 重疊）
+
+【預期效果】
+  - raw_px 從整數變為 float（例如 12.37 px）
+  - 同一張圖各 column 的 CD variance 降低
+  - X-CD 路徑完全不受影響
+  - 通常與原方法差異 < 1~2 px，更平滑
+
+
+================================================================================
+任務二：Subpixel Edge Refinement 第二輪強化（7 項約束）
+================================================================================
+
+【問題描述】
+第一版實作功能正確，但 edge 選取的物理一致性不足：
+  - x_center 使用 blob cx 平均值，可能因 partial cut 而偏移
+  - y_guess 使用 cy±height/2，與原始 Y-CD 定義（y1/y0）不一致
+  - 梯度門限為固定值（5.0），無法適應不同對比度影像
+  - 缺乏多峰模糊性偵測
+  - 缺乏 proximity constraint
+
+【7 項修正（均在 cmg_recipe.py 內實作）】
+
+[1] x_center 強化
+    優先使用 context["mg_col_centers"]（pitch-phase 偵測的穩定格點）：
+      if _col_centers:
+          x_ctr = min(_col_centers, key=lambda c: abs(c - blob_cx))
+      else:
+          x_ctr = (upper_blob.cx + lower_blob.cx) / 2.0
+    原因：blob cx 在 cut fail 時可能偏移，格點才是最穩定的 ROI anchor
+
+[2] y_guess 修正
+    改為使用 bbox 邊緣（與原始 Y-CD 定義完全一致）：
+      y_up = float(upper_blob.y1)   # bottom of upper blob = top of gap
+      y_lo = float(lower_blob.y0)   # top of lower blob   = bottom of gap
+    原因：cy±height/2 與 bbox 在非均勻 blob 時可能有細微差異
+
+[3] 相對梯度門限（取代固定 5.0）
+    新增 min_grad_frac 參數（預設 0.10）：
+      p_range = profile.max() - profile.min()
+      if p_range < 1.0: return y_guess      # 完全平坦 → 沒有 edge
+      min_grad_abs = min_grad_frac * p_range
+    效果：自動適應影像對比度，不再用寫死數值
+
+[4] Peak dominance check（簡化版 polarity 約束）
+    若找到第二個可比的梯度峰 → 視為 edge 模糊 → fallback：
+      mask ±2px 遮住主峰，找 second_val
+      if second_val > peak_ratio_thr * peak_val: return y_guess
+    預設 peak_ratio_thr = 0.60
+
+[5] Proximity constraint
+    refined edge 與 y_guess 的偏差超過 ±proximity（預設 5px）→ fallback：
+      if abs(refined - y_guess) > proximity: return y_guess
+    防止 refiner 誤抓到遠處不相關結構
+
+[6] Fallback 行為完整化
+    所有失敗路徑均回傳 y_guess
+    y_guess 現在就是 y1/y0（canonical bbox edge）
+    fallback = 完全等同原始 pixel-level Y-CD
+
+[7] MIN/MAX re-flag
+    精化完所有 measurement 後，對每個 CMG cut 重新計算 MIN/MAX flag
+    確保 flag 永遠對應最終 refined cd_px 值
+    即使 range_enabled=False 也能正確 flag
+
+【可設定參數（via edge_locator_config）】
+  subpixel_half_col     : column 條寬（預設 3）
+  subpixel_search_half  : Y 搜尋窗半徑（預設 10px）
+  subpixel_proximity    : proximity constraint（預設 5px）
+  subpixel_smooth_k     : moving average kernel（預設 5）
+  subpixel_min_grad_frac: 相對梯度門限係數（預設 0.10）
+  subpixel_peak_ratio   : peak dominance ratio（預設 0.60）
+
+
+================================================================================
+任務三：4 項 Bug Fix / UI 美化
+================================================================================
+
+【Fix 1 — QProgressDialog.wasCancelled() AttributeError】
+檔案：src/gui/workspaces/report_workspace.py（第 237 行）
+問題：PyQt6 使用美式拼字，方法名為 wasCanceled()（一個 'l'）
+修正：wasCancelled() → wasCanceled()
+
+【Fix 2 — Generate HTML Report 無法執行（pandas 錯誤）】
+問題根因：
+  _common.py 頂層有 `import pandas as pd`，
+  當 pandas 未安裝時，任何 import _common 的操作都會失敗，
+  導致 generate_report_from_records() 無法執行。
+
+修正方案：
+  (A) src/output/_common.py
+      - 移除頂層 `import pandas as pd`
+      - 改為在 results_to_dataframe() 和 records_to_dataframe() 函式內部
+        lazy import（需要 pandas 的函式才觸發）
+
+  (B) src/output/report_generator.py — 完全重寫以移除 pandas 依賴
+      - 新增 _compute_stats(ok: list[float]) → dict
+        使用 stdlib statistics 模組計算 mean/median/stdev/min/max
+      - _histogram_b64() 改接受 list[float]，使用 numpy 做 mean/std
+        （matplotlib 已依賴 numpy，無需額外安裝）
+      - generate_report_from_records() 直接從 MeasurementRecord 列表
+        過濾 ok 值，不再呼叫 records_to_dataframe()
+      - generate_report()（舊版）改為 lazy import results_to_dataframe
+
+結果：HTML report 在無 pandas 環境下可正常產生
+
+【Fix 3 — Legend 文字字體間距】
+檔案：src/core/annotator.py → _draw_legend()
+修改對照：
+  lh（line height）: 16 → 12
+  pad（上下 padding）: 8 → 5
+  box_w（框寬）: 130 → 118
+  dot radius: 4 → 3
+  text offset: 微調收緊
+
+【Fix 4 — 整體 UI 美化】
+檔案：src/gui/styles.py
+
+新增樣式：
+  QTabWidget::pane     — tab 底框，去掉上邊
+  QTabBar::tab         — 柔灰背景、選中橙色上邊框(2px)、字重 700
+  QTabBar::tab:hover   — 淡橙 hover 效果
+  QLineEdit            — 圓角輸入框，focus 時橙色邊框，disabled/read-only 狀態
+  QComboBox            — 與 LineEdit 一致風格，自訂三角下拉箭頭
+  QComboBox QAbstractItemView — 下拉選單顏色
+  QDialog              — 背景色同主題
+  QDialogButtonBox     — 按鈕最小寬度
+
+修改現有樣式：
+  QWidget font-family  — 加入 'Helvetica Neue' fallback
+  QGroupBox            — border-radius 7→8，title tracking 加大
+  QPushButton          — min-height 24px，pressed/disabled 顏色更精緻
+  QStatusBar           — 加 ::item { border: none } 消除分隔符
+
+
+================================================================================
+Commit 記錄（本次對話）
+================================================================================
+
+  3ba6e37  feat(cmg): upgrade Y-CD to subpixel-level edge refinement
+           - 新增 _refine_yedge_subpixel() helper
+           - compute_metrics() 插入 subpixel refinement 塊
+           - 基本 fallback 機制（固定 min_grad、cy±height/2）
+
+  079e41b  refine(cmg): strengthen subpixel Y-CD edge stability (7 constraints)
+           - 7 項物理一致性強化（詳見任務二）
+           - Helper 完全重寫，新增 proximity/peak_ratio 等約束
+
+  02e96d0  fix(ui): 4 fixes — wasCanceled, HTML report, legend spacing, UI theme
+           - wasCancelled → wasCanceled
+           - HTML report 完全移除 pandas 依賴
+           - Legend 間距縮小
+           - styles.py 新增 QTabBar/QLineEdit/QComboBox/QDialog 等樣式
+
+
+================================================================================
+修改檔案彙整
+================================================================================
+
+  src/core/recipes/cmg_recipe.py        — 主要修改（subpixel Y-CD）
+  src/core/annotator.py                 — legend 間距調整
+  src/output/report_generator.py        — HTML report 無 pandas 化
+  src/output/_common.py                 — pandas lazy import
+  src/gui/workspaces/report_workspace.py — wasCanceled fix
+  src/gui/styles.py                     — UI 美化
+
+
+================================================================================
+不變項目（未修改）
+================================================================================
+
+  src/core/cmg_analyzer.py             — analyze() 完全未動
+  src/core/mg_detector.py              — Blob 結構未動
+  src/core/models.py                   — MeasurementRecord schema 未動
+  src/core/preprocessor.py             — preprocess() 未動
+  Pipeline flow (detect_features, locate_edges, render_annotations) — 未動
+  X-CD 路徑                             — 完全未動
+
+
+================================================================================
+測試結果
+================================================================================
+
+  每次 commit 後均執行 pytest tests/ -v
+  結果：34/36 PASSED（穩定不變）
+
+  2 個持續失敗的測試：
+    test_records_to_dataframe_columns
+    test_records_to_dataframe_with_image_records
+  → 這 2 個測試本身就需要 pandas，屬於環境缺少 pandas 的預期失敗
+  → 非本次改動引入的 regression
+
+
+================================================================================
