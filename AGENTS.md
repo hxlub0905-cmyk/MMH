@@ -1,7 +1,7 @@
 # AGENTS.md — SEM MM 開發指南
 
 本文件供 AI Agent 或開發者快速掌握 SEM MM 專案的架構、慣例與開發方式。
-最後更新：2026-04-24（Bug Fix Series C1–C4 / M1–M7 / m1–m3）
+最後更新：2026-04-27（Bug Fix Round2 H1–L2 + Phase D SQLite 遷移）
 
 ---
 
@@ -19,7 +19,7 @@
 
 | 項目 | 說明 |
 |------|------|
-| 版本階段 | **Phase A + F2 + G2 + B + Bug Fix Series + Phase C（部分）+ Bug Fix C1–C4/M1–M7/m1–m3 已完成** |
+| 版本階段 | **Phase A + F2 + G2 + B + Bug Fix Series + Phase C（部分）+ Bug Fix C1–C4/M1–M7/m1–m3 + Bug Fix Round2 + Phase D（BatchRunStore SQLite）已完成** |
 | 核心演算法 | CMG Y-CD / X-CD 量測（完整保留，以 Recipe 包裝） |
 | X-Proj 偵測 | Pitch-anchored 相位偵測（`detect_mg_column_centers_pitch_phase()`） |
 | 架構模型 | Recipe-driven SEM Metrology Platform |
@@ -27,7 +27,9 @@
 | Phase B 完成 | Bug 修復 5 項 + 批次持久化 + Recipe 驗證模式 + 歷史趨勢 Run Chart |
 | Bug Fix Series | CD 計算一致性（A1/A2/F1/G1）、UX 修復（B1/G2/I2/Q1）、效能（L2）、導航（Review/Recipe） |
 | Phase C（部分） | Batch 即時 Overlay 輸出 + TC 路徑向量化（4–5×）+ Gradient 路徑向量化（2–3×）；合計 13000 張目標 3–6 分鐘 |
-| 未完成 Phase | C（Worker 上限保護、X-CD 標注修正）、D（平台化） |
+| Bug Fix Round2 | H1（imwrite 回傳值）、H3（NumPy 2.0 ptp 移除）、M1–M4（UX/HTML/file count/X-CD 偏移）、L1–L2（EC key 清理、KLARF 大小寫） |
+| Phase D（部分） | BatchRunStore 遷移至 SQLite（`~/.mmh/runs.db`）；Recipe SQLite 遷移、Plugin 介面待完成 |
+| 未完成 Phase | C（Worker 上限保護、X-CD 標注修正）、D（Recipe SQLite、Plugin 介面） |
 
 ---
 
@@ -46,7 +48,7 @@
 | 新增 Recipe 類型 | 繼承 `BaseRecipe`，放入 `src/core/recipes/` |
 | Recipe 持久化管理 | `src/core/recipe_registry.py` |
 | Batch / 單張執行引擎 | `src/core/measurement_engine.py` |
-| **批次結果持久化** | **`src/core/batch_run_store.py`** |
+| **批次結果持久化（SQLite）** | **`src/core/batch_run_store.py`**（`~/.mmh/runs.db`，Phase D） |
 | **Recipe 驗證邏輯** | **`src/core/recipe_validator.py`** |
 | 相容層（舊格式橋接） | `src/_compat.py` |
 | 修改 CMG 偵測演算法 | `src/core/cmg_analyzer.py`（⚠️ 核心演算法，謹慎修改） |
@@ -90,7 +92,7 @@ main.py
   RecipeRegistry      src/core/recipe_registry.py   → ~/.mmh/recipes/*.json
   CalibrationManager  src/core/calibration.py        → ~/.mmh/calibrations/*.json
   MeasurementEngine   src/core/measurement_engine.py → 執行 Recipe pipeline
-  BatchRunStore       src/core/batch_run_store.py    → ~/.mmh/runs/*.json
+  BatchRunStore       src/core/batch_run_store.py    → ~/.mmh/runs.db（SQLite，Phase D）
 ```
 
 > **注意**：ValidationWorkspace 與 HistoryWorkspace 已規劃為未來擴充（Phase D），
@@ -476,7 +478,9 @@ pytest tests/ -v
 | `center_y` 精化後 | `compute_metrics()` 在 `records.append(rec)` 前若 `y_upper_edge` 有值則覆寫 `rec.center_y` |
 | `store_meta` | Cards 路徑的 `apply_yedge_subpixel_to_cuts()` 必須 `store_meta=True`（Detail CD 需要） |
 | DataFrame 欄位 | `records_to_dataframe()` 輸出 `cut_id`/`column_id`（不是 `cmg_id`/`col_id`）；13 欄標準順序 |
-| Index recipe_ids | `BatchRunStore` 儲存時 index entry 含 `recipe_ids`；`get_stats_for_recipe()` 以此快速跳過無關記錄 |
+| **BatchRunStore SQLite** | `save()` 回傳 `str batch_id`（非 Path）；`load()`/`delete()` 接受 `batch_id: str`；`list_runs()["file_path"]` 存 batch_id；呼叫方（batch_workspace / report_workspace / klarf_export_dialog）**無需改動** |
+| `_EC_CANONICAL_KEYS` | `recipe_workspace._save_recipe()` 存檔時過濾廢棄 edge_locator_config key，只保留 16 個已知 key |
+| KLARF XREL/YREL | `klarf_exporter` 與 `klarf_writer` 均改用大小寫不敏感查詢（`k.lower() == "xrel"`），防混合大小寫靜默略過 |
 | **KLARF Export YREL 換算** | **`YREL_new = YREL_orig - dy_nm`（負號，Y 軸翻轉，勿改為加號）** |
 | **KLARF Export XREL 換算** | **`XREL_new = XREL_orig + dx_nm`（正號，X 方向一致）** |
 
@@ -524,16 +528,26 @@ pytest tests/ -v
 | 已修復 | annotator.py | draw_overlays_multi 缺 _flag_global_minmax 就地修改警告（m1） | ✅ |
 | 已修復 | preprocessor.py | apply_column_strip_mask 結果全零時無警告（m2） | ✅ |
 | 已修復 | batch_run_store.py | _append_to_index 在 index stale 時用空 list 遺失舊條目（m3） | ✅ |
+| 已修復 | measurement_engine.py | cv2.imwrite 失敗靜默回傳 False，overlay_path 記錄不存在的檔案（H1） | ✅ Round2 |
+| 已修復 | image_loader.py | `img.ptp()` NumPy 2.0 已移除，非 uint8 影像崩潰（H3） | ✅ Round2 |
+| 已修復 | report_workspace.py | Export Dialog tasks 為空時靜默 return，無任何提示（M1） | ✅ Round2 |
+| 已修復 | batch_dialog.py | X 軸 blob 座標轉換與 _rot_blob_to_ori 不一致，差 1px 系統偏移（M2） | ✅ Round2 |
+| 已修復 | file_tree_panel.py | 缺 root_path() 方法，file count 永遠空白（M3） | ✅ Round2 |
+| 已修復 | report_generator.py | fail_list / dataset label 未 html.escape()，特殊字元破版（M4） | ✅ Round2 |
+| 已修復 | recipe_workspace.py | _save_recipe() 廢棄 EC key 永久累積（L1） | ✅ Round2 |
+| 已修復 | klarf_exporter.py / klarf_writer.py | XREL/YREL 大小寫混合時靜默略過（L2） | ✅ Round2 |
+| 已完成 | batch_run_store.py | BatchRunStore 遷移至 SQLite（Phase D 部分） | ✅ Phase D |
 | 待修 | review_workspace.py | Review 工作流程為基礎版，缺 Accept/Reject 操作 | 待修 |
 | 待修 | annotator.py | X-CD 標注 overlay 座標對齊待驗證 | 待修 |
 | Phase C | measure/batch | Worker 數可調已實作，但無上限保護 | 待改善 |
-| Phase D | recipe_registry.py | Recipe 以 JSON 檔案儲存，Phase D 遷移至 SQLite | 規劃中 |
+| Phase D | recipe_registry.py | Recipe 仍以 JSON 檔案儲存，待遷移至 SQLite | 規劃中 |
+| Phase D | — | Plugin 介面、ValidationWorkspace、HistoryWorkspace | 規劃中 |
 
 ---
 
 ## 交接事項
 
-### 目前狀態總結（2026-04-20）
+### 目前狀態總結（2026-04-27）
 
 #### Phase A — 架構升級（已完成）
 
@@ -567,19 +581,20 @@ pytest tests/ -v
 | TC 路徑向量化 | `_refine_yedge_threshold_crossing_batch()` 一次提取 2D strip，向量化 MA + sign-change；預期 4–5× 加速（13000 張 20–30 min → 4–8 min） | `cmg_recipe.py` |
 | Gradient 路徑向量化 | `_refine_yedge_subpixel_batch()` 共用 `_extract_strip()` + `_smooth_strip_2d()` 提取 2D strip，`np.abs(np.diff())` 向量化 abs-gradient，逐欄 peak 偵測 + 二次型內插；預期 2–3× 加速；合計目標 3–6 min | `cmg_recipe.py` |
 
-### Phase B 開發重點（下一步）
+### Phase D 下一步（剩餘項目）
 
-按 vNext 規格書優先度：
-1. **Batch result cache**：`BatchRunRecord` 已持有結果，需將其持久化至磁碟（JSON 或 SQLite），使 export 不需重跑分析
+1. **Recipe 遷移至 SQLite**：`recipe_registry.py` 目前仍用 `~/.mmh/recipes/*.json`，待遷移
 2. **Review 工作流程完善**：ReviewWorkspace 加入 Accept / Reject / Mark False Detect 操作，並記錄 review log
-3. **Workspace UI 細化**：ReportWorkspace 加入嵌入式 matplotlib 直方圖；BatchWorkspace 加入 retry 失敗影像功能
+3. **Plugin 介面**：BaseRecipe 擴充 plugin 載入機制，支援第三方 Recipe
+4. **Worker 上限保護**（Phase C 遺留）：Batch Worker 數量設定缺上限保護
 
 ### 重要檔案路徑
 
 ```
 使用者資料目錄（運行時建立）：
-  ~/.mmh/recipes/          — 儲存的 MeasurementRecipe（JSON）
+  ~/.mmh/recipes/          — 儲存的 MeasurementRecipe（JSON，待 Phase D 遷移）
   ~/.mmh/calibrations/     — 儲存的 CalibrationProfile（JSON）
+  ~/.mmh/runs.db           — 批次執行歷史記錄（SQLite，Phase D 已完成）
 
 專案文件：
   SESSION_LOG.md           — 每次變更的 session 記錄（必填）
