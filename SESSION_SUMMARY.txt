@@ -1,0 +1,195 @@
+================================================================================
+  MMH 專案 — 本次 Session 修改總結
+  Branch: claude/fix-cd-annotation-ui-rUyqz
+  日期: 2026-04-27
+================================================================================
+
+本次 Session 共完成三個任務，分別對應兩個 Bug 修正與一個新功能新增。
+
+
+────────────────────────────────────────────────────────────────────────────────
+任務一：修正 Annotated Image 出現多個 MIN/MAX 標記
+Commit: 165521f
+────────────────────────────────────────────────────────────────────────────────
+
+【問題描述】
+在 Measure 頁面的 Annotated Image 中，理論上整張圖只應出現：
+  - 1 條橘色線（MIN CD，全圖最小值）
+  - 1 條藍色線（MAX CD，全圖最大值）
+  - 其餘為綠色線（Normal CD）
+
+但實際上當使用多張 Measurement Card 時，每張 Card 各自出現一組 MIN/MAX，
+導致圖面出現多條橘色線與藍色線。
+
+【根本原因分析】
+1. cmg_analyzer.py:213 — analyze() 函式在末尾呼叫 _flag_global_minmax()，
+   但這個呼叫僅針對「該次 analyze() 自己產生的量測結果」做全局旗標計算。
+
+2. measure_workspace.py:880 — _analyze_with_cards() 函式對每張 Card 各自
+   獨立呼叫 analyze()，每次都設定自己的 MIN/MAX。
+
+3. measure_workspace.py:924 — cuts_all.extend(cuts) 合併所有 Card 的 cuts
+   後，沒有對合併後的完整清單重新執行全局旗標計算，導致每張 Card 各保留
+   一組 MIN/MAX flag。
+
+4. annotator.py:83-116 — draw_overlays_multi() 渲染多個 layer 時，直接使用
+   各 layer cuts 上既有的 flag，沒有跨 layer 重新計算全局 MIN/MAX。
+
+【修正方式】
+
+修改 1：src/core/annotator.py — draw_overlays_multi()
+  在渲染迴圈前，先跨所有 layer 執行一次全局重新旗標：
+    from .cmg_analyzer import _flag_global_minmax
+    all_ms = [m for cuts, _ in layers for cut in cuts for m in cut.measurements]
+    if all_ms:
+        _flag_global_minmax(all_ms)
+
+修改 2：src/gui/workspaces/measure_workspace.py — _analyze_with_cards()
+  在 for-card 迴圈結束後、return 前，加入全局重新旗標：
+    if cuts_all:
+        from ...core.cmg_analyzer import _flag_global_minmax
+        _flag_global_minmax([m for cut in cuts_all for m in cut.measurements])
+
+【修正效果】
+無論使用幾張 Measurement Card 或幾個 Layer，Annotated Image 上始終只有
+1 條 MIN（橘色）、1 條 MAX（藍色），其餘皆為正常綠色。
+
+
+────────────────────────────────────────────────────────────────────────────────
+任務二：修正 Measure 頁面按鈕與樣式與全域不一致
+Commit: 165521f（同上）
+────────────────────────────────────────────────────────────────────────────────
+
+【問題描述】
+整體 UI 全域樣式定義在 styles.py，但 Measure 頁面的按鈕（包含 Run Single
+綠色按鈕、CollapsibleSection 標題按鈕、Profile 刪除按鈕）外觀與其他頁面不
+一致，看起來全是暗棕色通用樣式，無法呈現應有的綠色、階層色等視覺效果。
+
+【根本原因分析】
+1. 整個應用程式只有 measure_workspace.py:105 設定了
+   right.setObjectName("rightPanel")，其他頁面均未使用。
+
+2. styles.py:684-690 定義了 QFrame#rightPanel QPushButton 規則，
+   其 CSS 優先度為 (0,1,0,2)（= 一個 ID 選擇器 + 兩個類型選擇器）。
+
+3. 具名按鈕規則如 QPushButton#successBtn 的優先度僅為 (0,1,0,1)，
+   低於 QFrame#rightPanel QPushButton。
+
+4. 因此 rightPanel 內所有按鈕（含 successBtn、sectionHeader1/2/3、
+   profileDeleteBtn）均被蓋掉，全部呈現暗棕色通用樣式
+   （background:#f0e8e0; border:1.5px solid #8a7060; color:#4a3828）。
+
+【修正方式】
+
+修改：src/gui/styles.py
+  直接刪除以下三條規則（第 684–690 行）：
+    QFrame#rightPanel QPushButton { ... }
+    QFrame#rightPanel QPushButton:hover { ... }
+    QFrame#rightPanel QPushButton:focus { ... }
+
+  刪除後，rightPanel 內所有按鈕回歸全域樣式，各自正確顯示：
+    - successBtn        → 綠色背景 (#ebf7f0)
+    - sectionHeader1/2/3 → 各自分層顏色
+    - profileDeleteBtn  → 透明底，hover 時顯示危險紅
+
+【修正效果】
+Measure 頁面的按鈕外觀與其他頁面完全統一，符合 styles.py 全域設計規範。
+
+
+────────────────────────────────────────────────────────────────────────────────
+任務三：Batch Run 新增 Abort（中止）功能
+Commit: 618f89a
+────────────────────────────────────────────────────────────────────────────────
+
+【功能描述】
+Batch Run 執行中，使用者可點擊 Abort 按鈕立即中止批次處理，已完成的圖片
+結果保留並顯示部分計數，剩餘尚未開始的任務取消，目前正在子程序中執行的
+任務自然完成後丟棄（Python ProcessPoolExecutor 限制）。
+
+【架構設計】
+
+原有問題：
+  _BatchWorker 與 _MultiBatchWorker 完全沒有取消機制，
+  MeasurementEngine.run_batch() 使用 with ProcessPoolExecutor 一路跑完。
+
+新設計（三層）：
+
+  層 1 — MeasurementEngine（src/core/measurement_engine.py）
+    - run_batch() 新增 abort_check: Callable[[], bool] | None 參數
+    - 將 with ProcessPoolExecutor 改為 try/finally 結構：
+        pool = ProcessPoolExecutor(max_workers=max_workers)
+        try:
+            for future in as_completed(future_map):
+                if abort_check and abort_check():
+                    break   ← 跳出迴圈
+                ... 正常處理 ...
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+                          ← 立即取消 pending futures，不等待 running subprocesses
+    - run_multi_batch() 同樣新增 abort_check，並傳給每次 run_batch()；
+      在每個 dataset 迴圈開頭亦檢查 flag。
+
+  層 2 — Worker Threads（batch_workspace.py）
+    - _BatchWorker 與 _MultiBatchWorker 各新增：
+        self._abort = False
+        def request_abort(self): self._abort = True
+      並將 abort_check=lambda: self._abort 傳給 engine。
+
+  層 3 — BatchWorkspace UI（batch_workspace.py）
+    - Run Batch 按鈕改儲存為 self._run_btn（原為區域變數，無法後續操控）
+    - 新增紅色 Abort 按鈕（self._abort_btn），預設 disabled
+    - 新增 self._aborting: bool = False 追蹤中止狀態
+    - _run_batch() 執行前：Run 鈕 disabled、Abort 鈕 enabled
+    - _on_abort_clicked()：設 _aborting=True，呼叫 worker.request_abort()，
+      按鈕文字改為「Aborting…」
+    - _on_single_finished() / _on_multi_finished()：
+        若 _aborting == True → 顯示琥珀色「Aborted」訊息，附已處理張數；
+                                若已有部分結果則仍儲存至 run store
+        若 _aborting == False → 原有正常完成流程不變
+    - _on_batch_error()：同樣重置按鈕狀態
+
+【UI 行為說明】
+
+  狀態         Run Batch 鈕   Abort 鈕          狀態列
+  ──────────   ────────────   ───────────────   ─────────────────────────────
+  閒置         enabled        disabled          —
+  執行中       disabled       enabled（紅色）    [N/Total] 目前圖片名稱
+  點 Abort 後  disabled       disabled「Aborting…」  Aborting… (finishing current image)
+  Abort 完成   enabled        disabled「Abort」  ⚠ Aborted — N/Total processed
+  正常完成     enabled        disabled「Abort」  ✓ Batch complete — N OK · M failed
+
+【修改檔案】
+  - src/core/measurement_engine.py
+  - src/gui/workspaces/batch_workspace.py
+
+
+================================================================================
+  修改檔案總覽
+================================================================================
+
+  src/core/annotator.py
+    → draw_overlays_multi() 開頭加入跨 layer 全局重新旗標
+
+  src/gui/workspaces/measure_workspace.py
+    → _analyze_with_cards() 迴圈後加入跨 card 全局重新旗標
+
+  src/gui/styles.py
+    → 刪除 QFrame#rightPanel QPushButton 三條覆寫規則
+
+  src/core/measurement_engine.py
+    → run_batch() 新增 abort_check 參數，改用 try/finally + pool.shutdown
+    → run_multi_batch() 新增 abort_check 參數並傳遞
+
+  src/gui/workspaces/batch_workspace.py
+    → _BatchWorker / _MultiBatchWorker 新增 abort flag 與 request_abort()
+    → BatchWorkspace UI 新增 Abort 按鈕、按鈕狀態管理、abort 完成處理
+
+
+================================================================================
+  Git Commits
+================================================================================
+
+  165521f  Fix CD annotation multiple MIN/MAX and Measure page button styling
+  618f89a  Add Abort button to Batch Run
+
+================================================================================
