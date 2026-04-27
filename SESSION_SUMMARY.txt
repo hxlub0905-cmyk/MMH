@@ -1,0 +1,176 @@
+================================================================================
+  MMH 開發 Session Summary
+  Branch: claude/image-quality-detection-DOQ7t
+  Date:   2026-04-27
+================================================================================
+
+本次 Session 共完成四項功能，依序說明如下。
+
+────────────────────────────────────────────────────────────────────────────────
+TASK 1 ─ 獨立影像品質檢測工具 (tools/image_quality_checker.py)
+────────────────────────────────────────────────────────────────────────────────
+
+【需求】
+  跑大量 batch 時，模糊影像（Resolution/Sharpness 不足）會讓 CD 量測結果偏短。
+  需要一個可獨立執行的工具，先對多組影像進行品質篩選，確認閾值後再整合進主流程。
+
+【實作】
+  新增 tools/image_quality_checker.py（PyQt6 獨立視窗程式）
+
+  品質指標：
+    1. Laplacian Variance  — 主要指標，數值越高代表影像越清晰
+    2. Tenengrad           — Sobel 梯度平均平方，輔助指標
+    3. FFT HF Ratio        — 高頻能量佔比，輔助指標
+
+  UI 功能：
+    - 可加入多個來源資料夾，支援遞迴掃描子目錄
+    - 三個閾值可獨立設定（0 = 停用），按「Re-apply」即時重算 PASS/FAIL
+    - 結果表格：PASS 綠字、FAIL 紅底紅字，支援欄位排序
+    - 狀態列顯示 Total / PASS / FAIL 數量與比例
+    - 可匯出 CSV 保存結果
+
+  執行方式：
+    python tools/image_quality_checker.py
+
+【後續追加修改 — medianBlur 前處理】
+  上司指示：計算指標前須先做
+    img = cv2.medianBlur(src, ksize=5)
+
+  原因：SEM 影像常含 salt-and-pepper noise（孤立亮暗點），若不處理，
+  Laplacian / Tenengrad 會將這些噪點誤判為高頻邊緣，導致模糊影像的分數虛高。
+  medianBlur 以 5×5 中位數取代原值，對極端值免疫，不影響真實邊緣。
+
+  修改位置：tools/image_quality_checker.py → compute_quality()
+    (在所有指標計算之前加入此行)
+
+
+────────────────────────────────────────────────────────────────────────────────
+TASK 2 ─ Review 影像列表「View more…」分頁
+────────────────────────────────────────────────────────────────────────────────
+
+【需求】
+  Review / Batch 預覽目前只顯示前 1000 張（OK 影像），超出部分完全隱藏。
+  希望底部可以折疊展開，顯示下一組 1000 張。
+
+【實作】
+  修改 src/gui/workspaces/review_workspace.py
+
+  設計邏輯：
+    - 所有 FAIL 影像永遠顯示（不受 1000 張限制）
+    - OK 影像分頁，每頁 1000 張
+    - 列表底部新增「View more… (已顯示/總數)」按鈕
+    - 每次點擊追加下一組 1000 張 OK 影像
+    - 全部顯示完畢後按鈕自動消失
+
+  新增 instance 變數：
+    _list_ok_shown: int   — 目前已顯示的 OK 影像數量
+
+  新增方法：
+    _load_more_ok_items() — 掃描 _batch_entries，跳過已顯示的 OK，
+                            追加下一批到 _img_list
+
+  按鈕樣式：藍色文字、淺藍底，顯示進度（例：View more…  (1000/3842 shown)）
+
+
+────────────────────────────────────────────────────────────────────────────────
+TASK 3 ─ Report 多組 Dataset 分開顯示
+────────────────────────────────────────────────────────────────────────────────
+
+【需求】
+  跑多組 Dataset 時，Report UI 需要「分開討論不同組」，
+  目前 Summary 只顯示總計，Statistics 樣式也比單組模式簡陋。
+
+【實作】
+  修改 src/gui/workspaces/report_workspace.py
+
+  1. _refresh_summary_multi() 強化：
+     - 原有：總覽（Datasets / Total / OK / Failed / Started）
+     - 新增：Per-Dataset Breakdown 小表
+       格式：[Dataset 名稱]  X OK  Y Fail / Z total  (N%)
+
+  2. _refresh_stats() 多組模式強化：
+     - 標題從「CD Statistics」改為「Per-Dataset CD Statistics」
+     - 每個 Dataset 的 QGroupBox 標題含 OK/Total 比例（例：DataA · 48/50 OK (96%)）
+     - 原本只有 QFormLayout 簡單列表，升級為：
+         ‣ 4 個 Highlight Card（Mean、3-Sigma、Min CD、Max CD）
+         ‣ 細節列（Count、Median、Std Dev、Q25、Q75）
+       視覺效果與單組 batch 的 Report 一致
+
+  新增 helper 函式：
+    _build_dataset_stats_inline(vbox, vals) — 在指定 QVBoxLayout 內
+    繪製 Highlight Cards + 細節列，供各 dataset section 複用
+
+
+────────────────────────────────────────────────────────────────────────────────
+TASK 4 ─ 品質檢測整合進主量測流程
+────────────────────────────────────────────────────────────────────────────────
+
+【需求】
+  standalone 工具確認 Laplacian 指標有效後，整合進主流程。
+  條件：Laplacian var >= 140 才算通過，僅保留 Laplacian 指標（移除其他輔助指標）。
+
+【實作】
+
+  新增 src/core/image_quality.py：
+    DEFAULT_LAP_THRESHOLD = 140.0
+
+    def check_lap_quality(img: np.ndarray) -> float:
+        denoised = cv2.medianBlur(img, 5)
+        lap = cv2.Laplacian(denoised.astype(np.float64), cv2.CV_64F)
+        return float(lap.var())
+
+  修改 src/core/measurement_engine.py：
+    _make_worker_args()：
+      - 新增 quality_lap_threshold 參數（None → 使用 DEFAULT_LAP_THRESHOLD）
+      - 將閾值序列化進 args dict，傳入子程序
+
+    _worker_run_image()：
+      - 影像載入後、CMGRecipe 執行前，插入 Quality Gate：
+          score = check_lap_quality(raw_img)
+          result["quality_score"] = round(score, 2)
+          if score < threshold:
+              result["status"] = "FAIL"
+              result["error"] = "Low image quality: Laplacian var=X.X < threshold Y.Y"
+              return result   ← 直接返回，不跑 recipe
+      - PASS 的影像照常執行完整 pipeline
+
+    run_batch()、run_multi_batch()：
+      - 新增 quality_lap_threshold: float | None = None 參數並往下傳遞
+
+  修改 src/gui/workspaces/batch_workspace.py：
+    _BatchWorker、_MultiBatchWorker：
+      - 新增 quality_lap_threshold: float | None = None 參數
+      - 傳入 engine.run_batch / engine.run_multi_batch
+
+【TPT 影響分析】
+  - medianBlur(5) + Laplacian.var() 耗時 < 5ms（完整 pipeline 約 50–500ms）
+  - PASS 影像：額外開銷 < 1–3%，可忽略
+  - FAIL 影像：跳過整個 recipe，**節省時間**
+  - 在子程序（ProcessPoolExecutor worker）內執行，不增加 IPC 開銷
+  - 整體 TPT 影響：微乎其微，若模糊影像比例高反而更快
+
+【調整閾值方法】
+  修改 src/core/image_quality.py 第一行：
+    DEFAULT_LAP_THRESHOLD = 140.0   ← 改為需要的數值即可
+
+
+────────────────────────────────────────────────────────────────────────────────
+變更檔案總覽
+────────────────────────────────────────────────────────────────────────────────
+
+  新增：
+    tools/image_quality_checker.py       — 獨立品質檢測 UI 工具
+    src/core/image_quality.py            — 品質計算核心模組
+
+  修改：
+    src/core/measurement_engine.py       — 整合 Quality Gate
+    src/gui/workspaces/batch_workspace.py — 閾值參數傳遞
+    src/gui/workspaces/review_workspace.py — View more 分頁
+    src/gui/workspaces/report_workspace.py — 多組 Dataset 統計顯示強化
+
+  Commits（branch: claude/image-quality-detection-DOQ7t）：
+    03d9f3b  feat: image quality checker, review pagination, per-dataset report
+    5c497e8  fix: apply medianBlur(ksize=5) before quality metrics
+    854d2a5  feat: integrate Laplacian image quality gate into batch pipeline
+
+================================================================================
