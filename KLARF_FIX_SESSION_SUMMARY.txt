@@ -1,0 +1,186 @@
+================================================================================
+KLARF 輸出功能修正 — Session Summary
+日期：2026-04-27
+Branch：claude/fix-klarf-measurement-output-1lmHW
+================================================================================
+
+【問題描述】
+載入 KLARF 模板並連動 Measurement 資料後，按下執行輸出顯示「已輸出 0 筆」，
+且輸出的 KLARF 檔案沒有任何座標修改。
+
+================================================================================
+【根因分析過程】
+
+Step 1：釐清輸出為 0 的所有可能原因（依可能性排序）
+
+  原因 1（確認為主因）：KLARF 格式不相容
+    - 現有 parser (klarf_parser.py) 只支援「平坦式 KLARF 1.8」
+    - 實際使用的是「巢狀階層式 KLARF」（KLA Tencor 工具格式）
+    - 關鍵差異：
+        * 平坦式：DefectList N col1 col2 … → EndOfList
+        * 階層式：List DefectList { Columns 42 { int32 COL, … } Data N { rows } }
+    - 因為 parser 找不到 DefectList，defects = []，所以輸出必然 0 筆
+
+  原因 2：_get_image_size 回傳 None
+    - 即使 stem 匹配，若 image_path 在目前環境不存在（換機器、路徑變更），
+      cv2.imread 讀不到圖，defect 被加到 unmatched，不進 matched
+
+  原因 3：Image stem 命名不一致
+    - KLARF 內的 _image_filename 與 batch 跑的 image_path stem 不同
+
+  原因 4：measurements 為空
+    - Batch 全部 FAIL → lookup 空 → 全部 unmatched
+
+  原因 5：MeasurementRecord.from_dict 靜默失敗
+    - try/except 靜默跳過，不進 lookup
+
+Step 2：使用者貼出真實 KLARF 格式確認
+  使用者貼出的格式：
+    Record FileRecord  "1.8"
+    {
+      Record LotRecord "N9U179.1S"
+      {
+        Record WaferRecord "14"
+        {
+          List DefectList
+          {
+            Columns 42 { int32 DEFECTID, int32 XREL, int32 YREL, ...
+                         ImageList IMAGEINFO, ... }
+            Data 3
+            {
+              257 7672524 13692865 … Images 1 { "1.000_00001.jpg" "JPG" 1 "23" } … ;
+            }
+          }
+        }
+      }
+    }
+
+  確認的格式差異（舊 parser vs 實際格式）：
+    1. 舊：startswith("DefectList") → 實際：List DefectList（找不到）
+    2. 舊：欄位名直接列出 → 實際：Columns N { type COL, type COL, … }（帶型別前綴）
+    3. 舊：Data N + EndOfList → 實際：Data N { } 用大括號
+    4. 舊：Image 1 { "file" }  → 實際：Images 1 { "file" "JPG" 1 "23" }（複數且有更多欄位）
+
+================================================================================
+【修正內容】
+
+Commit: bbfebe9
+Files: src/core/klarf_parser.py, src/core/klarf_writer.py, src/core/klarf_exporter.py
+
+── klarf_parser.py ──────────────────────────────────────────────────────────
+
+  1. 自動格式偵測
+     - 讀取第一個非空白行，若 .lower().startswith("record filerecord") → 階層格式
+     - 否則走原本的平坦格式 parser（向下相容）
+
+  2. _parse_hierarchical() 新增
+     - Step 1：掃描 "List DefectList"（case-insensitive）
+     - Step 2：找到 "Columns N {…}" → 呼叫 _parse_column_defs() 取得欄位名（去掉型別前綴）
+     - Step 3：找到 "Data N" → 記錄縮排資訊供 writer 使用
+     - Step 4-5：跳過 "{"，收集 rows 直到 "}"
+     - Step 6：逐行 tokenize，遇到 ";" 結束一筆 defect
+
+  3. _parse_column_defs() 新增
+     - 輸入："int32 DEFECTID,  float XSIZE,  ImageList IMAGEINFO, …"
+     - 輸出：(["DEFECTID", "XSIZE", "IMAGEINFO", …], ["int32", "float", "ImageList", …])
+     - 用逗號分割，每個 part 取第二個 token 作為欄位名
+
+  4. _map_row_tokens() 修改
+     - 原：if tok == "Image"
+     - 改：if tok in ("Image", "Images")   ← 支援 Images 複數
+     - 取第一個 quoted string 作為 _image_filename（忽略後續 "JPG" 等欄位）
+
+  5. hier_prefix / hier_suffix 儲存
+     - hier_prefix：Data N 行之前的所有文字（包含 Columns 定義）→ 供 writer verbatim 還原
+     - hier_suffix：Data 區塊 "}" 以後的所有文字（包含所有收尾大括號）
+     - hier_data_indent / hier_rows_indent：縮排字串
+
+  6. 全程加入 logging.getLogger(__name__) debug log
+
+── klarf_writer.py ──────────────────────────────────────────────────────────
+
+  - write() 新增 format_type 判斷
+  - _build_hierarchical() 新增：
+      output = hier_prefix
+             + f"{data_indent}Data {N}\n"
+             + f"{data_indent}{{\n"
+             + 每筆 row（verbatim serialise，_image_block_raw 照搬）
+             + hier_suffix（含 Data 的 "}" 及所有收尾括號）
+  - 原 _build()（平坦格式）保留不變
+
+── klarf_exporter.py ────────────────────────────────────────────────────────
+
+  - 全程加入詳細 DEBUG log（format 偵測、lookup stems、每筆 defect 比對結果、
+    圖檔讀取失敗訊息）
+
+================================================================================
+【後續新增功能（同 session）】
+
+Commit: （待 push）
+Files: src/core/klarf_exporter.py, src/gui/klarf_export_dialog.py
+
+功能 1：進度條
+  - _ExportWorker 新增 progress = pyqtSignal(int)
+  - KlarfTopNExporter.export() 新增 progress_callback 參數
+  - 關鍵節點發送進度：
+      2%  parse KLARF 前
+      8%  parse 完成
+      12% lookup 完成
+      12-85% 每筆 defect 比對（線性）
+      88% sort 完成
+      92% defect list 建完
+      100% 寫檔完成
+  - Dialog 左側加 QProgressBar（高度 14px，按下執行後顯示，完成後隱藏）
+
+功能 2：影像預覽面板（含十字座標標記）
+  - Dialog 右側改為垂直 QSplitter：上方 Table，下方 ImageViewer
+  - 點選 Table 任一列 → _on_row_selected() → _show_defect_image()
+  - 影像載入邏輯：
+      1. cv2.imread(image_path, GRAYSCALE)
+      2. 若有 overlay_path 且 shape 相符 → 用 overlay 作為底圖
+         否則 → cvtColor(raw, GRAY2BGR)
+      3. 灰色十字（160,160,160）畫在影像中心 (W//2, H//2)
+         → 代表原始 KLARF 座標對應的位置
+      4. 橘色十字（0,140,255）畫在 (center_x, center_y)
+         → 代表 Measurement 量測到的 gap 中心（新座標）
+      5. ImageViewer.set_images(raw=display) + fit_in_view()
+  - preview_rows 新增欄位：image_path, overlay_path, center_x, center_y, image_W, image_H
+  - DefectID 欄 item 存 UserRole data（完整 row dict），Table sort 後仍可正確查詢
+
+Bug 修正 B1：nm_per_pixel 靜默錯誤
+  - 原：raw_px=0 時 nm_per_pixel fallback=1.0，無任何提示
+  - 改：計數 nm_fallback_count，在 dialog 狀態列顯示
+        "⚠ N 筆 nm/px 使用預設值 1.0（座標可能不準）"
+  - _build_lookup 的 entry 新增 overlay_path 欄位
+
+================================================================================
+【已知待討論問題（本 session 未修正）】
+
+  F1：未匹配 defect 的處理策略
+      目前直接丟棄，考慮讓使用者選擇「保留原始座標輸出」
+
+  F2：同一張影像多筆 measurement 的選擇邏輯
+      目前只保留最小（或最大）calibrated_nm，其他 recipe 資料丟失
+
+  F3：輸出 KLARF 無格式驗證
+      _image_block_raw 若為空，輸出會有問題
+
+  B2：_get_image_size 大量圖檔時效能
+      Cache 是 module-level，重啟後清空，大批量第一次跑很慢
+
+================================================================================
+【座標換算備忘】
+
+  影像座標系：左上角原點，Y 軸向下
+  KLARF 座標系：die 左下角原點，Y 軸向上
+  → 兩者 Y 軸方向相反
+
+  換算公式：
+    dx_px = center_x - W/2
+    dy_px = center_y - H/2
+    dx_nm = dx_px * nm_per_pixel
+    dy_nm = dy_px * nm_per_pixel
+    XREL_new = XREL_orig + dx_nm   （X 方向同向）
+    YREL_new = YREL_orig - dy_nm   （Y 方向反向，減號必要）
+
+================================================================================

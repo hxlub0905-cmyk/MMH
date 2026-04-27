@@ -1,23 +1,30 @@
 """KLARF Export Dialog — filter a KLARF to the top-N defects by CD value.
 
 Layout: QSplitter(Horizontal)
-  Left  (~300 px) — file picker, batch source, top-N, output path, status
-  Right           — summary stat cards + preview table
+  Left  (~310 px) — file picker, batch source, top-N, output path, progress, buttons
+  Right           — QSplitter(Vertical)
+                      Top  — summary stat cards + preview table
+                      Bottom — image viewer with crosshairs
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
+
 from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QVBoxLayout, QSplitter,
     QLabel, QPushButton, QSpinBox, QFileDialog,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QGroupBox, QFrame, QMessageBox, QWidget, QSizePolicy,
-    QComboBox,
+    QComboBox, QProgressBar,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor
+
+from .image_viewer import ImageViewer
 
 
 class NumericItem(QTableWidgetItem):
@@ -29,11 +36,12 @@ class NumericItem(QTableWidgetItem):
             return super().__lt__(other)
 
 
-# ── Background workers ────────────────────────────────────────────────────────
+# ── Background worker ─────────────────────────────────────────────────────────
 
 class _ExportWorker(QThread):
     finished = pyqtSignal(dict)
     error    = pyqtSignal(str)
+    progress = pyqtSignal(int)   # 0-100
 
     def __init__(
         self,
@@ -62,6 +70,7 @@ class _ExportWorker(QThread):
                 output_path=self._output_path,
                 ascending=self._ascending,
                 dry_run=self._dry_run,
+                progress_callback=self.progress.emit,
             )
             self.finished.emit(result)
         except Exception as exc:
@@ -71,7 +80,6 @@ class _ExportWorker(QThread):
 # ── Dialog ────────────────────────────────────────────────────────────────────
 
 class KlarfExportDialog(QDialog):
-    """Dialog for exporting a KLARF filtered to top-N defects by CD value."""
 
     def __init__(
         self,
@@ -81,13 +89,14 @@ class KlarfExportDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Export KLARF — Top-N by CD")
-        self.setMinimumSize(1000, 600)
+        self.setMinimumSize(1280, 700)
 
-        self._batch_run  = batch_run
-        self._run_store  = run_store
-        self._klarf_path = ""
+        self._batch_run   = batch_run
+        self._run_store   = run_store
+        self._klarf_path  = ""
         self._output_path = ""
         self._worker: _ExportWorker | None = None
+        self._preview_rows_data: list[dict] = []   # full row dicts incl. image_path
 
         self._build_ui()
         if batch_run is not None:
@@ -99,7 +108,7 @@ class KlarfExportDialog(QDialog):
         self._batch_run = batch_run
         self._update_batch_label()
 
-    # ── Construction ──────────────────────────────────────────────────────────
+    # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
         root = QHBoxLayout(self)
@@ -116,7 +125,7 @@ class KlarfExportDialog(QDialog):
         lv.setContentsMargins(12, 12, 12, 12)
         lv.setSpacing(10)
 
-        # KLARF 檔案列
+        # KLARF 檔案
         klarf_grp = QGroupBox("KLARF 檔案")
         kg = QVBoxLayout(klarf_grp)
         kg.setSpacing(4)
@@ -130,7 +139,7 @@ class KlarfExportDialog(QDialog):
         kg.addWidget(klarf_btn)
         lv.addWidget(klarf_grp)
 
-        # Batch 結果列
+        # Batch 結果
         batch_grp = QGroupBox("Batch 結果")
         bg = QVBoxLayout(batch_grp)
         bg.setSpacing(4)
@@ -149,7 +158,7 @@ class KlarfExportDialog(QDialog):
         bg.addWidget(hist_btn)
         lv.addWidget(batch_grp)
 
-        # Top N + 升/降冪
+        # 篩選條件
         topn_grp = QGroupBox("篩選條件")
         tg = QVBoxLayout(topn_grp)
         tg.setSpacing(4)
@@ -171,10 +180,6 @@ class KlarfExportDialog(QDialog):
         self._sort_combo.addItem("最大 CD 優先（降冪）", False)
         sort_row.addWidget(self._sort_combo, stretch=1)
         tg.addLayout(sort_row)
-
-        hint_lbl = QLabel("取前 N 顆最小/最大 Y-CD 位置")
-        hint_lbl.setStyleSheet("color:#9a8a7a; font-size:10px;")
-        tg.addWidget(hint_lbl)
         lv.addWidget(topn_grp)
 
         # 輸出路徑
@@ -191,11 +196,19 @@ class KlarfExportDialog(QDialog):
         og.addWidget(out_btn)
         lv.addWidget(out_grp)
 
-        # 狀態標籤
+        # 狀態 + 進度條
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
         self._status_label.setStyleSheet("color:#a05020; font-size:11px;")
         lv.addWidget(self._status_label)
+
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setFixedHeight(14)
+        self._progress_bar.setTextVisible(True)
+        self._progress_bar.setVisible(False)
+        lv.addWidget(self._progress_bar)
 
         lv.addStretch()
 
@@ -225,15 +238,23 @@ class KlarfExportDialog(QDialog):
         cards_hl = QHBoxLayout(cards_w)
         cards_hl.setContentsMargins(0, 0, 0, 0)
         cards_hl.setSpacing(8)
-
-        self._stat_selected  = self._make_stat_card("—", "已選取")
-        self._stat_min_cd    = self._make_stat_card("—", "最小 Y-CD (nm)")
-        self._stat_nth_cd    = self._make_stat_card("—", "第 N 筆 Y-CD (nm)")
+        self._stat_selected = self._make_stat_card("—", "已選取")
+        self._stat_min_cd   = self._make_stat_card("—", "最小 Y-CD (nm)")
+        self._stat_nth_cd   = self._make_stat_card("—", "第 N 筆 Y-CD (nm)")
         for card in (self._stat_selected, self._stat_min_cd, self._stat_nth_cd):
             cards_hl.addWidget(card[0])
         rv.addWidget(cards_w)
 
-        # Preview table
+        # Vertical splitter: table (top) + image viewer (bottom)
+        v_split = QSplitter(Qt.Orientation.Vertical)
+        v_split.setChildrenCollapsible(False)
+
+        # ── Table ──────────────────────────────────────────────────────────────
+        table_w = QWidget()
+        tv = QVBoxLayout(table_w)
+        tv.setContentsMargins(0, 0, 0, 0)
+        tv.setSpacing(4)
+
         self._table = QTableWidget(0, 7)
         self._table.setHorizontalHeaderLabels([
             "DefectID", "影像", "Y-CD (nm)",
@@ -244,20 +265,52 @@ class KlarfExportDialog(QDialog):
         self._table.setSortingEnabled(True)
         self._table.setSelectionBehavior(self._table.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(self._table.EditTrigger.NoEditTriggers)
-        rv.addWidget(self._table, stretch=1)
+        self._table.itemSelectionChanged.connect(self._on_row_selected)
 
-        # Coordinate note
         coord_note = QLabel(
-            "座標換算說明：Step1 pixel offset（以影像中心為基準）→ Step2 換算 nm → Step3 更新 KLARF 座標。"
-            "影像 Y 軸向下，KLARF Y 軸向上，兩者方向相反，因此 YREL 使用<b>減號</b>（YREL_new = YREL_orig − dy_nm）。"
+            "座標換算：pixel offset（影像中心為基準）→ nm → 更新 KLARF 座標。"
+            "YREL 使用<b>減號</b>（YREL_new = YREL_orig − dy_nm）。"
+            "  點選列可預覽影像。"
         )
         coord_note.setWordWrap(True)
         coord_note.setStyleSheet("color:#9a8a7a; font-size:10px;")
         coord_note.setTextFormat(Qt.TextFormat.RichText)
-        rv.addWidget(coord_note)
+
+        tv.addWidget(self._table, stretch=1)
+        tv.addWidget(coord_note)
+        v_split.addWidget(table_w)
+
+        # ── Image viewer panel ─────────────────────────────────────────────────
+        img_w = QWidget()
+        iv = QVBoxLayout(img_w)
+        iv.setContentsMargins(0, 4, 0, 0)
+        iv.setSpacing(4)
+
+        self._img_info_label = QLabel("← 點選上方列以預覽影像")
+        self._img_info_label.setStyleSheet("color:#9a8a7a; font-size:10px;")
+        self._img_info_label.setWordWrap(True)
+
+        # Legend
+        legend = QLabel(
+            "<span style='color:#a0a0a0;'>■</span> 灰十字 = 原始位置（影像中心）　"
+            "<span style='color:#ff8c00;'>■</span> 橘十字 = 量測中心（新座標）"
+        )
+        legend.setTextFormat(Qt.TextFormat.RichText)
+        legend.setStyleSheet("font-size:10px;")
+
+        self._img_viewer = ImageViewer()
+        self._img_viewer.setMinimumHeight(200)
+
+        iv.addWidget(self._img_info_label)
+        iv.addWidget(legend)
+        iv.addWidget(self._img_viewer, stretch=1)
+        v_split.addWidget(img_w)
+
+        v_split.setSizes([350, 280])
+        rv.addWidget(v_split, stretch=1)
 
         splitter.addWidget(right)
-        splitter.setSizes([310, 690])
+        splitter.setSizes([310, 970])
         root.addWidget(splitter)
 
     def _make_stat_card(self, val: str, label: str) -> tuple[QFrame, QLabel]:
@@ -266,7 +319,7 @@ class KlarfExportDialog(QDialog):
         cl = QVBoxLayout(card)
         cl.setContentsMargins(12, 10, 12, 10)
         cl.setSpacing(2)
-        val_lbl = QLabel(val)
+        val_lbl  = QLabel(val)
         val_lbl.setStyleSheet("font-size:22px; font-weight:500; color:#3f3428; background:transparent;")
         desc_lbl = QLabel(label)
         desc_lbl.setStyleSheet("font-size:11px; color:#9a8a7a; background:transparent;")
@@ -384,29 +437,37 @@ class KlarfExportDialog(QDialog):
         )
         self._worker.finished.connect(lambda r: self._on_done(r, dry_run))
         self._worker.error.connect(self._on_error)
+        self._worker.progress.connect(self._progress_bar.setValue)
+
+        self._progress_bar.setValue(0)
+        self._progress_bar.setVisible(True)
+        self._status_label.setText("處理中…")
         self._worker.start()
 
     @pyqtSlot(dict)
     def _on_done(self, result: dict, dry_run: bool) -> None:
+        self._progress_bar.setVisible(False)
         self._preview_btn.setEnabled(True)
         self._export_btn.setEnabled(True)
 
-        # Update stat cards
         self._stat_selected[1].setText(str(result.get("exported_count", 0)))
         mn = result.get("min_ycd_nm", 0.0)
         mx = result.get("max_ycd_nm", 0.0)
         self._stat_min_cd[1].setText(f"{mn:.2f}")
         self._stat_nth_cd[1].setText(f"{mx:.2f}")
 
-        # Unmatched warning
+        # Status warnings
+        warnings: list[str] = []
         uc = result.get("unmatched_count", 0)
         if uc:
-            self._status_label.setText(f"⚠ {uc} 筆 defect 找不到對應影像")
-        else:
-            self._status_label.setText("")
+            warnings.append(f"⚠ {uc} 筆 defect 找不到對應影像")
+        fb = result.get("nm_fallback_count", 0)
+        if fb:
+            warnings.append(f"⚠ {fb} 筆 nm/px 使用預設值 1.0（座標可能不準）")
+        self._status_label.setText("　".join(warnings))
 
-        # Fill table
-        self._fill_table(result.get("preview_rows", []), mn)
+        self._preview_rows_data = result.get("preview_rows", [])
+        self._fill_table(self._preview_rows_data, mn)
 
         if not dry_run:
             QMessageBox.information(
@@ -419,8 +480,10 @@ class KlarfExportDialog(QDialog):
 
     @pyqtSlot(str)
     def _on_error(self, msg: str) -> None:
+        self._progress_bar.setVisible(False)
         self._preview_btn.setEnabled(True)
         self._export_btn.setEnabled(True)
+        self._status_label.setText("")
         QMessageBox.critical(self, "錯誤", f"匯出失敗：\n{msg}")
 
     def _fill_table(self, rows: list[dict], global_min: float) -> None:
@@ -432,23 +495,28 @@ class KlarfExportDialog(QDialog):
             r = self._table.rowCount()
             self._table.insertRow(r)
 
-            def _nitem(v: Any, fmt: str = "") -> QTableWidgetItem:
+            def _nitem(v: Any, fmt: str = "") -> NumericItem:
                 txt = f"{v:{fmt}}" if fmt else str(v)
                 item = NumericItem(txt)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 return item
 
-            ycd = float(row.get("ycd_nm", 0.0))
+            ycd    = float(row.get("ycd_nm", 0.0))
             is_min = abs(ycd - global_min) < 1e-9
 
+            id_item = QTableWidgetItem(str(row.get("defect_id", "")))
+            id_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            # Store full row data for image viewer lookup (survives table sort)
+            id_item.setData(Qt.ItemDataRole.UserRole, row)
+
             items = [
-                QTableWidgetItem(str(row.get("defect_id", ""))),
+                id_item,
                 QTableWidgetItem(str(row.get("image_stem", ""))),
                 _nitem(ycd, ".2f"),
                 _nitem(row.get("xrel_orig", 0), ".0f"),
-                _nitem(row.get("xrel_new", 0), ".0f"),
+                _nitem(row.get("xrel_new",  0), ".0f"),
                 _nitem(row.get("yrel_orig", 0), ".0f"),
-                _nitem(row.get("yrel_new", 0), ".0f"),
+                _nitem(row.get("yrel_new",  0), ".0f"),
             ]
             for col, item in enumerate(items):
                 if is_min:
@@ -457,3 +525,72 @@ class KlarfExportDialog(QDialog):
 
         self._table.setSortingEnabled(True)
         self._table.resizeColumnsToContents()
+
+    # ── Image viewer ──────────────────────────────────────────────────────────
+
+    @pyqtSlot()
+    def _on_row_selected(self) -> None:
+        sel = self._table.selectedItems()
+        if not sel:
+            return
+        row_data = self._table.item(sel[0].row(), 0).data(Qt.ItemDataRole.UserRole)
+        if row_data:
+            self._show_defect_image(row_data)
+
+    def _show_defect_image(self, row_data: dict) -> None:
+        image_path   = row_data.get("image_path", "")
+        overlay_path = row_data.get("overlay_path")
+        center_x     = float(row_data.get("center_x", 0))
+        center_y     = float(row_data.get("center_y", 0))
+        W            = int(row_data.get("image_W", 0))
+        H            = int(row_data.get("image_H", 0))
+        defect_id    = row_data.get("defect_id", "")
+        stem         = row_data.get("image_stem", "")
+
+        orig_x, orig_y = W // 2, H // 2
+
+        self._img_info_label.setText(
+            f"DefectID: {defect_id}  |  影像: {stem}  |  "
+            f"灰十字=原始 ({orig_x}, {orig_y})  |  "
+            f"橘十字=量測中心 ({int(center_x)}, {int(center_y)})"
+        )
+
+        if not image_path:
+            self._img_viewer.clear()
+            self._img_info_label.setText(f"⚠ 無影像路徑（DefectID: {defect_id}）")
+            return
+
+        raw_gray = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        if raw_gray is None:
+            self._img_viewer.clear()
+            self._img_info_label.setText(f"⚠ 無法讀取影像：{image_path}")
+            return
+
+        # Build display image (BGR): overlay if available, else raw
+        if overlay_path:
+            display = cv2.imread(overlay_path)
+            if display is None or display.shape[:2] != raw_gray.shape[:2]:
+                display = cv2.cvtColor(raw_gray, cv2.COLOR_GRAY2BGR)
+        else:
+            display = cv2.cvtColor(raw_gray, cv2.COLOR_GRAY2BGR)
+
+        # Draw crosshairs
+        _draw_crosshair(display, orig_x,         orig_y,         color=(160, 160, 160), size=28)
+        _draw_crosshair(display, int(center_x),  int(center_y),  color=(0,  140, 255),  size=28)
+
+        self._img_viewer.set_images(raw=display)
+        self._img_viewer.fit_in_view()
+
+
+# ── Module helpers ────────────────────────────────────────────────────────────
+
+def _draw_crosshair(
+    img_bgr: np.ndarray,
+    cx: int, cy: int,
+    color: tuple[int, int, int],
+    size: int = 25,
+    thickness: int = 2,
+) -> None:
+    h, w = img_bgr.shape[:2]
+    cv2.line(img_bgr, (max(0, cx - size), cy),  (min(w - 1, cx + size), cy),  color, thickness)
+    cv2.line(img_bgr, (cx, max(0, cy - size)),   (cx, min(h - 1, cy + size)), color, thickness)
