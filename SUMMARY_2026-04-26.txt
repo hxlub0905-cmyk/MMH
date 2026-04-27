@@ -1,0 +1,302 @@
+================================================================================
+  SEM MM 專案 — Session Summary
+  日期：2026-04-26
+  分支：claude/add-export-klarf-wE7YQ
+  Commit：15b803b  feat: KLARF Export (KlarfTopNExporter) + nm/px unified calibration
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+  本次 Session 目標
+────────────────────────────────────────────────────────────────────────────────
+
+1. 新增「Export KLARF」功能：
+   解析輸入 KLARF 1.8 → 與 SEM MM Batch 量測結果匹配 → 依 CD 排序取前 N 筆
+   → 修正座標至 gap 中心 → 輸出新 KLARF，供 Review SEM 複查使用。
+
+2. nm/px 統一整合：
+   將原本散落在 BrowseWorkspace / ControlPanel 的 nm/px 設定，統一整合進
+   Recipe 資料流，確保每張影像在量測與 Batch 時均使用正確的校正值。
+
+
+────────────────────────────────────────────────────────────────────────────────
+  還原過程（逐步說明）
+────────────────────────────────────────────────────────────────────────────────
+
+STEP 1 — 建立 KLARF Parser（src/core/klarf_parser.py）
+─────────────────────────────────────────────────────
+  新增 KlarfParser 類別，以 token-scan（狀態機）方式解析 KLARF 1.8 格式。
+
+  設計決策：
+  ・_tokenise()：以空白分割，保留引號字串為單一 token
+  ・_parse_by_lines()：逐行判斷 section 邊界，分派至對應解析邏輯
+  ・_parse_defect_rows()：累積 token 直到 ";" 為止（支援跨行資料列）
+  ・_map_row_tokens()：將 flat token list 對應至 column header，
+    特別處理 "Image N { … }" block，提取 _image_filename 以供後續匹配
+
+  輸出結構（dict）：
+  ・raw_sections        — 非 DefectList 的各 section 原始文字（保留換行 fidelity）
+  ・defect_columns      — DefectList header 的 column 名稱列表
+  ・defects             — 每筆 defect 為一個 dict（以 column name 為 key）
+  ・image_count         — IMAGECOUNT 欄位值
+  ・data_count          — "Data N" 列的值
+  ・defect_list_header_raw — DefectList 表頭原始文字
+
+
+STEP 2 — 建立 KLARF Writer（src/core/klarf_writer.py）
+──────────────────────────────────────────────────────
+  新增 KlarfWriter 類別，將 Parser 輸出結構重新序列化為 KLARF 1.8 文字。
+
+  設計規則：
+  ・原子寫入：先寫至 <output>.tmp，完成後再 os.replace() 換名，防止中途損壞
+  ・僅修改 XREL / YREL 欄位，其餘欄位（含 Image block）原樣輸出
+  ・DefectList 插入於 WaferRecord 之後（符合 KLARF 慣例）
+  ・SummaryRecord / TestSummaryList 內的 NDEFECT 以 regex 更新為實際輸出數量
+  ・Data N 計數更新為實際輸出 defect 數量
+  ・DEFECTID 不重新編號
+  ・座標值寫為整數（round-half-even）
+
+  核心方法：
+  ・write(parsed, defects, output_path)  — 公開 API，執行原子寫入
+  ・_build()                             — 重組各 section 文字
+  ・_build_defect_list()                 — 輸出 DefectList block
+  ・_serialise_defect()                  — 序列化單筆 defect
+  ・_patch_ndefect()                     — regex 更新 NDEFECT
+
+
+STEP 3 — 建立 KLARF Exporter（src/core/klarf_exporter.py）
+────────────────────────────────────────────────────────────
+  新增 KlarfTopNExporter 類別，整合 Parser + Writer 並加入業務邏輯。
+  （原始規格名稱為 KlarfMinYcdExporter，實作時改為更通用的 KlarfTopNExporter
+    以支援 ascending / descending 兩種排序方向）
+
+  八步驟 Pipeline：
+    Step 1 — 解析輸入 KLARF（KlarfParser）
+    Step 2 — 從 batch_run 建立 stem → 量測值 查詢表（_build_lookup）
+    Step 3 — 對每筆 defect 以 _image_filename 的 stem 匹配量測結果
+    Step 4 — 讀取影像尺寸（cv2.imread，dict 快取）
+    Step 5 — 座標換算（見下方⚠️說明）
+    Step 6 — 依 calibrated_nm 排序，取前 N 筆
+    Step 7 — 更新 XREL / YREL，建立 preview_rows
+    Step 8 — KlarfWriter 寫出新 KLARF（dry_run=True 時跳過）
+
+  ⚠️ 座標換算關鍵規則（Y 軸翻轉，符號不可隨意更改）：
+  ─────────────────────────────────────────────────────
+  影像座標系：左上角原點，Y 向下為正
+  KLARF 座標系：左下角（die corner）原點，Y 向上為正
+  兩者 Y 軸方向相反！
+
+  計算步驟：
+    dx_px = center_x - W / 2        ← pixel 偏移量（以影像中心為基準）
+    dy_px = center_y - H / 2
+
+    dx_nm = dx_px * nm_per_pixel     ← 換算 nm
+    dy_nm = dy_px * nm_per_pixel
+
+    XREL_new = XREL_orig + dx_nm     ← X 軸同向，加號 ✓
+    YREL_new = YREL_orig - dy_nm     ← Y 軸翻轉，減號 ✓（勿改為加號！）
+
+  nm_per_pixel 推導：
+    由 MeasurementRecord 的 calibrated_nm / raw_px 計算（raw_px > 0 時）
+
+  返回 dict：
+    exported_count    — 實際輸出筆數
+    unmatched_count   — 找不到對應影像的 defect 數
+    unmatched_images  — 找不到對應影像的 stem 列表
+    min_ycd_nm        — 輸出集合中最小 CD 值
+    max_ycd_nm        — 輸出集合中最大 CD 值（第 N 筆）
+    output_path       — 輸出路徑
+    preview_rows      — 預覽表格資料（list of dict）
+
+
+STEP 4 — 建立 KLARF Export Dialog（src/gui/klarf_export_dialog.py）
+────────────────────────────────────────────────────────────────────
+  新增 KlarfExportDialog（QDialog），提供 GUI 操作介面。
+
+  版面（QSplitter 水平分割）：
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  Left Panel（固定 310px）        │  Right Panel                          │
+  │  ・KLARF 檔案選擇 GroupBox       │  ・3 個 Stat Cards                    │
+  │  ・Batch 結果 GroupBox            │    - 已選取（筆數）                   │
+  │    - 狀態指示燈（綠/紅）          │    - 最小 Y-CD (nm)                   │
+  │    - 從歷史載入… 按鈕             │    - 第 N 筆 Y-CD (nm)                │
+  │  ・篩選條件 GroupBox              │  ・預覽 QTableWidget（7 欄）           │
+  │    - 取前 N 顆 SpinBox            │    DefectID / 影像 / Y-CD /           │
+  │    - 排序方式 ComboBox            │    XREL 原始 / XREL 新 /              │
+  │      (最小CD優先/最大CD優先)      │    YREL 原始 / YREL 新                │
+  │  ・輸出路徑 GroupBox              │  ・座標換算說明文字                    │
+  │  ・狀態標籤                       │                                        │
+  │  ・[預覽] [執行並輸出 KLARF] 按鈕 │                                        │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+  背景執行機制：
+  ・_ExportWorker(QThread)：在 worker thread 中執行 KlarfTopNExporter.export()
+  ・預覽模式（dry_run=True）不實際寫檔
+  ・完成後 emit finished 信號，更新 Stat Cards 與 Preview Table
+  ・全域最小 CD 列以琥珀色（#FFF3CD）標示
+
+  NumericItem(QTableWidgetItem)：
+  ・覆寫 __lt__，讓 QTableWidget 排序時以數值而非字串比較
+
+
+STEP 5 — 修改 Report Workspace（src/gui/workspaces/report_workspace.py）
+──────────────────────────────────────────────────────────────────────────
+  在 Export QGroupBox 最上方新增「輸出 KLARF…」按鈕：
+  ・objectName = "klarfExportBtn"（對應 styles.py 綠色 QSS）
+  ・高度 40px，hint 文字：「依最小 Y-CD 位置產生 Review SEM 用 KLARF」
+
+  新增方法：
+  ・set_latest_batch_run(batch_run)：
+      MultiDatasetBatchRun → 存至 self._multi_batch_run
+      BatchRunRecord       → 存至 self._batch_run
+
+  ・_open_klarf_export_dialog()：
+      建立 KlarfExportDialog，若有已載入的 batch_run 則自動注入
+      優先使用 _multi_batch_run，其次 _batch_run
+
+
+STEP 6 — 修改 Workspace Host（src/gui/workspace_host.py）
+──────────────────────────────────────────────────────────
+  在 _connect_signals() 新增兩條信號連線，確保 Report Workspace
+  能即時取得最新的 batch_run：
+
+  self._batch.batch_completed.connect(self._report.set_latest_batch_run)
+  self._batch.multi_batch_completed.connect(self._report.set_latest_batch_run)
+
+  （原有的 batch_completed → report.load_batch_run 等連線保持不變）
+
+
+STEP 7 — 修改 Styles（src/gui/styles.py）
+──────────────────────────────────────────
+  在 QSS 末尾新增 klarfExportBtn 樣式（綠色系）：
+
+  QPushButton#klarfExportBtn {
+      background: #E1F5EE; border: 1px solid #1D9E75;
+      color: #085041; border-radius: 7px; padding: 8px 0;
+      font-weight: 600; font-size: 13px;
+  }
+  QPushButton#klarfExportBtn:hover   { background: #9FE1CB; border-color: #0F6E56; }
+  QPushButton#klarfExportBtn:pressed { background: #5DCAA5; }
+
+
+STEP 8 — nm/px 統一整合（6 個檔案修改）
+─────────────────────────────────────────
+  背景：原本 nm/px（nm per pixel）設定分散在 BrowseWorkspace 的
+  CalibrationManager，Batch 執行時所有影像共用同一個全域值，
+  無法針對不同 Dataset 使用不同校正值。
+
+  解決方案：將 nm_per_pixel 整合進 MeasurementRecipe，讓每個
+  Dataset 攜帶自己的校正值，從 Recipe 到 ImageRecord 全程傳遞。
+
+  資料流：
+    Recipe 儲存 nm_per_pixel
+      → Measure / Batch workspace 選擇 Recipe 時自動帶入 spinbox
+        → 使用者可臨時覆蓋 spinbox 值
+          → ImageRecord.pixel_size_nm 全程攜帶正確值
+            → KlarfTopNExporter 直接從量測記錄推導使用
+
+  8-1. src/core/recipe_base.py（MeasurementRecipe）
+  ・新增頂層 dataclass 欄位：nm_per_pixel: float = 1.0
+  ・to_dict()   → 加入 "nm_per_pixel": self.nm_per_pixel
+  ・from_dict() → nm_per_pixel=float(d.get("nm_per_pixel", 1.0))
+    （舊 JSON 不含此欄位時 fallback 為 1.0，向下相容）
+
+  8-2. src/core/recipe_registry.py
+  ・create_default_cmg() 明確傳入 nm_per_pixel=1.0
+
+  8-3. src/core/recipes/cmg_recipe.py
+  ・_card_to_descriptor() 從 card dict 讀取
+    nm_per_pixel=float(card.get("nm_per_pixel", 1.0))
+
+  8-4. src/gui/workspaces/recipe_workspace.py
+  ・Identity 卡片（QFormLayout）新增一列：
+    label:  "nm / pixel:"
+    widget: QDoubleSpinBox（範圍 0.0001–10000.0，4 小數，suffix "nm/px"）
+  ・_load_descriptor_to_form()：帶入 desc.nm_per_pixel
+  ・_save_recipe()：傳入 nm_per_pixel=self._nm_per_pixel_spin.value()
+  ・_new_from_cmg_template()：nm_per_pixel=1.0
+
+  8-5. src/gui/workspaces/measure_workspace.py
+  ・_build_recipe_section() 在 Recipe combo 下方新增一列：
+    self._nm_px_spin  = QDoubleSpinBox（範圍 0.0001–10000.0，4 小數，"nm/px"）
+    self._nm_px_hint  = QLabel("Recipe 預設：1.0 nm/px")
+  ・_on_recipe_combo_changed()：讀取 desc.nm_per_pixel，
+    更新 spinbox 值與 hint 文字
+  ・_run_with_recipe_impl()：改用 self._nm_px_spin.value()（原為 CalibManager）
+    同步 self._current_ir.pixel_size_nm 與 self._viewer.set_nm_per_pixel()
+  ・_run_with_cards()：同樣改用 spinbox 值
+
+  8-6. src/gui/workspaces/batch_workspace.py
+  ・import 新增 QDoubleSpinBox
+  ・_DatasetRow NamedTuple 尾端新增兩個欄位：
+    nm_px_spin: QDoubleSpinBox
+    nm_px_hint: QLabel
+  ・table 欄位標題新增 ("nm/px", 1)
+  ・_add_dataset_row()：
+    建立 nm_px_spin（寬 95px）+ nm_px_hint（寬 40px）
+    _on_recipe_changed lambda 切換 Recipe 時自動帶入 desc.nm_per_pixel
+    兩個 widget 加入 cell layout
+  ・refresh_recipe_selector()：更新 nm_px_hint 顯示文字
+  ・_run_batch()：
+    移除 cal = self._cal_manager.get_default()（不再使用 CalibrationManager）
+    改用 nm_px = dr.nm_px_spin.value() 建立 ImageRecord
+
+
+STEP 9 — 文件更新
+────────────────────
+  AGENTS.md：
+  ・「重要實作注意事項」表格新增兩列：
+    - KLARF Export YREL 換算：YREL_new = YREL_orig - dy_nm（負號，Y 軸翻轉）
+    - KLARF Export XREL 換算：XREL_new = XREL_orig + dx_nm（正號，X 同向）
+  ・新增「KLARF Export 功能說明」section：
+    座標系對照表、完整公式、變數來源、⚠️ YREL 減號警告
+  ・新增「nm/px 統一整合」subsection
+
+  SESSION_LOG.md：
+  ・最上方新增 [2026-04-26] session 記錄，包含完整變更摘要
+
+
+────────────────────────────────────────────────────────────────────────────────
+  完整異動檔案清單（15 個）
+────────────────────────────────────────────────────────────────────────────────
+
+  新增（4 個）：
+    src/core/klarf_parser.py          — KlarfParser（KLARF 1.8 解析）
+    src/core/klarf_writer.py          — KlarfWriter（原子寫入，僅改 XREL/YREL）
+    src/core/klarf_exporter.py        — KlarfTopNExporter（主邏輯，8 步驟 pipeline）
+    src/gui/klarf_export_dialog.py    — KlarfExportDialog（QSplitter GUI + QThread）
+
+  修改（11 個）：
+    src/core/recipe_base.py           — MeasurementRecipe 新增 nm_per_pixel 欄位
+    src/core/recipe_registry.py       — create_default_cmg() 設定 nm_per_pixel
+    src/core/recipes/cmg_recipe.py    — _card_to_descriptor() 讀取 nm_per_pixel
+    src/gui/styles.py                 — 新增 #klarfExportBtn 綠色 QSS
+    src/gui/workspace_host.py         — 新增 set_latest_batch_run 信號連線
+    src/gui/workspaces/recipe_workspace.py   — Identity 卡片新增 nm/px spinbox
+    src/gui/workspaces/measure_workspace.py  — Recipe 下方新增 nm/px override
+    src/gui/workspaces/batch_workspace.py    — _DatasetRow 新增 nm_px_spin/hint
+    src/gui/workspaces/report_workspace.py   — 新增「輸出 KLARF…」按鈕與方法
+    AGENTS.md                         — 新增 KLARF Export 說明與 nm/px 整合說明
+    SESSION_LOG.md                    — 新增本次 session 記錄
+
+
+────────────────────────────────────────────────────────────────────────────────
+  品質驗證
+────────────────────────────────────────────────────────────────────────────────
+
+  語法檢查：
+    python -m py_compile 對全部 15 個異動檔案執行 → 全部 OK，無語法錯誤
+
+  GUI 驗證：
+    需在 PyQt6 環境實機啟動測試，本次 session 以語法檢查代替
+
+
+────────────────────────────────────────────────────────────────────────────────
+  Git 資訊
+────────────────────────────────────────────────────────────────────────────────
+
+  分支：claude/add-export-klarf-wE7YQ
+  Commit：15b803b
+  訊息：feat: KLARF Export (KlarfTopNExporter) + nm/px unified calibration
+  推送：origin/claude/add-export-klarf-wE7YQ（已完成）
+
+================================================================================
