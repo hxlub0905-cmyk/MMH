@@ -641,6 +641,11 @@ class ReportWorkspace(QWidget):
             ))
 
         if not tasks:
+            QMessageBox.information(
+                self,
+                "未選擇任何輸出格式",
+                "請至少勾選一種匯出格式（Excel、JSON、HTML 或圖片）。",
+            )
             return
 
         # Run all tasks in background with a progress dialog

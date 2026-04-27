@@ -154,9 +154,9 @@ Browse → Recipe → Validate → Measure → Batch → Review → Report → H
 
 ```
 ~/.mmh/
-  recipes/          — 儲存的 MeasurementRecipe（JSON 格式）
+  recipes/          — 儲存的 MeasurementRecipe（JSON 格式，待 Phase D 遷移至 SQLite）
   calibrations/     — 儲存的 CalibrationProfile（JSON 格式）
-  runs/             — 批次執行歷史記錄（JSON 格式，BatchRunRecord / MultiDatasetBatchRun）
+  runs.db           — 批次執行歷史記錄（SQLite，Phase D 已完成；舊版 runs/*.json 不再使用）
 ```
 
 ---
@@ -177,7 +177,7 @@ MMH/
 │   │   ├── recipe_base.py           # BaseRecipe 抽象介面 + MeasurementRecipe + PipelineResult
 │   │   ├── recipe_registry.py       # RecipeRegistry（~/.mmh/recipes/*.json）
 │   │   ├── measurement_engine.py    # MeasurementEngine（單張 + batch）
-│   │   ├── batch_run_store.py       # BatchRunStore（持久化 ~/.mmh/runs/、歷史統計）★ Phase B
+│   │   ├── batch_run_store.py       # BatchRunStore（SQLite ~/.mmh/runs.db、歷史統計、WAL 模式）★ Phase D
 │   │   ├── recipe_validator.py      # RecipeValidator（黃金樣品驗證、Bias/3σ 統計）★ Phase B
 │   │   ├── recipes/
 │   │   │   └── cmg_recipe.py        # CMGRecipe（包裝 CMG 演算法，不修改原始碼）
@@ -270,7 +270,8 @@ pytest tests/test_history.py             # 歷史統計（4 項）
 | Bug Fix Series | ✅ 完成（2026-04-23） | CD 計算一致性（bbox edge / fallback / 精化 center_y）、Cards 路徑修正（bbox / Detail CD）、Review 批次導航（> 1000 張）、Duplicate Recipe、Edge Locator UX 提示、Mask 即時更新、歷史查詢效能（recipe_ids fast-skip）、CSV/Excel 欄位重命名（cut_id/column_id） |
 | Phase C | 部分完成（2026-04-23） | Batch 即時 Overlay 輸出、TC 路徑向量化（4–5×）、Gradient 路徑向量化（2–3×，13000 張目標 3–6 min）；Worker 上限保護、X-CD 標注修正待完成 |
 | Bug Fix C1–C4/M1–M7/m1–m3 | ✅ 完成（2026-04-24） | bbox tuple 還原、Windows 路徑正規化、end_time finally 保證、Detail CD fallback 對齊、全域 MIN/MAX、LRU 快取上限、進度條重置、dropna 防 NaN、測試 key 更新等 14 項修復 |
-| Phase D | 規劃中 | Recipe 遷移至 SQLite、Plugin 介面、ValidationWorkspace、HistoryWorkspace |
+| Bug Fix Round2 | ✅ 完成（2026-04-27） | H1 cv2.imwrite 回傳值驗證、H3 NumPy 2.0 ptp() 移除、M1 無任務 QMessageBox 警告、M2 X-CD blob _rot_blob_to_ori 修正、M3 FileTreePanel root_path()、M4 html.escape XSS 防護、L1 _EC_CANONICAL_KEYS 過濾廢棄鍵、L2 KLARF XREL/YREL 大小寫不敏感查詢 |
+| Phase D | ✅ 完成（2026-04-27） | BatchRunStore 遷移至 SQLite（WAL+Thread-local）、thread-safe QThread 存取、executemany 批量寫入、get_stats_for_recipe SQL JOIN；Plugin 介面、ValidationWorkspace、HistoryWorkspace 規劃中 |
 
 ---
 

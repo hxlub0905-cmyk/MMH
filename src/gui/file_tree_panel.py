@@ -12,6 +12,7 @@ class FileTreePanel(QTreeWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._root: Path | None = None
         self.setHeaderLabel("Files")
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setAnimated(True)
@@ -19,9 +20,12 @@ class FileTreePanel(QTreeWidget):
 
     def set_root(self, folder: str | Path) -> None:
         self.clear()
-        root = Path(folder)
-        self._populate(self.invisibleRootItem(), root)
+        self._root = Path(folder)
+        self._populate(self.invisibleRootItem(), self._root)
         self.expandAll()
+
+    def root_path(self) -> Path | None:
+        return self._root
 
     def _populate(self, parent: QTreeWidgetItem, folder: Path) -> None:
         try:

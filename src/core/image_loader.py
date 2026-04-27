@@ -29,7 +29,7 @@ def load_grayscale(path: str | Path) -> np.ndarray:
         img = (img / 256).astype(np.uint8)
     elif img.dtype != np.uint8:
         img = img.astype(np.float32)
-        img = ((img - img.min()) / (img.ptp() + 1e-9) * 255).astype(np.uint8)
+        img = ((img - img.min()) / ((img.max() - img.min()) + 1e-9) * 255).astype(np.uint8)
 
     return img
 

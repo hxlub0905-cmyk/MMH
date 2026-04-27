@@ -87,10 +87,10 @@ class KlarfWriter:
         for col in columns:
             col_lower = col.lower()
             if col_lower == "xrel":
-                val = defect.get("XREL", defect.get("xrel", "0"))
+                val = next((defect[k] for k in defect if k.lower() == "xrel"), "0")
                 tokens.append(_format_coord(val))
             elif col_lower == "yrel":
-                val = defect.get("YREL", defect.get("yrel", "0"))
+                val = next((defect[k] for k in defect if k.lower() == "yrel"), "0")
                 tokens.append(_format_coord(val))
             elif "image" in col_lower and not image_block_written:
                 # Write ImageInfo block verbatim if present

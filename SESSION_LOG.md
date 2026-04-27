@@ -2,6 +2,98 @@
 
 ---
 
+## [2026-04-27] BatchRunStore 遷移至 SQLite（Phase D）
+
+**變更類型：** 重構（持久化層升級）
+
+**動機：**
+JSON 路徑在大批次（13000 張 × 每張 20 筆 = 26 萬筆資料）序列化時，因 Python GIL 導致 UI 主執行緒卡頓數秒。SQLite bulk insert 大幅加快寫入速度，並將所有歷史資料整合為單一 `~/.mmh/runs.db` 檔案。
+
+**實作重點：**
+
+### `src/core/batch_run_store.py`（完整改寫）
+- 移除所有 JSON 檔案相關邏輯（`runs_dir`、`_index_path`、`_rebuild_index` 等）
+- 改為 `sqlite3`（Python 內建，無額外相依）
+- `__init__` 改接 `db_path: Path | None`，預設 `~/.mmh/runs.db`
+- `_get_conn()`：thread-local connection；啟用 WAL + NORMAL sync + FK ON + Row factory
+- `_init_db()`：CREATE TABLE IF NOT EXISTS 三張表 + 六個索引（冪等）
+- **Schema**：`batch_runs`（meta）、`image_results`（每張圖一行）、`measurements`（每筆量測一行）
+- `save(batch_run)` → 一個 transaction；INSERT OR REPLACE batch_runs + executemany image_results + executemany measurements；回傳 `batch_id: str`（原回傳 Path）
+- `save_multi(mbr)` → 同一 transaction 寫 parent + N 個 child datasets；回傳 `"multi_{run_id}"`
+- `list_runs()` → `WHERE parent_run_id IS NULL ORDER BY start_time DESC`；`"file_path"` 欄位改存 `batch_id`（外部呼叫方透明相容）
+- `load(batch_id)` → 依 type 重建 `BatchRunRecord` 或 `MultiDatasetBatchRun`，含完整 `output_manifest["results"]`
+- `delete(batch_id)` → multi type 先刪子 datasets，再刪 parent
+- `get_stats_for_recipe()` → SQL JOIN + Python `statistics.stdev()`（SQLite 無內建 STDEV）
+
+### `tests/test_batch_run_store.py`（更新）
+- `BatchRunStore(runs_dir=tmp_path)` → `BatchRunStore(db_path=tmp_path/"test.db")`
+- `save()` 回傳 `str` batch_id（移除 `path.exists()` 斷言）
+- `load(str(path))` → `load(batch_id)`
+- `delete(str(path))` → `delete(batch_id)`
+- `test_delete_nonexistent`：改傳不存在的 batch_id 字串
+
+### `tests/test_history.py`（更新）
+- 同上，`BatchRunStore(db_path=...)` 介面
+
+**API 相容性：**
+- `batch_workspace.py`、`report_workspace.py`、`klarf_export_dialog.py` **無需改動**：這三個檔案都使用 `summaries[row]["file_path"]` 傳給 `store.load()`，現在 `"file_path"` 存的是 batch_id，load() 也改吃 batch_id，透明相容。
+- 舊 `~/.mmh/runs/*.json` 直接忽略，不做遷移。
+
+**影響範圍：**
+- `src/core/batch_run_store.py`（完整重寫）
+- `tests/test_batch_run_store.py`
+- `tests/test_history.py`
+
+**測試結果：** py_compile 通過；pytest 17/17 通過；功能驗證腳本（save/list/load/delete）通過
+
+---
+
+## [2026-04-27] Bug Fix Series Round2 — H1/H3/M1/M2/M3/M4/L1/L2（共 9 項）
+
+**變更類型：** Bug 修復
+
+**修復摘要：**
+
+### 高優先（H）
+| 編號 | 位置 | 問題 | 修復 |
+|------|------|------|------|
+| H1 | `src/core/measurement_engine.py` `_worker_run_image` | `cv2.imwrite()` 失敗時靜默回傳 False，下游誤以為檔案已寫出 | 加 `ret = cv2.imwrite(...); if not ret: raise IOError(...)` |
+| H3 | `src/core/image_loader.py` `load_grayscale` | `img.ptp()` 在 NumPy 2.0 已移除，非 uint8 影像崩潰 | 改用 `img.max() - img.min()` |
+
+### 中優先（M）
+| 編號 | 位置 | 問題 | 修復 |
+|------|------|------|------|
+| M1 | `src/gui/workspaces/report_workspace.py` `_export_dialog_clicked` | tasks 為空時靜默 return，使用者不知為何沒有動作 | 加 `QMessageBox.information(...)` 提示 |
+| M2 | `src/gui/batch_dialog.py` `_process_one` | X 軸 blob 座標轉換公式與 `_rot_blob_to_ori()` 不一致，差 1px 系統性偏移 | 改為 `from ..core.recipes.cmg_recipe import _rot_blob_to_ori; blobs = [_rot_blob_to_ori(b, h) for b in blobs]` |
+| M3 | `src/gui/file_tree_panel.py` | 缺少 `root_path()` 方法，`browse_workspace._update_file_count()` 永遠顯示空白 | `__init__` 加 `self._root`，`set_root()` 記錄路徑，新增 `root_path()` 方法 |
+| M4 | `src/output/report_generator.py` `_render_html` / `generate_multi_dataset_report` | fail_list 路徑與 dataset label 未做 `html.escape()`，特殊字元破壞 HTML | `import html as _html`；兩處均改用 `_html.escape()` |
+
+### 低優先（L）
+| 編號 | 位置 | 問題 | 修復 |
+|------|------|------|------|
+| L1 | `src/gui/workspaces/recipe_workspace.py` `_save_recipe` | 展開舊 `edge_locator_config` 時廢棄 key 永久保留，隨版本累積 | 新增 `_EC_CANONICAL_KEYS`（16 個已知 key）常數；`_save_recipe()` 展開時加 `if k in _EC_CANONICAL_KEYS` 過濾 |
+| L2 | `src/core/klarf_exporter.py` | XREL/YREL 只比對全大/全小寫，混合大小寫靜默略過 | 改用 `next((k for k in d if k.lower() == "xrel"), None)` 大小寫不敏感查詢 |
+| L2 | `src/core/klarf_writer.py` `_serialise_defect` | 同上，defect dict 查詢 `defect.get("XREL", defect.get("xrel", ...))` 漏掉混合大小寫 | 改用 `next((defect[k] for k in defect if k.lower() == "xrel"), "0")` |
+
+**備註：**
+- L3（quality_score PASS 路徑缺 key）：確認現行程式碼 line 227 已在 FAIL 判斷前設定 quality_score，此 bug 已是修復狀態，略過。
+- H2（batch_run_store 原子寫入）：整合進 Step 2 SQLite 遷移，不另行修復 JSON 路徑。
+
+**影響範圍：**
+- `src/core/measurement_engine.py`（H1）
+- `src/core/image_loader.py`（H3）
+- `src/gui/workspaces/report_workspace.py`（M1）
+- `src/gui/batch_dialog.py`（M2）
+- `src/gui/file_tree_panel.py`（M3）
+- `src/output/report_generator.py`（M4）
+- `src/gui/workspaces/recipe_workspace.py`（L1）
+- `src/core/klarf_exporter.py`（L2）
+- `src/core/klarf_writer.py`（L2）
+
+**測試結果：** py_compile 全部通過；pytest 17/17 通過
+
+---
+
 ## [2026-04-26] KLARF Export 功能 + nm/px 統一整合
 
 **變更類型：** 新功能
