@@ -1,0 +1,256 @@
+================================================================================
+  SEM MM (Massive Measurement) 開發工作階段 Summary
+  日期：2026-04-27
+  Branch：claude/fix-measurement-issues-q8zvi
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+【工具背景】
+────────────────────────────────────────────────────────────────────────────────
+
+SEM MM 是一套半導體製程用的自動化 CD（Critical Dimension）量測桌面應用程式，
+用於分析 SEM（Scanning Electron Microscope）影像中的 CMG（Cut of Metal Grid）
+圖案，量測 MG（Metal Grid）特徵之間的垂直（Y-CD）與水平（X-CD）間距，並透過
+校準參數（nm/pixel）轉換為奈米單位。
+
+主要技術架構：
+  - 六階段 Pipeline：Load → Preprocess → Detect → Locate → Compute → Annotate
+  - ProcessPoolExecutor 多核心 Batch 處理
+  - Qt6 GUI（六個 Workspace：Browse / Recipe / Measure / Review / Batch / Report）
+  - Recipe 系統（JSON 序列化，儲存於 ~/.mmh/recipes/）
+  - 支援 HTML / CSV / Excel / JSON 報表匯出
+
+
+────────────────────────────────────────────────────────────────────────────────
+【Issue 1】HTML 輸出多組 Dataset 時圖表與統計混合問題
+────────────────────────────────────────────────────────────────────────────────
+
+問題描述：
+  多組 Dataset 的 Batch 執行完後，匯出 HTML 報表時，所有 dataset 的 CD 量測值
+  被合併為單一統計與單一 histogram，無法個別查看。
+
+根因分析：
+  report_workspace.py 的 HTML 匯出路徑無論單/多 dataset 皆呼叫相同函式
+  generate_report_from_records(self._records, ...)，而 self._records 是
+  所有 dataset 合併後的紀錄；multi-batch 時 self._batch_run 為 None，
+  導致 nm_per_pixel 錯誤 fallback 至 1.0。
+
+修正內容（Commit: 74a1818）：
+
+  [src/output/report_generator.py]
+  - 新增 generate_multi_dataset_report(datasets_data, out_path)
+    · 每個 dataset 獨立一個 HTML 區塊（Summary 卡片 + 統計表 + Histogram）
+    · 頁首放 Combined Boxplot 做跨 dataset 視覺比較
+    · 整體 HTML 有 Overall Summary 彙總列
+  - 新增 _infer_nm_per_pixel(results) 從量測紀錄反推 nm/pixel
+    （calibrated_nm / raw_px，不依賴 ImageRecord）
+
+  [src/gui/workspaces/report_workspace.py]
+  - HTML 匯出路徑依 multi_batch_run 是否存在分岔：
+    · 多組 dataset → 呼叫 generate_multi_dataset_report()
+    · 單一 batch   → 原有 generate_report_from_records()
+  - 新增 _infer_nm_per_pixel() helper 函式
+
+
+────────────────────────────────────────────────────────────────────────────────
+【Issue 2】Y-CD 量測數值與 Overlay 顯示線段長度不一致
+────────────────────────────────────────────────────────────────────────────────
+
+問題描述：
+  Measure/Review 頁面的 Overlay 影像中，量測線段（視覺上看起來的 pixel 數）
+  與旁邊標示的 CD 數值嚴重不符。
+  例如：標示顯示 5 nm，但量測線跨越的 Blob Bounding Box 距離看起來像 12 nm。
+
+根因分析（兩個邊緣來源不同）：
+
+  量測線端點  → 來自 Binary Mask 的 Blob Bounding Box（ub.y1 / lb.y0）
+                Binary Mask 經過 CLAHE + GL Threshold + Morphological Close，
+                morph_close 會膨脹 blob 邊界，使 bbox 邊緣偏移真實光學邊緣。
+
+  CD 數值     → 來自 Raw Grayscale Image 的 Gradient Peak（Subpixel Refinement）
+                在真實影像上找強度變化最快的位置，接近真實物理邊緣。
+
+  兩者基於不同的影像來源，因此座標可以有顯著差距（本例差了約 7px）。
+
+修正內容（Commit: 74a1818）：
+
+  [src/core/cmg_analyzer.py]
+  - YCDMeasurement dataclass 新增兩個欄位：
+      y_upper_edge: float | None = None
+      y_lower_edge: float | None = None
+    （儲存 subpixel refinement 計算出的真實邊緣座標）
+
+  [src/core/recipes/cmg_recipe.py]
+  - apply_yedge_subpixel_to_cuts()：refinement 成功時設定
+    m.y_upper_edge = up_res.y_refined
+    m.y_lower_edge = lo_res.y_refined
+
+  [src/core/annotator.py]
+  - _draw_measurement()：量測線端點改為優先使用 refined edges：
+      y_top = int(round(m.y_upper_edge)) if m.y_upper_edge is not None else ub.y1
+      y_bot = int(round(m.y_lower_edge)) if m.y_lower_edge is not None else lb.y0
+    同樣邏輯也套用到 label 位置計算，確保數值標示與線段中心一致。
+
+  [src/_compat.py]
+  - records_to_legacy_cuts()：從 extra_metrics["upper_edge_refined"] /
+    extra_metrics["lower_edge_refined"] 還原 y_upper_edge / y_lower_edge，
+    讓 Batch 匯出 Overlay 圖時也能一致使用 refined edges。
+
+
+────────────────────────────────────────────────────────────────────────────────
+【Issue 3】Batch Progress Bar 多組 Dataset 時顯示倒退
+────────────────────────────────────────────────────────────────────────────────
+
+問題描述：
+  Batch Workspace 有多組 Dataset 時，第二組開始 Progress Bar 會從頭倒退，
+  無法反映真實的全域進度。
+
+根因分析：
+  run_batch() 內部的 done 計數器每個 dataset 都從 0 重置。
+  batch_workspace.py 中 self._progress_offset 設為 0 之後從未更新，
+  導致第二個 dataset 的進度又從 0 開始累加，Bar 發生倒退。
+
+修正內容（Commit: 74a1818）：
+
+  [src/core/measurement_engine.py]
+  - run_multi_batch()：計算 total_all（所有 dataset 圖片總數），
+    為每個 dataset 包裝一個有 cumulative offset 的 progress callback：
+      def _wrapped(done, _total, name, status, _off=ds_offset, _tot=total_all):
+          on_progress(done + _off, _tot, name, status)
+    這樣 on_progress 收到的 done 是全域累積值，total 是全體總數。
+
+  [src/gui/workspaces/batch_workspace.py]
+  - 移除 self._progress_offset 的初始化與使用
+  - _on_progress()：直接用 done（offset 已內含於 signal 中）
+      self._progress.setValue(done)
+  - Log 格式改為 [global_done/total_all]，讓工程師看到全域進度
+
+
+────────────────────────────────────────────────────────────────────────────────
+【概念解說】兩種 Y-CD 量測方法比較
+────────────────────────────────────────────────────────────────────────────────
+
+方法 A — Blob BBox（二值 Mask 邊界法）：
+  - 來源：Binary Mask（CLAHE + Threshold + Morphological 後的二值影像）
+  - 計算：cd_px = lb.y0 - ub.y1（整數像素，直接相減）
+  - 特性：受前處理參數（morph_close_k、gl_min）高度影響，速度快
+  - 用途：Debug、確認 blob 偵測是否正確、Recipe Tuning 初期
+
+方法 B — Subpixel Gradient（梯度精化法）：
+  - 來源：Raw Grayscale Image（原始灰階像素，不經過二值化）
+  - 計算：取窄條 1D profile → smoothing → |gradient| → peak → quadratic interpolation
+  - 特性：±0.1~0.3 px 精度，有品質 Gate（flat_profile / weak_gradient / ambiguous_peak / proximity_violation）
+  - 用途：正式量測報告的 CD 數值
+
+差距原因：
+  morph_close 會膨脹 blob 邊緣，造成 bbox 邊緣比真實光學邊緣更靠外，
+  而 gradient 找的是 raw image 上強度變化最快的位置（接近真實物理邊緣）。
+  兩者差距大時，代表 morph_close_k 過大，需調整前處理參數。
+
+
+────────────────────────────────────────────────────────────────────────────────
+【新功能】Threshold Crossing 量測模式（第三種 Y-CD 方法）
+────────────────────────────────────────────────────────────────────────────────
+
+需求背景：
+  半導體業界 CD-SEM 量測最常用的標準方法為 Threshold Crossing（50% 法）：
+  找到強度在亮區（MG）與暗區（CMG Gap）之間的 50% 水準處的 Y 位置。
+  原工具只有 gradient 與 bbox 兩種，缺少業界標準方法。
+
+實作內容（Commit: 6426474）：
+
+三種模式：
+  a. Threshold Crossing（預設）— 新增，業界標準
+  b. Subpixel / Gradient（梯度法）— 原有
+  c. BBox（二值邊界）— 原有
+
+[src/core/recipes/cmg_recipe.py] — 核心演算法
+
+  _refine_yedge_threshold_crossing() 新函式，7 步演算法：
+    1. 取 x_center ± half_col 窄條，y_guess ± search_half Y 窗口
+    2. 計算 1D intensity profile（X 方向取平均）
+    3. Contrast check（< 1 DN → flat_profile fallback）
+    4. 移動平均 smoothing（smooth_k）
+    5. threshold = I_min + (I_max - I_min) × threshold_frac（預設 0.5）
+    6. 遍歷 profile，找所有跨越 threshold 的相鄰點對，
+       Linear interpolation 求 subpixel crossing，取最近 y_guess 者
+    7. Proximity check → 成功回傳 _SubpixelResult，設 y_upper/lower_edge
+
+  Fallback 原因碼：flat_profile / no_crossing / proximity_violation
+
+  apply_yedge_subpixel_to_cuts() 新增參數：
+    method: str = "threshold_crossing"   ← 方法選擇
+    threshold_frac: float = 0.5          ← Threshold 水準
+  函式內部依 method 分派至對應的 _refine_yedge_* 函式
+
+  compute_metrics()：
+    - 預設 ycd_edge_method 改為 "threshold_crossing"
+    - 讀取 threshold_frac 並傳遞給 apply_yedge_subpixel_to_cuts()
+
+  _card_to_descriptor()：
+    - 預設 ycd_edge_method 改為 "threshold_crossing"
+    - 新增 threshold_frac: 0.5 的預設值
+
+[src/gui/workspaces/recipe_workspace.py] — Analysis Tab
+
+  ComboBox 三個選項（threshold_crossing 為第一選項/預設）：
+    ● Threshold Crossing (50%)     data: "threshold_crossing"
+    ○ Subpixel (gradient refined)  data: "subpixel"
+    ○ BBox (original integer edge) data: "bbox"
+
+  新增 threshold_frac QDoubleSpinBox（範圍 0.01~0.99，預設 0.5）：
+    - 選 threshold_crossing 以外的方法時自動 disabled
+    - 儲存 recipe 時寫入 edge_locator_config["threshold_frac"]
+    - 載入 recipe 時從 edge_locator_config["threshold_frac"] 讀取
+
+[src/gui/workspaces/measure_workspace.py] — Edge Locator Panel
+
+  與 recipe_workspace 對稱的三選項 ComboBox + threshold_frac 控件：
+    - _on_recipe_combo_changed()：選擇 recipe 時自動載入方法與 threshold_frac
+    - _run_with_recipe()：override dict 中加入 threshold_frac
+    - _analyze_with_cards()：條件擴展為 method in ("subpixel", "threshold_crossing")，
+      並傳遞 method + threshold_frac 給 apply_yedge_subpixel_to_cuts()
+
+Annotation 一致性保證：
+  annotator.py 不需修改——三種方法成功時皆設定 y_upper_edge / y_lower_edge，
+  量測線端點永遠對齊實際計算的 CD 邊緣位置，數值與視覺線段完全一致。
+
+
+────────────────────────────────────────────────────────────────────────────────
+【附：X Overlap Ratio 說明】
+────────────────────────────────────────────────────────────────────────────────
+
+用途：決定兩個 MG blob 歸入同一欄（column）的條件，與 Threshold Crossing 無關。
+
+計算公式：
+  overlap_ratio = 水平重疊長度 / min(blob_A.width, blob_B.width)
+  若 overlap_ratio ≥ x_overlap_ratio → 歸入同一欄 → 形成 Y-CD 配對
+
+建議值：
+  標準直列 MG         → 0.5（預設）
+  MG 有輕微 X 偏移    → 0.3~0.4
+  MG 排列密/易誤配    → 0.7~0.8
+  搭配 Strip Masking  → 可降至 0.3
+
+
+────────────────────────────────────────────────────────────────────────────────
+【修改檔案彙整】
+────────────────────────────────────────────────────────────────────────────────
+
+Commit 74a1818（Issue 1-3 修正）：
+  src/_compat.py
+  src/core/annotator.py
+  src/core/cmg_analyzer.py
+  src/core/measurement_engine.py
+  src/core/recipes/cmg_recipe.py
+  src/gui/workspaces/batch_workspace.py
+  src/gui/workspaces/report_workspace.py
+  src/output/report_generator.py
+
+Commit 6426474（Threshold Crossing 新功能）：
+  src/core/recipes/cmg_recipe.py
+  src/gui/workspaces/recipe_workspace.py
+  src/gui/workspaces/measure_workspace.py
+
+Branch：claude/fix-measurement-issues-q8zvi
+================================================================================
