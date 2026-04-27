@@ -1,0 +1,332 @@
+================================================================================
+  MMH (SEM Massive Measurement) — 開發還原過程 Session Summary
+  日期：2026-04-20
+  分支：claude/flexible-measurement-tool-UkWXM
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+一、背景與起點
+────────────────────────────────────────────────────────────────────────────────
+
+本 session 從 Phase A（vNext 架構升級）已完成的狀態繼續開發。
+Phase A 建立了 Recipe 驅動的六工作區 GUI 架構，36 項測試全數通過。
+
+本次 session 跨越兩段連續對話（第一段因 context 溢出而被 compaction）。
+以下依序記錄所有發生的問題、分析過程與最終解法。
+
+
+────────────────────────────────────────────────────────────────────────────────
+二、Phase F — Auto X-Projection Strip Mask（自動欄位偵測）
+────────────────────────────────────────────────────────────────────────────────
+
+【F1 — Two-Pass X-Proj 初版（後被替換）】
+  commit: f137fab
+
+  問題背景：
+  - 使用者需要在 Batch 模式下自動偵測 MG（Metal Gate）欄位的 X 座標
+  - 手動模式（Start X + Pitch）在單張圖上完美運作，但 Batch 時每張圖
+    Start X 不同，無法通用
+  - 實作了 detect_mg_column_centers_twopass() 兩階段峰值偵測
+
+  問題發現：
+  - Two-pass 仍然對每個峰值獨立判斷，PEPI（Epitaxial S/D）的橫向結構
+    會使中間欄位的峰值偏移，Auto-detect 框出的 ROI 不準確
+
+【F2 — Pitch-Anchored 相位偵測（正確解法）】
+  commit: 0d6604e
+
+  使用者的核心洞見：
+  - MG 有固定寬度 + 固定 pitch → X-proj 是已知週期的週期信號
+  - 唯一未知量 = 起始 X 位置（相位偏移 φ）
+  - Auto-detect 只需找 φ，其餘由 pitch 決定
+
+  解法 detect_mg_column_centers_pitch_phase()：
+  1. 計算 X-proj（含 edge-padded smoothing，避免邊界零填充偽峰）
+  2. 將 x_proj 補零到 pitch 整數倍，reshape 成 (N, pitch_px) 矩陣
+  3. 對 axis=0 取平均 → phase_means[φ] 代表以 φ 為起點的平均信號強度
+  4. argmax(phase_means) → 全局最優相位 φ（PEPI 貢獻被平均消除）
+  5. 生成中心 = φ, φ+pitch, φ+2·pitch, ...（天然等間距）
+  6. 高度閾值 + edge_margin 過濾
+
+  優點：
+  - 全局最優，PEPI 對個別峰值的偏向被平均掉
+  - 輸出天然是等間距正規網格（與手動模式一致）
+  - 比 two-pass 更簡單（單 pass）
+
+  修改範圍：
+  - src/core/mg_detector.py — 新增 pitch_phase，移除 twopass
+  - src/core/recipes/cmg_recipe.py — call site 更新
+  - src/gui/workspaces/measure_workspace.py — call site 更新
+  - src/gui/batch_dialog.py — call site 更新
+
+
+────────────────────────────────────────────────────────────────────────────────
+三、Phase G2 — 六項新功能
+────────────────────────────────────────────────────────────────────────────────
+
+commit: 69adfbb（所有 G2-1 ~ G2-6 合併於一次 commit）
+
+【G2-1 — Measure 一鍵產生 Recipe「Save Cards as Recipe」】
+
+  背景：
+  - 使用者在 Measure 頁的 ControlPanel 調好參數後，需手動切換 Recipe 頁
+    重新輸入相同參數，流程重複
+  - CMGRecipe._card_to_descriptor() 缺少 17 個 col_mask / range 相關參數
+    （roundtrip 有損）
+
+  解法：
+  - cmg_recipe.py _card_to_descriptor()：補全全部 17 個缺少的 key
+    （col_mask_enabled / auto_centers / xproj / pitch / width / margin /
+     edge_margin / regularize / tol / normalize / range_enabled /
+     min_line_px / max_line_px）
+  - measure_workspace.py：在 "Run Single (F5)" 旁新增 "Save Cards as Recipe…"
+    按鈕，點擊後對所有 card 呼叫 registry.import_from_card(card)，
+    顯示確認訊息
+
+【G2-2 — Results/Review 表格數字排序】
+
+  背景：
+  - 點擊表頭排序 CD 欄位時，以字串比較（"9.5" > "10.2"），排序錯誤
+
+  解法：
+  - results_panel.py：新增 _NumericItem(QTableWidgetItem)，override __lt__
+    改為 float() 比較
+  - CD (px) 和 CD (nm) 兩欄使用 _NumericItem，其餘欄用普通 item
+  - insertRow() 期間 setSortingEnabled(False)，避免行插入順序混亂
+
+【G2-3 — Batch Run 早期進度提示】
+
+  背景：
+  - Run Batch 後，ProcessPoolExecutor 建立 worker process 期間（數秒）
+    UI 完全無反應，使用者誤認為凍結
+
+  解法：
+  - batch_dialog.py _BatchWorker.run()：在建立 ProcessPool 前
+    先 progress.emit(0, total, "Preparing N job(s)…")
+  - 所有 job submit 完成後再發 "Submitted N job(s), waiting for results…"
+  - 初始 label 由 "Starting…" 改為 "Initializing…"
+
+【G2-4a — Report HTML 匯出 matplotlib 容錯】
+
+  背景：
+  - Report → Export HTML → 崩潰，錯誤訊息提示安裝 pandas
+  - 實際根因：matplotlib 未安裝（pandas 有安裝），直方圖生成時 import 失敗
+
+  解法：
+  - report_generator.py _histogram_b64()：
+    將 import matplotlib 包在 try/except ImportError 中
+    無 matplotlib 時回傳 "" 空字串
+  - HTML 模板：hist_b64 為空時改顯示
+    '<p style="color:#888">Histogram unavailable (install matplotlib)</p>'
+  - HTML 報告其他部分（統計表格等）不受影響，仍可正常匯出
+
+【G2-4b — Report 圖片匯出進度條】
+
+  背景：
+  - Report → Export Images → 大批次時 UI 凍結，看似無回應
+
+  解法：
+  - report_workspace.py _export_images()：
+    加入 QProgressDialog（支援取消）
+    每張圖處理前 progress.setValue(i) + QApplication.processEvents()
+
+【G2-5 — Recipe 編輯器 UI/UX 重構】
+
+  背景：
+  - Recipe 編輯器 40+ 個欄位全部堆疊在一個 QFormLayout 中，字全部擠在一起
+  - 窗口縮小時大量欄位消失
+
+  解法：
+  - recipe_workspace.py _build_editor() 全部重寫
+  - 新結構：
+    ┌─ Recipe Identity（永遠顯示）─────────────────────────────┐
+    │  Name / Target layer / Structure + Axis                   │
+    ├──────────────────────────────────────────────────────────┤
+    │ [Preprocessing] [Detection] [Strip Mask] [Analysis]       │
+    └──────────────────────────────────────────────────────────┘
+  - Tab 分配：
+    Preprocessing: GL min/max, Gaussian, Morph open/close, CLAHE, Vert erode
+    Detection:     Min area, aspect ratio, width, height
+    Strip Mask:    Enable, Auto-detect, xproj params, pitch/width/margin, regularize
+    Analysis:      Edge locator (overlap + cluster tol) + Range filter
+  - 所有 self._xxx 屬性名稱保持不變，_load_descriptor_to_form() /
+    _save_recipe() 無需修改
+
+【G2-6 — Annotated 數值標籤字體縮小 + 間距加緊】
+
+  背景：
+  - 相近的 CD 量測值標籤互相碰撞推移，顯示位置偏離量測線過遠
+
+  修改（annotator.py）：
+  - _LABEL_MIN_DY: 8 → 6（碰撞最小間距縮小）
+  - fs formula: max(0.20, h/2600) → max(0.18, h/3200)（字體縮小）
+  - lane: x_lbl // 24 → x_lbl // 30（碰撞偵測 lane 縮窄）
+  - x offset: x_mid + _TICK_HALF + 4 → x_mid + _TICK_HALF + 2（緊貼量測線）
+  - draw_overlays() 和 draw_overlays_multi() 兩處同步修改
+
+
+────────────────────────────────────────────────────────────────────────────────
+四、文件更新
+────────────────────────────────────────────────────────────────────────────────
+
+commit: 7c87da7
+
+  - SESSION_LOG.md：新增 Phase F2 和 Phase G2 兩筆記錄（插入至最上方）
+  - AGENTS.md：
+    - 版本狀態更新為「Phase A + F2 + G2 已完成」
+    - mg_detector.py API 說明新增 pitch_phase 函式，標注 twopass 已移除
+    - annotator.py 新增字體/間距常數對照表
+    - 已知問題表新增三筆「已修復」（F2 / G2-4 / G2-1）
+    - 交接事項補充 F2 / G2 各項完成狀態
+  - README.md：功能特點擴充，版本階段表新增 F2 和 G2
+
+
+────────────────────────────────────────────────────────────────────────────────
+五、Bug 修正（本次對話第二段）
+────────────────────────────────────────────────────────────────────────────────
+
+commit: b275aae
+
+【Bug 1 — Range Filter 在 Batch/Recipe 路徑失效】
+
+  根本原因：
+  - range_enabled / min_line_px / max_line_px 儲存在 detector_config
+  - CMGRecipe.compute_metrics() 只讀 edge_locator_config，從未讀 detector_config
+  - 因此透過 Recipe 跑 Batch 時，range filter 完全未被套用
+
+  修改（src/core/recipes/cmg_recipe.py compute_metrics()）：
+  - 在 X-CD 座標反轉之後、建立 MeasurementRecord 之前插入 range filter 邏輯
+  - 過濾：保留 min_px <= cd_px <= max_px 的量測（0 = 停用該端）
+  - 過濾後重新計算 MIN/MAX flag
+  - context["cmg_cuts"] 在過濾後更新，確保 render_annotations 也只繪製
+    過濾後的量測
+
+  影響路徑：
+  - 過去有效：Measure Legacy Cards 路徑（measure_workspace.py）
+              Batch Legacy Cards 路徑（batch_dialog.py）
+  - 現在修復：Recipe 路徑（batch_workspace → engine → CMGRecipe）
+
+【Bug 2 — Review 頁缺少 Overlay 控制勾選框】
+
+  根本原因：
+  - Review workspace 只有 Raw/Mask/Annotated 模式切換按鈕
+  - 缺少 Lines / Values / Boxes / Legend 勾選框（Measure 頁有）
+
+  修改（src/gui/workspaces/review_workspace.py）：
+  - __init__：新增 _cur_raw / _cur_mask / _cur_cuts 快取屬性
+  - _build_header()：新增 _overlay_widget（含四個勾選框）
+    只在 Annotated 模式顯示（_on_mode_ann/raw/mask 控制）
+  - 新增 _get_overlay_opts() → OverlayOptions（讀四個勾選框狀態）
+  - 新增 _refresh_annotated()：從快取 raw/cuts 重繪，不重新載入圖片
+  - load_result()：快取 raw/mask/cuts，呼叫 _on_mode_ann()
+  - _load_batch_entry()：快取 raw/None/cuts，呼叫 _on_mode_ann()
+  - clear()：重設所有快取
+  - _on_result_selected()：簡化為呼叫 _refresh_annotated()（包含 focus）
+  - 新增模組層級 _ov_chk() helper
+
+【問題3回答 — Y-CD 量測定義（不需修改，僅說明）】
+
+  量測公式（cmg_analyzer.py:116-118）：
+    upper_edge = upper.cy + upper.height / 2.0   → 等同於 upper.y1（底部 exclusive）
+    lower_edge = lower.cy - lower.height / 2.0   → 等同於 lower.y0（頂部）
+    cd_px = lower_edge - upper_edge
+
+  意義：
+  - 量的是上方 MG 片段底緣到下方 MG 片段頂緣之間的純空白像素數
+  - 即 lower.y0 − upper.y1 = gap 的像素列數
+  - 轉換：cd_nm = cd_px × nm_per_pixel
+
+  評估：
+  - 這是標準 edge-to-edge gap 量測，定義合理
+  - 精度受限於 connected components bounding box（無次像素精度）
+  - 若需更高精度可在 Stage 4 加入邊緣梯度精修，現有場景已足夠
+
+
+────────────────────────────────────────────────────────────────────────────────
+六、Commit 歷史總覽（本 session 相關）
+────────────────────────────────────────────────────────────────────────────────
+
+  b275aae  fix: range filter in Recipe/Batch path + Review overlay controls
+  7c87da7  docs: update SESSION_LOG, AGENTS.md, README for Phase F2 + G2
+  69adfbb  feat: G2-1~6 — five new features + annotator label tuning
+  0d6604e  fix: replace twopass X-proj with pitch-anchored phase detection
+  f137fab  feat: two-pass X-proj to eliminate PEPI-induced peak bias (superseded)
+
+
+────────────────────────────────────────────────────────────────────────────────
+七、修改檔案彙整
+────────────────────────────────────────────────────────────────────────────────
+
+  src/core/mg_detector.py
+    → 新增 detect_mg_column_centers_pitch_phase()，移除 twopass
+
+  src/core/recipes/cmg_recipe.py
+    → _card_to_descriptor() 補全 17 個 col_mask/range 參數
+    → compute_metrics() 加入 range filter 邏輯（Bug 1 修復）
+
+  src/core/annotator.py
+    → _LABEL_MIN_DY: 8→6, fs: max(0.18,h/3200), lane: //30, offset: +2
+
+  src/gui/batch_dialog.py
+    → 早期 progress.emit（G2-3）
+    → pitch_phase call site 更新
+
+  src/gui/results_panel.py
+    → _NumericItem（G2-2）+ setSortingEnabled 管理
+
+  src/gui/workspaces/measure_workspace.py
+    → "Save Cards as Recipe…" 按鈕（G2-1）
+    → pitch_phase call site 更新
+
+  src/gui/workspaces/recipe_workspace.py
+    → _build_editor() 改為 QTabWidget 四 Tab 佈局（G2-5）
+
+  src/gui/workspaces/report_workspace.py
+    → _export_images() 加 QProgressDialog（G2-4b）
+
+  src/gui/workspaces/review_workspace.py
+    → Lines/Values/Boxes/Legend overlay 勾選框（Bug 2 修復）
+    → raw/cuts 快取 + _refresh_annotated()
+
+  src/output/report_generator.py
+    → matplotlib try/except fallback（G2-4a）
+
+  SESSION_LOG.md, AGENTS.md, README.md
+    → 文件更新（Phase F2 + G2 記錄）
+
+
+────────────────────────────────────────────────────────────────────────────────
+八、測試結果
+────────────────────────────────────────────────────────────────────────────────
+
+  python -m pytest tests/ -q
+  → 36/36 通過（每個 commit 後均執行確認）
+
+  測試覆蓋：
+  - tests/test_cmg_analyzer.py      10 項（CMG 核心演算法）
+  - tests/test_models.py             6 項（資料模型 round-trip）
+  - tests/test_recipe_base.py       12 項（CMGRecipe pipeline + Registry）
+  - tests/test_measurement_engine.py 8 項（引擎整合 + 相容層）
+
+
+────────────────────────────────────────────────────────────────────────────────
+九、後續待辦
+────────────────────────────────────────────────────────────────────────────────
+
+  Phase B（規劃中）：
+  - Batch 結果快取持久化（大批次重新匯出效率低）
+  - Review 工作流程：Accept / Reject / Mark False Detect
+  - ReportWorkspace 嵌入式 matplotlib 直方圖
+
+  Phase C（規劃中）：
+  - Worker 數上限保護
+  - X-CD 標注 overlay 座標對齊驗證
+
+  Phase D（規劃中）：
+  - Recipe 持久化遷移至 SQLite
+  - Plugin 介面
+  - 多資料夾 Batch
+
+================================================================================
+  END OF SESSION SUMMARY
+================================================================================
