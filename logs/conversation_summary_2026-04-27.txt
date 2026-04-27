@@ -1,0 +1,213 @@
+================================================================================
+  SEM MM 專案 — 對話還原摘要
+  日期：2026-04-27
+  對話角色：使用者（半導體工程師）× AI Agent（Claude Sonnet 4.6）
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+【第一階段】需求釐清（多輪問答）
+────────────────────────────────────────────────────────────────────────────────
+
+使用者提出要開發一套 SEM 影像自動量測工具，AI 透過多輪 Q&A 釐清需求：
+
+Q1：主要量測哪一層？
+A：MG（Metal Gate）層，垂直亮條紋，目標量測 CMG Y-CD。
+
+Q2：CMG 是什麼？量什麼？
+A：Cut Metal Gate，水平方向切割，將 MG 切成上下兩段。
+   Y-CD = 上段 MG 底部 → 下段 MG 頂部的垂直距離（像素 × nm/pixel）。
+
+Q3：每張影像有幾個 CMG cut？
+A：可能有多個 CMG cut，每個 cut 有多根 MG column，每一對都需量測。
+
+Q4：輸出方式？
+A：每個 CMG cut 輸出所有 MG column 的 Y-CD 值。
+
+Q5：如何偵測 MG？
+A：GL 閾值（後來改為範圍），即時預覽滑桿。
+
+Q6：批量處理規模？
+A：1000+ 張影像，需多核心平行處理。
+
+Q7：輸出格式？
+A：CSV、Excel（含統計頁）、JSON、HTML 報告、標注影像。
+
+Q8：GUI 框架？
+A：PyQt6 / PySide6，具備 Zoom/Pan 影像預覽。
+
+Q9：結果呈現方式？
+A：影像 + 對應表格（下方），MIN 紅、MAX 藍。
+
+Q10：KLARF 整合？
+A：Phase 2，本次先不做。
+
+Q11：介面語言？
+A：英文。
+
+Q12：作業系統？
+A：Windows 10/11。
+
+Q13：GL 閾值調整？
+A：即時預覽 Slider（後來改為 Min/Max 雙滑桿）。
+
+────────────────────────────────────────────────────────────────────────────────
+【第二階段】規劃 → 計劃核准
+────────────────────────────────────────────────────────────────────────────────
+
+AI 提出完整的實作計劃（Plan Mode），包含：
+- 技術棧（Python 3.11+、PyQt6、OpenCV、pandas 等）
+- 專案目錄結構（共 13 個核心檔案）
+- 核心演算法（CMG Y-CD 五步驟：X-range 分組 → Y-gap → 聚類 → 標記）
+- GUI 三欄布局草圖
+- 輸出格式規格
+- 驗收標準
+
+計劃獲使用者核准後進入實作。
+
+────────────────────────────────────────────────────────────────────────────────
+【第三階段】初始建構（全部從零寫起）
+────────────────────────────────────────────────────────────────────────────────
+
+依序建立以下檔案：
+
+[Core 模組]
+- image_loader.py：多格式載入 → uint8 灰階
+- preprocessor.py：前處理 pipeline（Gaussian → CLAHE → 閾值 → 形態學）
+- mg_detector.py：連通元件 → Blob 列表 + 面積過濾
+- cmg_analyzer.py：CMG Y-CD 主演算法
+  * Union-Find 做 X-range 分組
+  * 同欄 blob 排 Y → 相鄰對 = CMG gap
+  * 按 mid_y 聚類跨欄 gap → 同一 CMG cut 事件
+  * 每個 cut 標記 MIN / MAX
+- annotator.py：在影像上繪製量測標注
+
+[GUI 模組]
+- image_viewer.py：QGraphicsView，滾輪縮放、拖曳平移
+- file_tree_panel.py：QTreeView + QFileSystemModel（初版）
+- control_panel.py：nm/pixel 輸入 + threshold slider + morph 參數
+- results_panel.py：QTableWidget 結果表格
+- batch_dialog.py：QDialog + QThread + ProcessPoolExecutor
+- main_window.py：主視窗布局
+
+[Output 模組]
+- csv_exporter.py
+- excel_exporter.py（含 Statistics 頁 + 紅藍標色）
+- json_exporter.py
+- report_generator.py（HTML + matplotlib 直方圖）
+
+[測試]
+- test_cmg_analyzer.py：10 項單元測試（全部通過）
+
+[Entry Point]
+- main.py：freeze_support + if __name__ == '__main__' 守衛
+
+首次 commit 並 push 至 claude/sem-measurement-app-XudV6。
+
+────────────────────────────────────────────────────────────────────────────────
+【第四階段】Bug 修正（使用者在 Windows PyCharm 執行時連續報錯）
+────────────────────────────────────────────────────────────────────────────────
+
+Bug 1：ImportError: cannot import name 'QFileSystemModel' from 'PyQt6.QtWidgets'
+  原因：PyQt6 新版已移除 QFileSystemModel
+  修正：file_tree_panel.py 改用 QTreeWidget + 手動遞迴掃描目錄
+  影響檔案：src/gui/file_tree_panel.py
+
+Bug 2：TypeError: unsupported operand type(s) for |: 'type' and 'type'
+  原因：Python 3.9 以下不支援 X | Y 型別語法（Python 3.10+ 才有）
+  修正：在所有缺少的 .py 檔頂端加入 from __future__ import annotations
+  影響檔案：image_loader.py、mg_detector.py、preprocessor.py、
+            _common.py、csv_exporter.py、excel_exporter.py、json_exporter.py
+
+Bug 3：AttributeError: 'RenderHint' object has no attribute 'RenderHint'
+  原因：self.renderHints() 回傳 flags 物件而非 enum 類別，
+        寫法 self.renderHints().RenderHint.Antialiasing 無效
+  修正：直接刪除該行（預設已關閉反鋸齒，此行本為多餘）
+  影響檔案：src/gui/image_viewer.py
+
+────────────────────────────────────────────────────────────────────────────────
+【第五階段】UI 重設計（使用者要求「前端設計師邏輯」重新設計）
+────────────────────────────────────────────────────────────────────────────────
+
+使用者指出兩個問題：
+1. UI 太醜，需要美觀配色與按鈕樣式
+2. Annotated 模式的覆蓋層太雜亂（mask + 標注疊在一起）
+
+解決方案：
+
+[新增 styles.py]
+- 全域 QSS 深色主題
+- 設計 token：底色 #0d0e1a，accent #4f7fc2
+- 涵蓋：Button、Slider、SpinBox、Table、Tree、ScrollBar、GroupBox 等
+- Run Single 綠色按鈕、Run Batch 紫色按鈕
+
+[重構 main_window.py → 三欄布局]
+- 左 210px：Files 面板（含 UPPERCASE 標題）
+- 中（彈性）：Viewer header（Pill 切換鈕）+ ImageViewer + 結果表格
+- 右 250px：ControlPanel（可捲動 ScrollArea）
+- Viewer Header：Raw / Mask / Annotated 三個 Pill 按鈕（segLeft/segMid/segRight）
+
+[修正 annotator.py]
+- Annotated 模式移除青色 Mask 覆蓋層
+- 只保留：量測線 + tick marks + CD 數值標籤（有半透明黑底方便閱讀）
+- Mask 模式：image_viewer.py 的 _current_img() 繼續顯示青色 overlay
+
+[更新 control_panel.py / results_panel.py]
+- GroupBox 分區：Scale / MG Detection / Pre-processing
+- 結果表格：MIN 列紅底、MAX 列藍底
+
+────────────────────────────────────────────────────────────────────────────────
+【第六階段】功能迭代（使用者提出三個新需求）
+────────────────────────────────────────────────────────────────────────────────
+
+需求 1：GL 閾值改為雙向範圍（Min ~ Max）
+  修正：
+  - preprocessor.py：threshold → gl_min + gl_max，cv2.inRange()
+  - control_panel.py：單滑桿 → 雙滑桿（Min GL / Max GL）+ 互鎖邏輯
+  - batch_dialog.py：arg tuple 更新
+  - main_window.py：batch_params 字典更新
+
+需求 2：Annotated 標籤過大且太詳細
+  修正：
+  - 只顯示純數字（如 12.5），無 nm 單位、無 [MIN] 前綴、無色底框
+  - 三色語意：MIN=紅、MAX=藍、正常=青
+
+需求 3：Annotated 支援 Overlay 勾選框
+  修正：
+  - annotator.py：新增 OverlayOptions(show_lines, show_labels, show_boxes)
+  - main_window.py：Viewer header 在 Annotated 模式顯示 Lines/Values/Boxes 勾選框
+  - 勾選變更立即重繪；Raw / Mask 模式自動隱藏勾選框
+
+────────────────────────────────────────────────────────────────────────────────
+【第七階段】文件撰寫（本次 Session 結束前）
+────────────────────────────────────────────────────────────────────────────────
+
+建立三份文件：
+1. AGENTS.md — 全專案技術文件（演算法、架構、已知問題、Phase 2 清單）
+2. logs/session_2026-04-27.md — 本次 Session 詳細工作日誌（供下次 AI 接手）
+3. logs/conversation_summary_2026-04-27.txt — 本份對話還原摘要
+
+────────────────────────────────────────────────────────────────────────────────
+【最終狀態】
+────────────────────────────────────────────────────────────────────────────────
+
+測試：10 passed / 0 failed
+分支：claude/sem-measurement-app-XudV6（已 push）
+
+Commit 歷史（由舊至新）：
+  1c9ab0e  feat: 初始建構
+  3160d03  chore: .gitignore
+  5faf38d  fix: QFileSystemModel → QTreeWidget
+  d55d566  fix: Python 3.9 __future__ annotations
+  cebe00e  fix: 移除無效 renderHints 呼叫
+  d2ce302  feat: UI 重設計
+  c79775d  feat: GL 範圍 + 標籤簡化 + Overlay 勾選框
+
+待辦（Phase 2）：
+  - KLARF 整合
+  - Recipe 儲存/載入
+  - Y_CLUSTER_TOL UI 設定
+  - Zoom % 顯示
+  - GPU 加速
+  - 更多單元測試
+
+================================================================================
