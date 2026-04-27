@@ -1,0 +1,231 @@
+================================================================================
+  MMH 修復對話 Summary — 還原過程完整記錄
+  Branch: claude/optimize-batch-processing-duNZP
+  日期: 2026-04-27
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+【Fix 1】Min/Max 聚合演算法修正
+  檔案: src/core/recipes/cmg_recipe.py
+────────────────────────────────────────────────────────────────────────────────
+
+問題：
+  aggregate_method = "min" / "max" 時，舊邏輯分別對 upper_sample_ys 與
+  lower_sample_ys 各自取 min/max，導致 upper edge 與 lower edge 來自不同的
+  取樣位置 X，最終計算出的 CD 值 (lo_y - up_y) 不代表任何真實的量測點。
+
+根本原因：
+  upper edge 取最小值、lower edge 取最大值 → CD 被人為放大；反之亦然。
+  正確做法是找讓 (lo_y_i - up_y_i) 最小/最大的「同一個 i」（paired sample）。
+
+修正：
+  新增 valid_pairs 列表，每個元素為 (i, upper_ys[i], lower_ys[i])，
+  只保留兩端都有有效 edge 且 lo_y > up_y 的配對；
+  再用 min()/max() 以 lambda t: t[2]-t[1] 找出最佳 pair。
+  記錄 winning_sample_x = sample_xs[best[0]] 存入 _refine_meta。
+
+效果：
+  min/max CD 現在代表影像中「真正最小/最大間距」的那個取樣柱的量測值。
+
+
+────────────────────────────────────────────────────────────────────────────────
+【Fix 2】Annotator 量測線 X 位置修正（Normal Mode）
+  檔案: src/core/annotator.py
+────────────────────────────────────────────────────────────────────────────────
+
+問題：
+  正常模式下，量測線的 X 位置固定取上下 blob 重疊範圍的中點，
+  導致 min/max 的量測線畫在 blob 中央而非實際取樣的最佳位置。
+
+修正：
+  在 _draw_measurement() 中讀取 _refine_meta["winning_sample_x"]，
+  若存在則用此值取代 blob 重疊中點作為量測線 X 座標。
+  Labels 的 x_lbl 計算同步更新，確保文字標籤也跟著偏移。
+
+效果：
+  min/max 量測線現在精確對齊真正的最佳取樣柱 X 位置。
+
+
+────────────────────────────────────────────────────────────────────────────────
+【Fix 3】_compat.py 還原 winning_sample_x
+  檔案: src/_compat.py
+────────────────────────────────────────────────────────────────────────────────
+
+問題：
+  從 JSON 載入舊跑批結果時，_refine_meta 中的 winning_sample_x 沒有被
+  還原，導致 load 後重新顯示的量測線 X 位置退回 blob 中點。
+
+修正：
+  在 records_to_legacy_cuts() 的 _refine_keys tuple 中加入
+  "winning_sample_x"，確保 JSON round-trip 後此欄位存在。
+
+
+────────────────────────────────────────────────────────────────────────────────
+【Fix 4】Detail CD 顯示修正（多項）
+  檔案: src/core/annotator.py
+────────────────────────────────────────────────────────────────────────────────
+
+4-A. 過濾非共有 X 範圍的取樣線
+  問題：某些取樣柱 X 只在上 blob 或下 blob 範圍內，不在兩者共有範圍，
+        畫出的線懸在 blob 外側，視覺上造成混亂。
+  修正：計算 x_common_lo = max(ub.x0, lb.x0)、x_common_hi = min(ub.x1, lb.x1)，
+        凡不在 [x_common_lo, x_common_hi) 的 sample_x 全部 skip。
+
+4-B. 取消取樣線數值標籤
+  問題：Detail CD 模式每條線都顯示 CD 數值，密集時嚴重遮蓋影像。
+  修正：完全移除 _draw_detail_measurements() 中的 cv2.putText() 相關邏輯。
+
+4-C. 獲勝取樣線改為紫色（不加粗）
+  問題：獲勝取樣線使用與一般量測線相同的綠色且加粗，視覺辨識度低。
+  修正：新增常數 _COL_DETAIL_WINNER = (220, 50, 200)（亮紫色 BGR），
+        所有非獲勝線用 _COL_DETAIL_NORMAL = (200, 170, 80)（鋼藍色）；
+        線寬統一為 _LINE_W（不加粗）。
+
+4-D. Edge detection 失敗位置畫灰色虛線
+  問題：某些 sample_x 的 edge detection 失敗（None），這些位置完全沒有視覺標示，
+        使用者不知道哪些取樣無效。
+  修正：新增 _draw_dashed_vline() helper（5px dash / 3px gap），
+        新增常數 _COL_DETAIL_FAIL = (160, 160, 160)（灰色 BGR）；
+        當 up_y_i is None 或 lo_y_i is None 時，
+        在 [ub.y1, lb.y0] 範圍畫灰色虛線代表「此柱 edge 偵測失敗」。
+
+4-E. 圖例更新
+  Legend 新增 "DETAIL WINNER"（紫色）與 "DETAIL FAIL"（灰色）兩個項目。
+
+  灰線觸發條件（edge detection fallback reasons）：
+  - flat_profile     — 剖面梯度全域太平，找不到 edge
+  - weak_gradient    — 最大梯度峰值低於閾值
+  - ambiguous_peak   — 多個梯度峰值強度相近，無法確認
+  - proximity_violation — 兩端 edge 距離過近（CD 過小不合理）
+  - small_window     — blob 高度太小，取樣窗口不足
+  - no_crossing      — 梯度剖面無零交叉點
+
+
+────────────────────────────────────────────────────────────────────────────────
+【Fix 5】X Inset 參數（取樣有效範圍內縮）
+  檔案: src/core/recipes/cmg_recipe.py、src/gui/workspaces/recipe_workspace.py
+────────────────────────────────────────────────────────────────────────────────
+
+需求：
+  上下 blob 的 X 共有範圍最外兩端（邊界像素）常被邊緣效應干擾，
+  希望能設定「往內縮 N px」後再取樣，可選擇性排除邊界像素。
+
+實作（cmg_recipe.py）：
+  apply_yedge_subpixel_to_cuts() 新增參數 x_inset: int = 0。
+  在計算 use_paired 之前：
+    x_ov_start += x_inset
+    x_ov_end   -= x_inset
+  若 x_ov_start >= x_ov_end（縮到沒有空間）→ use_paired = False，
+  回退為單 blob 掃描模式。
+
+實作（recipe_workspace.py）：
+  Advanced Settings 區塊新增 QSpinBox：
+    範圍 0~100 px，後綴 " px"，specialValueText = "off"
+    加入 adv_form.addRow("X inset (each side):", self._x_inset)
+  load_card() 讀取 x_inset_px，save_card() 寫回 x_inset_px。
+
+行為確認：
+  上下 bbox X Common = 10px → x_inset=1 → 實際取樣範圍 8px（左+1、右-1）。
+
+
+────────────────────────────────────────────────────────────────────────────────
+【Fix 6】Excel 大量資料匯出損毀修正
+  檔案: src/output/excel_exporter.py
+  Commit: 7bb4cee
+────────────────────────────────────────────────────────────────────────────────
+
+症狀：
+  跑 13,103 張影像後 Export Excel，Excel 開啟時顯示：
+  "At least one sheet must be visible"，工作表無法正常顯示，需要修復。
+
+調查過程：
+
+  Round 1 — FormulaRule CF 問題（已在前一版修正）：
+    原始用 FormulaRule(formula=..., fill=PatternFill("solid", fgColor=...))
+    此 API 將 solid fill 嵌入 DifferentialStyle 中，在某些 openpyxl 版本
+    會產生不相容的 XML，使工作簿狀態損毀。
+    修正：改用 DifferentialStyle(fill=PatternFill(bgColor=...)) + Rule(type="formula")。
+
+  Round 2 — 大量資料三個新根本原因（本次修正）：
+
+  根本原因 A：_autofit_columns 全欄具現化
+    舊寫法：
+      for col_idx, col_cells in enumerate(ws.columns, start=1):
+          cells_to_check = list(col_cells)[:sample_rows + 1]
+    問題：ws.columns 在 openpyxl 中 yield 的是完整 tuple（非 lazy generator），
+          每個 tuple 已包含所有行。list() 只是多此一舉，但 tuple 本身已完整
+          具現化。21 欄 × 39,309 行 = 825,489 次 _get_cell dict 查找。
+    修正：
+      max_row = min(ws.max_row or 1, sample_rows + 1)
+      for col_idx, col_cells in enumerate(
+          ws.iter_cols(min_row=1, max_row=max_row), start=1
+      ):
+    效果：21 欄 × 201 行 = 4,221 次查找（降低 200 倍）。
+
+  根本原因 B：Image Summary 逐格著色（78k 次物件配置）
+    舊寫法：
+      for row_idx in range(2, len(df_summary) + 2):
+          ws_sum[f"{col}{row_idx}"].fill = min_fill  # × 3 欄
+          ws_sum[f"{col}{row_idx}"].fill = max_fill  # × 3 欄
+    問題：13,103 rows × 6 欄 = 78,618 次 cell style 寫入，在 openpyxl 內部
+          style store 建立大量物件，造成記憶體壓力，ZIP 寫入可能不完整。
+    修正：
+      len(df_summary) > 2000 時改用整欄 CF（DifferentialStyle + formula=["TRUE"]），
+      無逐列物件配置，style 數量固定 6 個。
+      ≤ 2000 行仍維持原本逐格著色（小資料集不受影響）。
+
+  根本原因 C：sheetView / tabSelected 不一致
+    問題：大量寫入後 openpyxl 的工作表狀態可能不一致，Excel 誤判所有 sheet 隱藏。
+    修正：在 with ExcelWriter 區塊結束前加入防禦性保護：
+      for _ws in wb.worksheets:
+          _ws.sheet_state = "visible"
+      wb.active = ws_meas
+
+
+────────────────────────────────────────────────────────────────────────────────
+Commit 紀錄（Branch: claude/optimize-batch-processing-duNZP）
+────────────────────────────────────────────────────────────────────────────────
+
+  eec49f6  Fix min/max aggregation algorithm, annotation drawing, and Excel CF
+           - 修正 paired sample 聚合
+           - 修正 annotator winning_sample_x 使用
+           - _compat.py 還原 winning_sample_x
+           - Excel CF 改用 DifferentialStyle
+
+  c182b0a  Detail CD: filter non-overlap samples, purple winner, remove bold
+           - 過濾非共有 X 的取樣線
+           - 獲勝線改紫色、移除加粗
+
+  78df913  Detail CD: remove labels, add gray dashed lines for failed samples
+           - 移除取樣線數值標籤
+           - 新增 edge detection 失敗灰色虛線
+
+  113497e  Add X inset parameter to Edge Locator blob sampling zone
+           - cmg_recipe.py x_inset 參數
+           - recipe_workspace.py GUI 控件
+
+  7bb4cee  Fix Excel 'At least one sheet must be visible' for large exports
+           - _autofit_columns 改用 iter_cols（200x 改善）
+           - Image Summary >2000 行改用 CF
+           - 防禦性 sheet_state + active 設定
+
+
+────────────────────────────────────────────────────────────────────────────────
+驗證方式
+────────────────────────────────────────────────────────────────────────────────
+
+1. Min/Max 聚合：設定 aggregate_method="min"/"max"，Detail CD 模式確認紫色
+   獲勝線落在真正最小/最大間距的取樣柱位置。
+
+2. Normal mode 量測線：min/max 量測的 CD 線應對齊 Detail CD 紫色線的 X 位置。
+
+3. Detail CD 灰線：可用邊緣模糊的影像觸發 flat_profile / weak_gradient，
+   確認失敗位置顯示灰色虛線（無固體線）。
+
+4. X Inset：Recipe Editor 設定 x_inset_px=1，跑批後 Detail CD 取樣線應
+   不出現在 bbox 最外側 1px。
+
+5. Excel 大量資料：匯出 10,000+ 張影像結果，Excel 應能正常開啟，
+   三個工作表 All Measurements / Image Summary / Statistics 均可見。
+
+================================================================================
