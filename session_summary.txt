@@ -1,0 +1,152 @@
+============================================================
+MMH SEM Measurement Application — 開發 Session 還原摘要
+============================================================
+日期：2024–2025（多次 Session）
+Branch：claude/plan-ui-improvements-bSeaL
+============================================================
+
+一、本 Session 主要任務
+─────────────────────
+本 Session 針對 MMH（SEM 大量量測）PyQt6 桌面應用進行以下改善：
+
+【功能改善】
+1. 功能一：執行並輸出 KLARF 按鈕加入進度條
+   - 問題：按下後按鈕停用，畫面無回饋，資料量大時 UI 像凍結
+   - 修改：klarf_export_dialog.py 加入 QProgressBar（indeterminate，初始隱藏）
+   - 開始時顯示、完成/錯誤後隱藏
+
+2. 功能二：Top N 預覽表格連動 SEM 影像 + 座標十字 Overlay
+   - 問題：預覽表格只顯示數值，無影像對應
+   - 修改：
+     a. klarf_exporter.py — preview_rows 加入 image_path、nm_per_pixel
+     b. klarf_export_dialog.py — 右側面板改為垂直 QSplitter，下方加 QLabel 影像預覽
+     c. 表格 currentCellChanged 信號連動 _on_table_row_changed()
+     d. 每列第0欄用 Qt.ItemDataRole.UserRole 存完整 row dict
+
+3. 功能三：Measure Recipe 選擇連動 ControlPanel 量測卡片
+   - 問題：選 Recipe 後只還原 Edge Locator，不更新量測卡片
+   - 修改：
+     a. control_panel.py — 新增 load_from_recipe_descriptor(desc) 方法
+     b. measure_workspace.py — _on_recipe_combo_changed() 結尾呼叫上述方法
+
+4. 功能四：Run Single 不自動跳轉 Review Tab
+   - 問題：每次 Run Single 都強制跳到 Review 頁面
+   - 修改：workspace_host.py — 移除自動跳轉 lambda，保留資料同步
+
+【Bug 修復 (B1-B6)】
+B1（高）Worker 信號連接洩漏
+   - 位置：klarf_export_dialog.py _start_worker()
+   - 問題：每次新建 Worker 都連接信號但舊連接未斷，可能觸發多次 _on_done()
+   - 修復：建新 Worker 前先 disconnect 舊信號
+
+B2（中）_size_cache 無限增長
+   - 位置：klarf_exporter.py
+   - 修復：超過 500 筆就清空（_SIZE_CACHE_MAX = 500）
+
+B3（中）Thread-local SQLite 連接未關閉
+   - 位置：batch_run_store.py _get_conn()
+   - 修復：新增 close() 方法
+
+B4（高）nm_per_pixel 回退值 1.0 靜默錯誤
+   - 位置：klarf_exporter.py
+   - 修復：raw_px=0 時設 nm_per_pixel=0.0 並記錄 WARNING
+
+B5（低）Stat card 第 N 筆顯示錯誤邊界值
+   - 位置：klarf_export_dialog.py _on_done()
+   - 修復：ascending 時顯示 max，descending 時顯示 min
+
+B6（高）Batch Pool future 例外未捕捉
+   - 位置：measurement_engine.py _run_batch_pool()
+   - 修復：future.result() 包裹 try/except，失敗記錄為 {"status":"FAIL",...}
+
+【追加修復】
+H2：RecipeRegistry.save() 原子寫入
+   - 修復：.json.tmp 暫存 → os.replace()，避免寫入中途崩潰
+
+H4：批次執行 aborted 旗標 + SQLite 持久化
+   - 修復：models.py 加 aborted 欄位、batch_run_store.py 存讀 aborted、
+           measurement_engine.py run_batch/run_multi_batch 正確設定旗標
+
+二、KLARF Overlay 座標問題（根本原因）
+───────────────────────────────────
+【問題現象】Overlay 完全看不到，推測跑到圖外
+
+【初次錯誤診斷】
+誤以為是 16-bit TIFF 未正規化導致顏色近黑。
+修正後（加 normalize）仍看不到 overlay。
+
+【正確根本原因】
+XREL/YREL 是 KLARF die-corner 絕對座標（單位 nm，通常數百萬量級），
+不是影像中心的相對偏移量。
+
+錯誤做法：px = cx + xrel_orig / nm_per_pixel
+          → 結果：影像中心 + 數百萬像素 → 遠在畫面外
+
+正確做法：
+  Orig 位置 = 影像中心（SEM 影像固定以量測點為中心）
+  New 位置  = 中心 + 位移
+  dx_px = (xrel_new - xrel_orig) / nm_px
+  dy_px = (yrel_orig - yrel_new) / nm_px   ← Y 軸反向
+  orig_pt = (W//2, H//2)
+  new_pt  = (W//2 + dx_px, H//2 + dy_px)
+
+修復後 overlay 正確顯示。
+
+三、Overlay 視覺強化（使用者回饋：「標示再清楚一點」）
+─────────────────────────────────────────────────
+改善項目：
+1. 改用目標準星標記（_draw_target_marker）：
+   - 外環（黑色輪廓 + 色環）
+   - 四方向十字臂（中心留空，黑色外輪廓 + 色線）
+   - 實心中心點（黑色外框 + 色點）
+   - ORIG = 鮮紅，NEW = 鮮藍
+
+2. 文字加背景框（_draw_text_with_box）：
+   - 填色背景矩形，邊框與文字同色
+   - 任何背景都清晰可讀
+
+3. 黃色箭頭（黑外輪廓 + 黃內線）從 ORIG 指向 NEW
+
+4. 箭頭中點顯示距離標籤（如「1234 nm」）
+
+5. 自適應大小：
+   - arm = max(60, min(W,H)//30)   （4096px 影像：arm=136）
+   - thickness = max(3, min(W,H)//400)
+   - font_scale = max(0.9, min(W,H)/1200)
+
+6. Status label 即時顯示補正量：「補正：Δ=(+12, -8) px ≈ 156 nm」
+
+四、image_quality_checker 小工具加入影像預覽
+──────────────────────────────────────────
+修改：tools/image_quality_checker.py
+- 表格與影像預覽改為水平 QSplitter 並排
+- 選取列後右側即時顯示灰階影像（Format_Grayscale8）
+- 顯示 PASS/FAIL 彩色標籤與量測指標
+
+五、MD 文件更新
+────────────
+- SEM_MM_Bug修復清單.md：已修復/待修復/規劃中 分區整理
+- AGENTS.md：更新 signal flow、已知問題、KLARF overlay 座標規則
+- README.md：版本狀態表、功能完成度
+
+六、Commit 紀錄
+───────────────
+c0333da  feat: UI improvements + bug fixes (功能一~四, B1~B6)
+8cd082f  docs: update README/AGENTS/Bug 清單
+517eab1  fix(round3): KLARF overlay 修復 + IQC 影像預覽 + H2/H4
+4aed461  fix(klarf-overlay): 十字座標換算錯誤（根本原因）
+dfc3d44  feat(klarf-overlay): 大幅強化 overlay 可視性
+
+七、尚待處理項目
+────────────────
+M5（中）BatchRunStore.close() 已新增方法但無人呼叫
+         → 應在 MainWindow.closeEvent() 中呼叫
+M7（中）load_from_recipe_descriptor() 觸發雙重 preview
+         → _add_profile 呼叫一次 _emit()，顯式 _emit() 又一次
+M8（低）Recipe combo 變更前缺確認對話框
+M9（低）KLARF Export 每次切換列都重新 imread，應加 LRU cache
+M10（低）多個 DefectRecordSpec block 的 KLARF 解析待驗證
+
+============================================================
+END OF SUMMARY
+============================================================
