@@ -1,0 +1,188 @@
+================================================================================
+  MMH 開發 Session Summary
+  Branch : claude/sem-mm-phase-b-CnQnY
+  Date   : 2026-04-27
+================================================================================
+
+本次 Session 共進行 4 項功能修改 / 錯誤修復，依序如下。
+
+--------------------------------------------------------------------------------
+1. [feat] 移除 Validate Tab，改為 Measure 工作區的「Compare to Reference」Dialog
+   Commit: 56aaed8
+--------------------------------------------------------------------------------
+
+【背景與問題】
+  原本系統在主視窗有獨立的「Validate」Tab（validation_workspace.py），
+  功能與使用流程與 Measure Tab 脫節，且需要分開操作。
+  使用者希望在 Measure 量測完後，能就地對照 Reference CD 進行比對。
+
+【決策過程】
+  - 確認 Reference CD 不是全圖單一值，而是每個 position 各自有對應值
+  - Reference 值來源：從歷史量測記錄批次載入（BatchRunStore）或手動逐列輸入
+  - 不需要 Tolerance 欄位，只顯示 Bias 數值由使用者判斷
+
+【修改內容】
+  ● 刪除：src/gui/workspaces/validation_workspace.py
+  ● 新增：src/gui/measure_validate_dialog.py
+      - MeasureValidateDialog：主比對 Dialog
+          * 4 欄表格：Position / Meas.(nm) / Ref.(nm) [可編輯] / Bias(nm)
+          * Bias 顏色：正值紅色、負值藍色
+          * 右側整體摘要面板（N / Mean Meas / Mean Ref / Mean Bias / Std / Min / Max）
+          * Export CSV 功能
+      - _RefHistoryPickerDialog：歷史批次選擇子 Dialog
+          * 列出所有 BatchRunStore 歷史記錄
+          * 選取後以 (cmg_id, col_id) 對應填入 Ref.(nm) 欄
+  ● 修改：src/gui/workspaces/measure_workspace.py
+      - 新增「Compare to Reference…」按鈕
+      - 按鈕僅在 recipe-based run 完成後 enabled
+      - 載入新影像時重置為 disabled
+  ● 修改：src/gui/workspace_host.py
+      - 移除 ValidationWorkspace 相關 import、實例化、Tab 插入、Signal 連接
+      - TAB 常數從 8 個重排為 7 個（TAB_BROWSE=0 … TAB_HISTORY=6）
+
+--------------------------------------------------------------------------------
+2. [fix] 修正 Annotated 圖的顏色標記：整張圖只有一個藍色（最大）一個橘色（最小）
+   Commit: f4500b2
+--------------------------------------------------------------------------------
+
+【背景與問題】
+  量測完成後 Annotated 圖出現大量橘色和藍色標記，
+  使用者期望整張圖只有一個最大 CD（藍色）和一個最小 CD（橘色），其餘全綠。
+
+【根本原因】
+  src/core/cmg_analyzer.py 的 _flag_top3() 是「每條 CMGCut 各自」找前 3 大/
+  前 3 小，若有 10 條 Cut，最多會產生 30 個橘色 + 30 個藍色標記。
+
+【修改內容】
+  ● src/core/cmg_analyzer.py
+      - 新增 _flag_global_minmax(measurements)：
+          * 清除所有 flag
+          * 找全域最小 cd_px → 標為 "MIN"（橘色），共 1 個
+          * 找全域最大 cd_px → 標為 "MAX"（藍色），共 1 個
+          * 其餘全部為 ""（綠色）
+      - 保留舊 _flag_top3() 函數（供參考）
+      - analyze() 末端：改用 _flag_global_minmax()
+
+  ● src/core/recipes/cmg_recipe.py
+      - import 改為 _flag_global_minmax
+      - 兩處 re-flag call（range filter 後、Y-edge refinement 後）
+        均改為 _flag_global_minmax()
+
+  ● src/gui/workspaces/measure_workspace.py
+      - _filter_by_range() 中的 re-flag 改為 _flag_global_minmax()
+
+  修改位置共 4 個 call site，行為一致。
+
+--------------------------------------------------------------------------------
+3. [feat] Y-edge 量測：改為逐欄掃描全 Blob 寬度並取 Median
+   Commit: efe7d7f
+--------------------------------------------------------------------------------
+
+【背景與問題】
+  Threshold Crossing 和 Subpixel 兩種方法，原本的取樣方式是：
+    以 x_center（兩 Blob cx 中點）為中心，取 ±half_col（預設 ±3 px = 7 列）
+    平均成一條 1D Y 方向 profile，再找一個邊緣 Y 值。
+  此方法取樣位置固定，容易受單一 column 的 noise 影響。
+
+【需求變更（New behaviour）】
+  - 不再取平均 strip，改為：
+    * 迭代 Upper Blob 的 x0 ~ x1 每一個 X pixel → 各自獨立做 1D Y-profile 並 refine
+    * 迭代 Lower Blob 的 x0 ~ x1 每一個 X pixel → 同上
+    * 保留所有現有品質把關（flat_profile / weak_gradient / ambiguous_peak / proximity）
+    * 收集所有成功（無 fallback）的 y_refined 值 → 取 np.median() 作為最終邊緣
+    * 若全部 column 都 fallback → 回退到 y_guess
+  - store_meta 新增 debug 欄位：
+    * {upper,lower}_n_valid_x   ：成功通過品質檢查的 column 數量
+    * {upper,lower}_spread_y_std：成功結果的 Y 值標準差（邊緣均勻度指標）
+
+【修改內容】
+  ● src/core/recipes/cmg_recipe.py
+      - 新增 _collect_edge_by_columns(image, x_start, x_end, y_guess, method, ...)：
+          * 逐 X column 呼叫 _refine_yedge_threshold_crossing() 或
+            _refine_yedge_subpixel()（half_col=0，單列模式）
+          * 回傳 (y_median_or_y_guess, valid_ys, peak_strengths, second_peak_ratios)
+      - apply_yedge_subpixel_to_cuts() 全面改寫：
+          * 移除 blob_cx / x_ctr / col_centers 邏輯
+          * 改呼叫 _collect_edge_by_columns() 分別處理 upper / lower edge
+          * half_col, col_centers 參數保留於 signature（API 相容），但不再使用
+          * store_meta 欄位：現有欄位改為各 column 結果的 median，
+            新增 {upper,lower}_n_valid_x / {upper,lower}_spread_y_std
+
+  比較前後：
+    Before: 7 列取 mean → 1 次 refine → 單一 y 值
+    After : 每列獨立 refine → 收集成功結果 → np.median()
+
+--------------------------------------------------------------------------------
+4. [perf] 修復啟動緩慢：HistoryWorkspace lazy-load + 消除 N+1 list_runs() 呼叫
+   Commit: 618b8d8
+--------------------------------------------------------------------------------
+
+【背景與問題】
+  在 IDE 執行 main 視窗時需等待很久才顯示，診斷後找到兩個主要原因：
+
+  問題 1 — HistoryWorkspace 啟動時立即執行大量 I/O：
+    WorkspaceHost.__init__() 建立所有 Workspace 時，HistoryWorkspace.__init__()
+    觸發 _build_ui() → _refresh()，立即掃描 ~/.mmh/runs/ 並解析所有 JSON 檔案。
+
+  問題 2 — N+1 list_runs() 呼叫：
+    _refresh() 流程中 list_runs()（= glob + JSON parse 所有檔）被呼叫 3+N 次：
+      - get_stats_for_recipe() 內部呼叫 1 次
+      - _populate_recipe_combo() 呼叫 1 次
+      - _get_run_summary_for_stat() 在迴圈中每筆呼叫 1 次（共 N 次）
+
+【修改內容】
+
+  ● src/core/batch_run_store.py
+      - get_stats_for_recipe() 新增可選參數 _summaries=None
+        → 若呼叫方已有 list_runs() 結果可直接傳入，避免重複掃描
+
+  ● src/gui/workspaces/history_workspace.py
+      - 修復 1（Lazy First-Show）：
+          * __init__ 新增 _first_shown = False
+          * _build_ui() 末端移除 self._refresh()
+          * 新增 showEvent()：僅在第一次切換到 History Tab 時呼叫 _refresh()
+          * 效果：啟動時 HistoryWorkspace 完全不做 I/O
+
+      - 修復 2（消除 N+1）：
+          * _refresh() 頂端呼叫 list_runs() 一次 → all_summaries
+          * 建立 summary_by_path = {file_path: summary} dict
+          * get_stats_for_recipe(_summaries=all_summaries) 避免第二次掃描
+          * _populate_recipe_combo(all_summaries) 接受預載清單，不再自己呼叫 list_runs()
+          * _render_table(stats_list, summary_by_path) 使用 O(1) dict lookup
+          * 刪除 _get_run_summary_for_stat()（已無用）
+
+      list_runs() 呼叫次數：啟動時 0 次；Refresh 時從 3+N 次降為 1 次
+
+================================================================================
+  變動檔案一覽
+================================================================================
+
+  新增
+    src/gui/measure_validate_dialog.py
+
+  修改
+    src/core/cmg_analyzer.py
+    src/core/recipes/cmg_recipe.py
+    src/core/batch_run_store.py
+    src/gui/workspace_host.py
+    src/gui/workspaces/measure_workspace.py
+    src/gui/workspaces/history_workspace.py
+
+  刪除
+    src/gui/workspaces/validation_workspace.py
+
+================================================================================
+  知識補充（Session 中討論）
+================================================================================
+
+  三種 Y-CD 量測方法比較：
+    1. BBox（整數邊緣）   ：直接用 Blob bbox 邊界，精度 ±1 px，最快
+    2. Threshold Crossing ：取 x_center ± half_col 欄平均 → 找強度 50% 交叉點，
+                            子像素精度 ~±0.3 px（業界 CD-SEM 標準）
+    3. Subpixel（梯度法） ：同上取樣 → 找 |∇I| 梯度峰 → 二次插值，
+                            子像素精度 ~±0.1 px，含 4 項品質把關
+
+  Session 後半段將方法 2 和 3 的取樣策略改為「逐欄掃描全 Blob 寬度 + Median」，
+  兩者的核心演算法（閾值交叉 / 梯度峰）本身未改變。
+
+================================================================================
