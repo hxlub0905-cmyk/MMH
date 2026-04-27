@@ -1,0 +1,304 @@
+================================================================================
+  MMH 專案 — UX 改善 + 批次功能強化 完整還原紀錄
+  Branch: claude/stabilize-ycd-refinement-ubPbC
+  日期：2026-04-27
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+【背景】
+────────────────────────────────────────────────────────────────────────────────
+本 Session 分兩個主要階段執行：
+
+  第一階段（前一 Context，已 commit 11144e6）：
+    7 項 UX 改善，針對使用者在日常操作中遇到的問題。
+
+  第二階段（本 Session，commit 8ce76cd → 43c50d9）：
+    4 項新功能（邊界濾除、多組批次、Outlier 濾除、Box Plot 匯出）
+    + 2 項 Bug 修正。
+
+
+════════════════════════════════════════════════════════════════════════════════
+  第一階段：7 項 UX 改善（commit 11144e6）
+════════════════════════════════════════════════════════════════════════════════
+
+── 問題 1：Measure 按下「Save Rcp」後，Batch / Recipe 清單不即時更新 ─────────
+
+  根本原因：
+    MeasureWorkspace 儲存 Recipe 後只 emit recipe_saved signal，
+    但 BatchWorkspace 的 recipe combo 沒有訂閱。
+
+  修法：
+    WorkspaceHost._connect_signals() 新增：
+      self._measure.recipe_saved → self._batch.refresh_recipe_selector
+      self._measure.recipe_saved → lambda: self._recipe.refresh_from_registry()
+    讓三個 workspace 的 recipe selector 保持同步。
+
+── 問題 2：確認 Batch Worker 是否真正 Multi-Process ──────────────────────────
+
+  確認結果：
+    MeasurementEngine.run_batch() 使用 ProcessPoolExecutor，
+    worker function (_worker_run_image) 為 top-level picklable function，
+    確實跑在獨立子程序，非 thread-based。屬告知性問題，無需修改。
+
+── 問題 3：Report CD 統計新增 Q25 / Q75 ──────────────────────────────────────
+
+  使用者確認 Q50（Median）已存在，只需補 Q25 / Q75。
+
+  修法：
+    report_workspace.py _refresh_stats() 中，使用
+    statistics.quantiles(ok_vals, n=4) 取 qs[0]（Q25）與 qs[2]（Q75），
+    插入 Median 之後顯示。
+    report_generator.py _compute_stats() 同步新增 Q25 / Q75 欄位。
+
+── 問題 4：CSV / Excel / JSON / HTML / Images 5 個 Export 按鈕整合成一個 ─────
+
+  修法：
+    新增 _ExportDialog(QDialog) — 含：
+      · Output folder 選擇列
+      · 格式 checkbox：CSV、Excel（兩者若無 pandas 則灰底警告）、
+        JSON、HTML Report、Overlay Images
+    report_workspace.py 改為單一「Export…」按鈕，點擊後開 dialog。
+    匯出錯誤逐項收集後統一彈窗顯示。
+
+── 問題 5：跑完 Batch → Review tab UI 凍結 ───────────────────────────────────
+
+  根本原因：
+    ReviewWorkspace.load_batch_run() 在 main thread 一次性重建所有
+    MeasurementRecord，資料量大時阻塞 event loop。
+
+  修法：
+    load_batch_run() / report_workspace.py load_batch_run() 中，
+    每處理 200 筆呼叫一次 QApplication.processEvents()，
+    讓 UI 保持回應。
+
+── 問題 6：Batch Image Results 改為即時 Log 顯示 ─────────────────────────────
+
+  根本原因：
+    舊版在 _on_single_finished() 後才一次將結果填入 QListWidget。
+
+  修法：
+    _on_progress(done, total, name, status) slot 中，
+    每筆完成時立即 append 一個 QListWidgetItem，
+    並以顏色區分 OK（darkGreen）/ FAIL（red）。
+
+── 問題 7：Export Images 改為只輸出 Overlay，不輸出 Raw ─────────────────────
+
+  修法：
+    新增 _export_overlays_to() 方法：
+      · 讀取原始影像 → draw_overlays() → 僅存 annotated PNG
+      · 帶有 QProgressDialog（可取消）
+    移除原本同時輸出 raw 的邏輯。
+
+── 問題 8：無 pandas 時 Export 跳出 "No module named 'pandas'" ──────────────
+
+  修法：
+    _ExportDialog 中呼叫 _check_pandas()，
+    若 pandas 未安裝則 CSV / Excel checkbox 顯示警告文字並 setEnabled(False)，
+    不再丟出未處理例外。
+
+
+════════════════════════════════════════════════════════════════════════════════
+  第二階段：4 項新功能（commit 8ce76cd）
+════════════════════════════════════════════════════════════════════════════════
+
+使用者需求確認（AskUserQuestion）：
+  · 邊界 blob 處理方式 → 完全排除（不產生 MeasurementRecord）
+  · 多組執行方式       → 依序執行
+  · Box Plot 資料點   → 每張影像的量測值
+  · 額外功能          → 統計 Outlier 濾除 + Box Plot 可獨立匯出
+
+────────────────────────────────────────────────────────────────────────────────
+Feature 1：邊界 Blob 濾除（Border Blob Filter）
+────────────────────────────────────────────────────────────────────────────────
+
+  動機：
+    Blob bbox 若壓在影像邊界，量測到的 CD 會極度不合理（最小值 outlier），
+    影響 Batch 統計。
+
+  Schema 擴充：
+    edge_locator_config["border_margin_px"]（預設 0，表示關閉）
+
+  修改檔案：
+
+  src/core/recipes/cmg_recipe.py
+    · detect_features() 幾何 filter 之後插入：
+        _border_px = int(self._descriptor.edge_locator_config.get("border_margin_px", 0))
+        if _border_px > 0:
+            _h, _w = mask_roi.shape[:2]
+            blobs = [b for b in blobs
+                     if b.x0 >= _border_px and b.y0 >= _border_px
+                     and b.x1 <= _w - _border_px and b.y1 <= _h - _border_px]
+    · _card_to_descriptor() edge_locator_config dict 加入
+        "border_margin_px": int(card.get("border_margin_px", 0))
+
+  src/gui/workspaces/recipe_workspace.py
+    · Analysis tab 新增 self._border_margin = QSpinBox(0-200)
+    · _load_descriptor_to_form() 讀取 ec.get("border_margin_px", 0)
+    · _save_recipe() 寫回 "border_margin_px"
+
+  src/gui/workspaces/measure_workspace.py
+    · _build_edge_locator_panel() 新增 self._ec_border QSpinBox
+    · _on_recipe_combo_changed() 同步讀取
+    · _run_with_recipe() patch descriptor 時帶入
+    · _analyze_with_cards() 鏡像同一濾除邏輯
+
+────────────────────────────────────────────────────────────────────────────────
+Feature 2：多組資料夾批次（Multi-Dataset Batch）
+────────────────────────────────────────────────────────────────────────────────
+
+  src/core/models.py
+    · BatchRunRecord 加入 dataset_label: str = ""（向下相容）
+    · 新增 MultiDatasetBatchRun dataclass：
+        - run_id, datasets: list[BatchRunRecord], start/end_time, worker_count
+        - 屬性：total_images, success_count, fail_count（加總各 dataset）
+
+  src/core/measurement_engine.py
+    · 新增 run_multi_batch(datasets, on_dataset_start, on_progress, max_workers)
+      → 依序對每組 dataset 呼叫 run_batch()
+      → 每組完成後設定 br.dataset_label
+      → 回傳 MultiDatasetBatchRun
+
+  src/gui/workspaces/batch_workspace.py（完整重設計）
+    · 新增 _DatasetRow(NamedTuple)：
+        label_edit, folder_label, recipe_combo, remove_btn,
+        container, folder_btn, folder_ref（list，可變 slot）
+    · UI 改為可捲動的 dataset 列表（QScrollArea）
+    · 「+ Add Dataset」按鈕動態新增列
+    · 新增 multi_batch_completed = pyqtSignal(object) signal
+    · _run_batch()：
+        1 列 → _BatchWorker → batch_completed（Review tab）
+        2+ 列 → _MultiBatchWorker → multi_batch_completed（Report tab）
+    · 新增 _MultiBatchWorker(QThread)：
+        signals: dataset_started(int,int,str), progress, finished, error
+    · _on_dataset_started()：log 插入 "=== Dataset N/M: label ==="
+
+  src/gui/workspace_host.py
+    · 連接 multi_batch_completed →
+        review.load_multi_batch
+        report.load_multi_batch
+        lambda: setCurrentIndex(TAB_REPORT)
+
+  src/gui/workspaces/review_workspace.py
+    · 新增 load_multi_batch(mbr: MultiDatasetBatchRun)：
+        各 dataset 間插入灰色不可選分隔列（_separator: True）
+        自動選取第一個非分隔列
+    · _on_batch_row_changed() 加入 separator guard（遇到分隔列直接 return）
+
+────────────────────────────────────────────────────────────────────────────────
+Feature 3：統計 Outlier 濾除（Report 顯示層級）
+────────────────────────────────────────────────────────────────────────────────
+
+  src/gui/workspaces/report_workspace.py
+    · 新增 "Display Filter" QGroupBox，內含 QComboBox：
+        "No filter" / "IQR (1.5×)" / "3σ (mean ± 3σ)"
+    · 新增 _apply_outlier_filter(vals) → list[float]：
+        IQR：排除 [Q1-1.5×IQR, Q3+1.5×IQR] 以外的值
+        3σ：排除 |v - mean| > 3σ 的值
+    · _on_filter_changed()：呼叫 _refresh_stats()，多組時同時呼叫 _refresh_boxplot()
+    · 不修改 MeasurementRecord 原始資料，純顯示層過濾
+
+────────────────────────────────────────────────────────────────────────────────
+Feature 4：Box Plot 顯示與獨立匯出
+────────────────────────────────────────────────────────────────────────────────
+
+  src/output/report_generator.py
+    · 新增 _boxplot_b64(datasets: list[dict]) → str：
+        datasets = [{"label": str, "values": list[float]}]
+        使用 matplotlib 繪製並排 Box Plot（patch_artist=True, Set2 colormap）
+        回傳 base64 PNG；無 matplotlib 時回傳 ""（graceful degradation）
+
+  src/gui/workspaces/report_workspace.py
+    · _build_ui() 新增 "CD Distribution by Dataset" QGroupBox（預設隱藏）
+        內含 self._boxplot_label = QLabel()（顯示 QPixmap）
+    · load_multi_batch() 呼叫後顯示此區塊
+    · _refresh_boxplot()：
+        → 各 dataset 收集值並套用 outlier filter
+        → 呼叫 _boxplot_b64() → base64 decode → loadFromData → QPixmap
+    · _refresh_stats() 多組模式：
+        每組 dataset 產生獨立 QGroupBox + QFormLayout 顯示統計
+    · _ExportDialog 新增 has_multi_batch 參數：
+        新增「Box Plot (PNG)」checkbox（僅多組模式下啟用，預設勾選）
+    · _export_dialog_clicked() 多組 overlay 匯出：
+        依 dataset label 建立子資料夾
+    · export_boxplot 屬性：匯出 boxplot_YYYYMMDD_HHMMSS.png
+
+
+════════════════════════════════════════════════════════════════════════════════
+  Bug 修正（commit 43c50d9）
+════════════════════════════════════════════════════════════════════════════════
+
+── Bug 1：Batch Error: 'recipe_ids' ─────────────────────────────────────────
+
+  症狀：多組 Batch 執行時跳出 "Batch Error: 'recipe_ids'"。
+
+  根本原因：
+    batch_workspace.py _run_batch() 組建 valid_rows 時，
+    使用 "recipe_id": recipe_id（字串），
+    但 measurement_engine.py run_multi_batch() 讀取的 key 為
+    "recipe_ids"（list of str）→ KeyError。
+
+  修法：
+    valid_rows.append() 改為 "recipe_ids": [recipe_id]
+    單組路徑的 _BatchWorker 建構也改用 r["recipe_ids"]。
+
+── Bug 2：Dataset 設定框 Y 方向太窄 ─────────────────────────────────────────
+
+  症狀：Dataset scroll area 僅 200px，新增多列時擁擠難以操作。
+
+  修法：
+    scroll.setMinimumHeight(120)
+    scroll.setMaximumHeight(340)
+    （原本為固定 maxHeight=200px）
+
+
+════════════════════════════════════════════════════════════════════════════════
+  Commit 歷程
+════════════════════════════════════════════════════════════════════════════════
+
+  43c50d9  fix(batch): recipe_ids KeyError + widen dataset scroll area
+  8ce76cd  feat: border filter, multi-dataset batch, outlier filter, box plot export
+  11144e6  feat(batch/report): 7 UX improvements — live log, export dialog,
+                               lazy review, recipe sync
+
+════════════════════════════════════════════════════════════════════════════════
+  修改檔案總覽
+════════════════════════════════════════════════════════════════════════════════
+
+  src/core/models.py
+    BatchRunRecord 加 dataset_label；新增 MultiDatasetBatchRun
+
+  src/core/recipes/cmg_recipe.py
+    detect_features() 加 border filter；_card_to_descriptor() 加 key
+
+  src/core/measurement_engine.py
+    新增 run_multi_batch()
+
+  src/gui/workspaces/batch_workspace.py
+    完整重設計：動態 dataset 列表 UI；_MultiBatchWorker；recipe_ids bug fix
+
+  src/gui/workspace_host.py
+    連接 multi_batch_completed signals
+
+  src/gui/workspaces/review_workspace.py
+    新增 load_multi_batch()；separator row guard
+
+  src/gui/workspaces/report_workspace.py
+    Outlier filter；per-dataset stats；box plot 顯示；更新 Export dialog
+
+  src/gui/workspaces/recipe_workspace.py
+    Analysis tab 加 border_margin_px QSpinBox
+
+  src/gui/workspaces/measure_workspace.py
+    Edge Locator panel 加 border_margin_px QSpinBox
+
+  src/output/report_generator.py
+    新增 _boxplot_b64()；_compute_stats() 加 Q25 / Q75
+
+════════════════════════════════════════════════════════════════════════════════
+  測試結果
+════════════════════════════════════════════════════════════════════════════════
+
+  全程維持 61 passed，無回歸問題。
+  （前置作業：pip install "pandas>=2.0" openpyxl 解決 2 個 pandas 相關測試）
+
+================================================================================
