@@ -620,39 +620,66 @@ class KlarfExportDialog(QDialog):
             )
             out_of_bounds = new_pt != new_pt_clipped
 
-            # 步驟 3：尺寸依影像大小自適應
-            arm       = max(40, min(W, H) // 40)
-            thickness = max(2,  min(W, H) // 600)
-            font      = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = max(0.6, min(W, H) / 1500)
-            font_thick = max(1, thickness - 1)
+            # 步驟 3：尺寸依影像大小自適應（再放大一點以更醒目）
+            arm        = max(60, min(W, H) // 30)   # 4096 → 136，1024 → 60
+            thickness  = max(3,  min(W, H) // 400)  # 4096 → 10，1024 → 3
+            font       = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = max(0.9, min(W, H) / 1200)
+            font_thick = max(2, thickness - 1)
 
             annotated = img.copy()
 
-            # 從 Orig → New 畫箭頭，視覺化補正方向（先畫，避免覆蓋十字）
+            ORIG_COLOR = (60, 80, 255)    # 鮮紅
+            NEW_COLOR  = (255, 200, 30)   # 鮮藍
+            ARROW_COLOR = (0, 220, 255)   # 鮮黃
+
+            # 從 Orig → New 畫粗箭頭（先畫，避免覆蓋十字中心）
             if abs(dx_px) > 1 or abs(dy_px) > 1:
+                # 黑色外框
                 cv2.arrowedLine(
                     annotated, orig_pt, new_pt_clipped,
-                    color=(0, 255, 255),  # 黃色箭頭
-                    thickness=max(1, thickness - 1),
+                    color=(0, 0, 0),
+                    thickness=thickness + 2,
                     line_type=cv2.LINE_AA,
-                    tipLength=0.05,
+                    tipLength=0.06,
+                )
+                # 彩色內線
+                cv2.arrowedLine(
+                    annotated, orig_pt, new_pt_clipped,
+                    color=ARROW_COLOR,
+                    thickness=thickness,
+                    line_type=cv2.LINE_AA,
+                    tipLength=0.06,
+                )
+                # 在箭頭中點顯示距離（nm）
+                mid = ((orig_pt[0] + new_pt_clipped[0]) // 2,
+                       (orig_pt[1] + new_pt_clipped[1]) // 2)
+                dist_nm = (dx_px ** 2 + dy_px ** 2) ** 0.5 * nm_px
+                _draw_text_with_box(
+                    annotated, f"{dist_nm:.0f} nm", (mid[0] + 10, mid[1] - 10),
+                    fg=ARROW_COLOR, font=font, font_scale=font_scale * 0.85,
+                    thickness=font_thick,
                 )
 
-            _draw_crosshair(annotated, orig_pt,         color=(255, 80, 60),
-                            arm=arm, thickness=thickness)
-            _draw_crosshair(annotated, new_pt_clipped,  color=(40, 160, 240),
-                            arm=arm, thickness=thickness)
+            # 兩個目標瞄準器
+            _draw_target_marker(annotated, orig_pt,         color=ORIG_COLOR,
+                                arm=arm, thickness=thickness)
+            _draw_target_marker(annotated, new_pt_clipped,  color=NEW_COLOR,
+                                arm=arm, thickness=thickness)
 
-            # 文字說明（先畫黑色描邊提升對比，再畫彩色文字）
-            for label, pt, color in (("Orig", orig_pt,       (255, 80, 60)),
-                                      ("New",  new_pt_clipped, (40, 160, 240))):
-                tx = pt[0] + arm // 2
-                ty = pt[1] - arm // 2
-                cv2.putText(annotated, label, (tx, ty), font, font_scale,
-                            (0, 0, 0), font_thick + 2, cv2.LINE_AA)
-                cv2.putText(annotated, label, (tx, ty), font, font_scale,
-                            color, font_thick, cv2.LINE_AA)
+            # 文字標籤（避免兩個 label 互相重疊：Orig 在右上方，New 在左下方）
+            _draw_text_with_box(
+                annotated, "ORIG",
+                (orig_pt[0] + int(arm * 0.7), orig_pt[1] - int(arm * 0.5)),
+                fg=ORIG_COLOR, font=font, font_scale=font_scale,
+                thickness=font_thick, bold=True,
+            )
+            _draw_text_with_box(
+                annotated, "NEW",
+                (new_pt_clipped[0] + int(arm * 0.7), new_pt_clipped[1] + int(arm * 0.9)),
+                fg=NEW_COLOR, font=font, font_scale=font_scale,
+                thickness=font_thick, bold=True,
+            )
 
             pix = _bgr_to_pixmap(annotated)
             # 縮放至 label 大小（保持比例）
@@ -662,11 +689,17 @@ class KlarfExportDialog(QDialog):
                 pix.scaled(lw, lh, Qt.AspectRatioMode.KeepAspectRatio,
                            Qt.TransformationMode.SmoothTransformation)
             )
-            # 若 New 超出影像範圍，加狀態標記顯示偏移量
+            # 在狀態列顯示補正量（不論是否超出範圍都顯示）
+            dist_nm = (dx_px ** 2 + dy_px ** 2) ** 0.5 * nm_px
             if out_of_bounds:
                 self._status_label.setText(
                     f"⚠ New 座標 (Δ={dx_px:+.0f}, {dy_px:+.0f} px) 超出影像範圍，"
-                    f"已 clip 至邊界顯示。"
+                    f"已 clip 至邊界；補正距離 ≈ {dist_nm:.0f} nm。"
+                )
+            else:
+                self._status_label.setText(
+                    f"補正：Δ=({dx_px:+.0f}, {dy_px:+.0f}) px "
+                    f"≈ {dist_nm:.0f} nm（黃色箭頭由 Orig 指向 New）"
                 )
         except Exception as exc:
             self._image_label.setText(f"影像載入失敗：{exc}")
@@ -681,7 +714,7 @@ def _draw_crosshair(
     arm: int = 20,
     thickness: int = 1,
 ) -> None:
-    """在 img 上就地繪製十字標記。"""
+    """在 img 上就地繪製十字標記（保留供其他用途使用）。"""
     try:
         import cv2
         x, y = center
@@ -690,8 +723,84 @@ def _draw_crosshair(
         y1 = max(0, y - arm); y2 = min(H - 1, y + arm)
         cv2.line(img, (x1, y), (x2, y), color, thickness, cv2.LINE_AA)
         cv2.line(img, (x, y1), (x, y2), color, thickness, cv2.LINE_AA)
-        # 小圓圈標記圓心
         cv2.circle(img, (x, y), 3, color, 1, cv2.LINE_AA)
+    except Exception:
+        pass
+
+
+def _draw_target_marker(
+    img,
+    center: tuple[int, int],
+    color: tuple[int, int, int],
+    arm: int = 60,
+    thickness: int = 3,
+) -> None:
+    """繪製醒目的瞄準器標記：
+
+      [外圈黑色描邊] + [中圈彩色] + [十字 black outline + 彩色內線] + [中心實心圓]
+
+    所有元件都先畫黑色外框再畫彩色內芯，確保在亮/暗背景下都可見。
+    """
+    try:
+        import cv2
+        x, y = center
+        H, W = img.shape[:2]
+
+        outline_thick = thickness + 2
+        outer_r = arm // 2
+        inner_r = max(arm // 5, thickness * 2)
+        gap     = arm // 6   # 十字與中心點間的空隙，避免遮住中心
+
+        # 1. 大外圈（黑色描邊）
+        cv2.circle(img, (x, y), outer_r, (0, 0, 0), outline_thick + 1, cv2.LINE_AA)
+        # 2. 大外圈（彩色內線）
+        cv2.circle(img, (x, y), outer_r, color, thickness, cv2.LINE_AA)
+
+        # 3. 十字四臂（先黑色描邊，再彩色內線）。從中心 gap 開始畫到 arm，避免覆蓋中心
+        for (dx, dy) in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            p1 = (x + dx * gap,    y + dy * gap)
+            p2 = (x + dx * arm,    y + dy * arm)
+            cv2.line(img, p1, p2, (0, 0, 0), outline_thick, cv2.LINE_AA)
+            cv2.line(img, p1, p2, color,     thickness,     cv2.LINE_AA)
+
+        # 4. 中心實心圓（黑邊 + 彩心）
+        cv2.circle(img, (x, y), inner_r + 1, (0, 0, 0), -1, cv2.LINE_AA)
+        cv2.circle(img, (x, y), inner_r,     color,     -1, cv2.LINE_AA)
+    except Exception:
+        pass
+
+
+def _draw_text_with_box(
+    img,
+    text: str,
+    pos: tuple[int, int],
+    fg: tuple[int, int, int],
+    font: int = 0,           # cv2.FONT_HERSHEY_SIMPLEX
+    font_scale: float = 0.8,
+    thickness: int = 2,
+    bg: tuple[int, int, int] = (0, 0, 0),
+    pad: int = 6,
+    bold: bool = False,
+) -> None:
+    """在 img 上畫帶背景框的文字（提升任何背景下的可讀性）。"""
+    try:
+        import cv2
+        H, W = img.shape[:2]
+        if bold:
+            thickness = thickness + 1
+        (tw, th), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+        x, y = pos
+        # 將文字方塊 clip 進影像範圍
+        x = max(pad, min(W - tw - pad, x))
+        y = max(th + pad, min(H - pad, y))
+        # 背景方塊
+        x0, y0 = x - pad, y - th - pad + 2
+        x1, y1 = x + tw + pad, y + baseline + pad - 2
+        cv2.rectangle(img, (x0, y0), (x1, y1), bg, -1, cv2.LINE_AA)
+        # 邊框（與前景同色，加強區隔）
+        cv2.rectangle(img, (x0, y0), (x1, y1), fg, max(1, thickness // 2), cv2.LINE_AA)
+        # 文字
+        cv2.putText(img, text, (x, y), font, font_scale, fg, thickness, cv2.LINE_AA)
     except Exception:
         pass
 
