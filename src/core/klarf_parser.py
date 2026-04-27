@@ -1,26 +1,63 @@
-"""KLARF 1.8 file parser.
+"""KLARF file parser — supports two formats.
 
-Token-scan architecture: the file is split into whitespace-separated tokens
-(preserving quoted strings as single tokens).  A state machine drives section
-dispatch.  All non-DefectList sections are stored as raw text for round-trip
-fidelity.  The DefectList section is parsed into a list of dicts keyed by the
-dynamic column header.
+Flat KLARF 1.8 (legacy)
+────────────────────────
+  FileVersion 1 8
+  RecordFileRecord "..."
+  DefectList N col1 col2 …
+  Data N
+  1 "img.tif" 100 200 ;
+  …
+  EndOfList
+
+Hierarchical KLARF (KLA Tencor extended)
+─────────────────────────────────────────
+  Record FileRecord "1.8"
+  {
+    Record LotRecord "..."
+    {
+      Record WaferRecord "..."
+      {
+        Field ...
+        List DefectList
+        {
+          Columns 42 { int32 DEFECTID, int32 XREL, ... ImageList IMAGEINFO, ... }
+          Data N
+          {
+            257 7672524 … Images 1 { "file.jpg" "JPG" 1 "23" } … ;
+            …
+          }
+        }
+      }
+    }
+  }
+
+Format is auto-detected from the first non-blank line:
+  starts with "record filerecord" (case-insensitive) → hierarchical
+  otherwise                                           → flat
+
+Both formats produce the same parsed-dict schema so that KlarfWriter and
+KlarfTopNExporter work unchanged.  Hierarchical format adds extra keys
+(hier_prefix / hier_suffix / …) used by the writer to reconstruct the
+file faithfully.
 """
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
+_log = logging.getLogger(__name__)
 
 # ── Tokeniser ─────────────────────────────────────────────────────────────────
 
-_QUOTED = re.compile(r'"[^"]*"')
+_QUOTED  = re.compile(r'"[^"]*"')
 _NEWLINE = re.compile(r'\r\n|\r|\n')
 
 
 def _tokenise(text: str) -> list[str]:
-    """Split KLARF text into tokens, preserving quoted strings intact."""
+    """Split a line (or block) of KLARF text into tokens, keeping quoted strings intact."""
     tokens: list[str] = []
     i = 0
     n = len(text)
@@ -46,25 +83,29 @@ def _tokenise(text: str) -> list[str]:
 
 
 def _unquote(s: str) -> str:
-    """Strip surrounding quotes from a quoted token."""
     if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
         return s[1:-1]
     return s
 
 
-# ── Parser ────────────────────────────────────────────────────────────────────
+# ── Public parser ─────────────────────────────────────────────────────────────
 
 class KlarfParser:
-    """Parse a KLARF 1.8 text file.
+    """Parse a KLARF file (flat or hierarchical).
 
     Returns a dict with keys:
-      raw_sections      list[dict]   – non-DefectList sections (order preserved)
-                                       each dict: {"name": str, "text": str}
-      defect_columns    list[str]    – column names from DefectList header
-      defects           list[dict]   – one dict per defect, keyed by column name
-      image_count       int          – value from IMAGECOUNT field (0 if absent)
-      data_count        int          – value from "Data N" line (0 if absent)
-      defect_list_header_raw str     – the "DefectList N col1 col2 …" line verbatim
+      format_type           str          – "flat" | "hierarchical"
+      raw_sections          list[dict]   – flat format only; non-DefectList sections
+      defect_columns        list[str]    – column names (no type prefix)
+      defect_column_types   list[str]    – type prefix per column (hierarchical only)
+      defects               list[dict]   – one dict per defect, keyed by column name
+      image_count           int
+      data_count            int
+      defect_list_header_raw str         – flat format verbatim DefectList header line
+      hier_prefix           str          – hierarchical: text before "Data N" line
+      hier_data_indent      str          – hierarchical: whitespace indent of Data line
+      hier_rows_indent      str          – hierarchical: whitespace indent of data rows
+      hier_suffix           str          – hierarchical: text from closing "}" of Data block
     """
 
     def parse(self, filepath: str | Path) -> dict[str, Any]:
@@ -74,42 +115,190 @@ class KlarfParser:
     def parse_text(self, text: str) -> dict[str, Any]:
         return self._parse_text(text)
 
-    # ── Internal ──────────────────────────────────────────────────────────────
+    # ── Format detection ──────────────────────────────────────────────────────
 
     def _parse_text(self, text: str) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "raw_sections": [],
-            "defect_columns": [],
-            "defects": [],
-            "image_count": 0,
-            "data_count": 0,
-            "defect_list_header_raw": "",
-        }
-
-        tokens = _tokenise(text)
-        idx = 0
-        n = len(tokens)
-
-        # Track raw text for non-DefectList sections by accumulating lines
-        current_section_lines: list[str] = []
-        current_section_name: str = ""
-
-        # We rebuild raw section text from the original file by line, using
-        # the token positions as anchors only for section boundaries.
-        # Simpler approach: split the file into lines, detect section headers,
-        # and collect line groups.
         lines = _NEWLINE.split(text)
-        result.update(self._parse_by_lines(lines))
+        first_nonblank = next((l.strip() for l in lines if l.strip()), "")
+
+        if first_nonblank.lower().startswith("record filerecord"):
+            _log.debug(
+                "[parser] Detected HIERARCHICAL format (first line: %r)",
+                first_nonblank[:80],
+            )
+            return self._parse_hierarchical(lines)
+
+        _log.debug(
+            "[parser] Detected FLAT format (first line: %r)",
+            first_nonblank[:80],
+        )
+        return self._parse_by_lines(lines)
+
+    # ── Hierarchical parser ───────────────────────────────────────────────────
+
+    def _parse_hierarchical(self, lines: list[str]) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "format_type":            "hierarchical",
+            "raw_sections":           [],
+            "defect_columns":         [],
+            "defect_column_types":    [],
+            "defects":                [],
+            "image_count":            0,
+            "data_count":             0,
+            "defect_list_header_raw": "",
+            "hier_prefix":            "",
+            "hier_data_indent":       "        ",
+            "hier_rows_indent":       "          ",
+            "hier_suffix":            "",
+        }
+        n = len(lines)
+
+        # ── Step 1: locate "List DefectList" ──────────────────────────────────
+        defect_list_i = -1
+        for idx, line in enumerate(lines):
+            if line.strip().lower() == "list defectlist":
+                defect_list_i = idx
+                _log.debug("[parser] 'List DefectList' found at line %d", idx)
+                break
+
+        if defect_list_i == -1:
+            _log.warning("[parser] 'List DefectList' NOT found — defects will be empty")
+            return result
+
+        # ── Step 2: parse "Columns N { type COL, … }" ────────────────────────
+        i = defect_list_i + 1
+        columns_end_i = defect_list_i
+        while i < n:
+            stripped = lines[i].strip()
+            if stripped.lower().startswith("columns "):
+                brace_depth = 0
+                col_lines: list[str] = []
+                j = i
+                while j < n:
+                    line = lines[j]
+                    col_lines.append(line)
+                    for ch in line:
+                        if ch == "{":
+                            brace_depth += 1
+                        elif ch == "}":
+                            brace_depth -= 1
+                    if brace_depth <= 0:
+                        columns_end_i = j
+                        break
+                    j += 1
+
+                col_text = "\n".join(col_lines)
+                open_idx  = col_text.find("{")
+                close_idx = col_text.rfind("}")
+                if open_idx != -1 and close_idx != -1:
+                    inner = col_text[open_idx + 1 : close_idx]
+                    cols, types = _parse_column_defs(inner)
+                    result["defect_columns"]      = cols
+                    result["defect_column_types"] = types
+                _log.debug(
+                    "[parser] Columns parsed: %d → %s",
+                    len(result["defect_columns"]),
+                    result["defect_columns"],
+                )
+                i = columns_end_i + 1
+                break
+            i += 1
+
+        # ── Step 3: locate "Data N" ───────────────────────────────────────────
+        data_i = -1
+        while i < n:
+            stripped = lines[i].strip()
+            if stripped.lower().startswith("data "):
+                data_i = i
+                raw_indent = lines[i][: len(lines[i]) - len(lines[i].lstrip())]
+                result["hier_data_indent"] = raw_indent
+                try:
+                    result["data_count"] = int(stripped.split()[1])
+                except (IndexError, ValueError):
+                    pass
+                _log.debug(
+                    "[parser] 'Data' found at line %d (indent=%r, declared count=%d)",
+                    i, raw_indent, result["data_count"],
+                )
+                break
+            i += 1
+
+        if data_i == -1:
+            _log.warning("[parser] 'Data N' NOT found inside DefectList")
+            return result
+
+        # Everything before the Data line is kept verbatim for the writer.
+        result["hier_prefix"] = "\n".join(lines[:data_i])
+
+        # ── Step 4: skip opening "{" of data block ────────────────────────────
+        i = data_i + 1
+        while i < n:
+            if lines[i].strip() == "{":
+                i += 1  # move past the opening brace
+                break
+            i += 1
+
+        # ── Step 5: collect row lines until closing "}" ───────────────────────
+        row_lines: list[str] = []
+        while i < n:
+            if lines[i].strip() == "}":
+                break  # closing brace of Data block
+            row_lines.append(lines[i])
+            i += 1
+
+        data_close_i = i  # the "}" line itself
+
+        # Detect row indent from first non-empty row line
+        rows_indent = result["hier_data_indent"] + "  "
+        for rl in row_lines:
+            if rl.strip():
+                rows_indent = rl[: len(rl) - len(rl.lstrip())]
+                break
+        result["hier_rows_indent"] = rows_indent
+
+        # Suffix = the closing "}" of Data block and everything that follows
+        result["hier_suffix"] = "\n".join(lines[data_close_i:])
+
+        # ── Step 6: parse defect rows ─────────────────────────────────────────
+        columns = result["defect_columns"]
+        defects: list[dict[str, Any]] = []
+        row_tokens: list[str] = []
+
+        for line in row_lines:
+            toks = _tokenise(line)
+            row_tokens.extend(toks)
+            if row_tokens and row_tokens[-1] == ";":
+                row_tokens.pop()
+                if row_tokens:
+                    defect = self._map_row_tokens(row_tokens, columns)
+                    defects.append(defect)
+                    _log.debug(
+                        "[parser]   defect[%d] _image_filename=%r",
+                        len(defects) - 1,
+                        defect.get("_image_filename", ""),
+                    )
+                row_tokens = []
+
+        result["defects"] = defects
+        _log.debug("[parser] Total defects parsed (hierarchical): %d", len(defects))
         return result
+
+    # ── Flat KLARF 1.8 parser ─────────────────────────────────────────────────
 
     def _parse_by_lines(self, lines: list[str]) -> dict[str, Any]:
         result: dict[str, Any] = {
-            "raw_sections": [],
-            "defect_columns": [],
-            "defects": [],
-            "image_count": 0,
-            "data_count": 0,
+            "format_type":            "flat",
+            "raw_sections":           [],
+            "defect_columns":         [],
+            "defect_column_types":    [],
+            "defects":                [],
+            "image_count":            0,
+            "data_count":             0,
             "defect_list_header_raw": "",
+            "hier_prefix":            "",
+            "hier_data_indent":       "",
+            "hier_rows_indent":       "",
+            "hier_suffix":            "",
         }
 
         i = 0
@@ -121,15 +310,13 @@ class KlarfParser:
                 i += 1
                 continue
 
-            # ── DefectList section ────────────────────────────────────────────
+            # ── DefectList section ─────────────────────────────────────────────
             if stripped.startswith("DefectList"):
                 result["defect_list_header_raw"] = lines[i]
                 parts = stripped.split()
-                # "DefectList N col1 col2 …" — parts[0]="DefectList", parts[1]=N
                 columns = parts[2:] if len(parts) > 2 else []
                 result["defect_columns"] = columns
 
-                # Parse data_count from "Data N" keyword right after header
                 i += 1
                 if i < n and lines[i].strip().lower().startswith("data "):
                     data_parts = lines[i].strip().split()
@@ -139,11 +326,14 @@ class KlarfParser:
                         pass
                     i += 1
 
-                # Now parse defect rows until EndOfList or EOF
                 i = self._parse_defect_rows(lines, i, columns, result)
+                _log.debug(
+                    "[parser] Flat DefectList: %d columns, %d defects",
+                    len(columns), len(result["defects"]),
+                )
                 continue
 
-            # ── SummaryRecord — capture NDEFECT ──────────────────────────────
+            # ── SummaryRecord / TestSummaryList ────────────────────────────────
             if stripped.startswith("SummaryRecord") or stripped.startswith("TestSummaryList"):
                 section_lines = [lines[i]]
                 i += 1
@@ -154,31 +344,24 @@ class KlarfParser:
                         break
                     i += 1
                 raw_text = "\n".join(section_lines)
-                # Find NDEFECT value inside this block
-                for sl in section_lines:
-                    m = re.search(r'\bNDEFECT\b\s+(\d+)', sl)
-                    if m:
-                        pass  # stored in raw text; writer will update it
                 result["raw_sections"].append({
                     "name": stripped.split()[0],
                     "text": raw_text,
                 })
                 continue
 
-            # ── All other sections — collect raw text ─────────────────────────
+            # ── All other sections ─────────────────────────────────────────────
             keyword = stripped.split()[0] if stripped else ""
             if keyword and keyword[0].isupper() and keyword not in ("Data",):
                 section_lines = [lines[i]]
                 i += 1
                 while i < n:
                     next_stripped = lines[i].strip()
-                    # Check if next non-empty line starts a new top-level keyword
                     if next_stripped and _is_section_start(next_stripped) and not _is_continuation(next_stripped):
                         break
                     section_lines.append(lines[i])
                     i += 1
                 raw_text = "\n".join(section_lines)
-                # Extract IMAGECOUNT if present
                 for sl in section_lines:
                     m = re.search(r'\bIMAGECOUNT\b\s+(\d+)', sl)
                     if m:
@@ -200,39 +383,32 @@ class KlarfParser:
         columns: list[str],
         result: dict[str, Any],
     ) -> int:
-        """Parse defect data rows; return the line index after EndOfList."""
         i = start
         n = len(lines)
         defects = result["defects"]
 
         while i < n:
             stripped = lines[i].strip()
-
             if not stripped:
                 i += 1
                 continue
-
             if stripped.startswith("EndOfList"):
                 i += 1
                 break
 
-            # Accumulate tokens for one defect row (ends at ';')
             row_tokens: list[str] = []
             while i < n:
                 line_stripped = lines[i].strip()
                 if line_stripped.startswith("EndOfList"):
                     break
-                # Tokenise this line and add to row_tokens
                 toks = _tokenise(lines[i])
                 row_tokens.extend(toks)
                 i += 1
-                # Check if row is complete (ends with ';')
                 if row_tokens and row_tokens[-1] == ";":
                     break
 
             if not row_tokens:
                 continue
-            # Remove trailing ';'
             if row_tokens and row_tokens[-1] == ";":
                 row_tokens = row_tokens[:-1]
 
@@ -242,9 +418,10 @@ class KlarfParser:
         return i
 
     def _map_row_tokens(self, tokens: list[str], columns: list[str]) -> dict[str, Any]:
-        """Map a flat token list (from one defect row) to a column-keyed dict.
+        """Map a flat token list (one defect row) to a column-keyed dict.
 
-        Handles embedded Image N { … } blocks as a single compound token.
+        Handles both "Image N { … }" (flat) and "Images N { … }" (hierarchical)
+        blocks as a single compound token stored in _image_block_raw.
         """
         result: dict[str, Any] = {}
         col_idx = 0
@@ -255,9 +432,8 @@ class KlarfParser:
         while tok_idx < n_tok:
             tok = tokens[tok_idx]
 
-            # ── Image block: "Image" N "{" … "}" ─────────────────────────────
-            if tok == "Image" and tok_idx + 1 < n_tok:
-                # Consume until closing brace
+            # ── Image / Images block ───────────────────────────────────────────
+            if tok in ("Image", "Images") and tok_idx + 1 < n_tok:
                 block_tokens = [tok]
                 tok_idx += 1
                 while tok_idx < n_tok:
@@ -265,8 +441,9 @@ class KlarfParser:
                     tok_idx += 1
                     if tokens[tok_idx - 1] == "}":
                         break
-                # Extract image filename: first quoted string inside braces
-                image_stem = ""
+
+                # Extract first quoted string inside braces as the filename
+                image_filename = ""
                 in_brace = False
                 for bt in block_tokens:
                     if bt == "{":
@@ -275,11 +452,18 @@ class KlarfParser:
                     if bt == "}":
                         break
                     if in_brace and bt.startswith('"'):
-                        image_stem = _unquote(bt)
+                        image_filename = _unquote(bt)
                         break
+
                 result["_image_block_raw"] = " ".join(block_tokens)
-                result["_image_filename"] = image_stem
-                # This block occupies the "ImageInfo" column slot if present
+                result["_image_filename"]  = image_filename
+                _log.debug(
+                    "[parser]     image block: %r → filename=%r",
+                    result["_image_block_raw"][:60],
+                    image_filename,
+                )
+
+                # Advance column index past the ImageInfo slot
                 if col_idx < n_col and "image" in columns[col_idx].lower():
                     col_idx += 1
                 continue
@@ -288,7 +472,6 @@ class KlarfParser:
             if col_idx < n_col:
                 result[columns[col_idx]] = tok
             else:
-                # Extra columns beyond header — store with generated key
                 result[f"_extra_{tok_idx}"] = tok
             col_idx += 1
             tok_idx += 1
@@ -296,7 +479,27 @@ class KlarfParser:
         return result
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Module-level helpers ──────────────────────────────────────────────────────
+
+def _parse_column_defs(inner: str) -> tuple[list[str], list[str]]:
+    """Parse 'int32 COL1,  float COL2,  ImageList COL3' → (names, types).
+
+    Each definition is separated by commas.  The first whitespace-separated
+    token is the type; the second is the column name.
+    """
+    columns: list[str] = []
+    types:   list[str] = []
+    for defn in inner.split(","):
+        parts = defn.split()
+        if len(parts) >= 2:
+            types.append(parts[0])
+            columns.append(parts[1])
+        elif len(parts) == 1 and parts[0] and not parts[0][0].isdigit():
+            # Lone name without a type prefix
+            types.append("")
+            columns.append(parts[0])
+    return columns, types
+
 
 _TOP_LEVEL_KEYWORDS = {
     "RecordFileRecord", "LotRecord", "WaferRecord", "DefectList",
@@ -313,6 +516,4 @@ def _is_section_start(stripped: str) -> bool:
 
 
 def _is_continuation(stripped: str) -> bool:
-    """Lines that look like data rows rather than section headers."""
-    # Defect data rows start with a numeric DEFECTID
     return bool(stripped) and stripped[0].isdigit()

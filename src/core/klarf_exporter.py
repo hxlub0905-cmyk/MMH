@@ -1,8 +1,9 @@
 """KLARF Top-N exporter.
 
-Reads an input KLARF 1.8 file, matches each defect to its SEM MM measurement
-result, sorts matched defects by CD value (ascending or descending), takes the
-top-N, corrects XREL/YREL to the gap centre, and writes a new KLARF.
+Reads an input KLARF 1.8 file (flat or hierarchical), matches each defect to
+its SEM MM measurement result, sorts matched defects by CD value (ascending or
+descending), takes the top-N, corrects XREL/YREL to the gap centre, and writes
+a new KLARF in the same format as the input.
 
 Coordinate system note
 ──────────────────────
@@ -27,22 +28,18 @@ Conversion (three steps):
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from .klarf_parser import KlarfParser
 from .klarf_writer import KlarfWriter
 
+_log = logging.getLogger(__name__)
+
 
 class KlarfTopNExporter:
-    """Export a KLARF filtered to the top-N defects by CD measurement value.
-
-    Parameters
-    ----------
-    ascending : bool
-        True  → sort by CD ascending (smallest CD first — for finding CMGF risk).
-        False → sort by CD descending (largest CD first).
-    """
+    """Export a KLARF filtered to the top-N defects by CD measurement value."""
 
     def export(
         self,
@@ -64,28 +61,51 @@ class KlarfTopNExporter:
           output_path      str
           preview_rows     list[dict] – for preview table
         """
-        klarf_path = Path(klarf_path)
+        klarf_path  = Path(klarf_path)
         output_path = Path(output_path)
 
         # ── Step 1: parse input KLARF ─────────────────────────────────────────
         parsed = KlarfParser().parse(klarf_path)
+        _log.debug(
+            "[exporter] Parsed KLARF '%s': format=%s, defects=%d, columns=%s",
+            klarf_path.name,
+            parsed.get("format_type", "?"),
+            len(parsed.get("defects", [])),
+            parsed.get("defect_columns", []),
+        )
 
         # ── Step 2: build lookup table from batch results ─────────────────────
-        # key = image stem (lower-case, no extension)
-        # value = the measurement with the minimum (or max) calibrated_nm for that image
         lookup = _build_lookup(batch_run, ascending)
+        _log.debug(
+            "[exporter] Lookup built: %d unique image stems → %s",
+            len(lookup),
+            list(lookup.keys())[:10],   # show first 10 stems
+        )
+
+        if not lookup:
+            _log.warning(
+                "[exporter] Lookup is EMPTY — no measurements found in batch_run. "
+                "batch_run type=%s", type(batch_run).__name__,
+            )
 
         # ── Step 3: match each defect to a measurement ────────────────────────
         matched: list[dict[str, Any]] = []
         unmatched_stems: list[str] = []
 
-        for defect in parsed["defects"]:
+        all_defects = parsed.get("defects", [])
+        _log.debug("[exporter] Matching %d defects against lookup...", len(all_defects))
+
+        for defect_idx, defect in enumerate(all_defects):
             image_filename = defect.get("_image_filename", "")
             stem = Path(image_filename).stem.lower() if image_filename else ""
 
             meas = lookup.get(stem)
             if meas is None:
                 unmatched_stems.append(stem or "<no image info>")
+                _log.debug(
+                    "[exporter]   defect[%d] stem=%r → MISS (lookup has no entry)",
+                    defect_idx, stem,
+                )
                 continue
 
             # ── Step 4: read image dimensions ─────────────────────────────────
@@ -93,26 +113,23 @@ class KlarfTopNExporter:
             wh = _get_image_size(image_path)
             if wh is None:
                 unmatched_stems.append(stem)
+                _log.warning(
+                    "[exporter]   defect[%d] stem=%r → MISS (image size unreadable: %r)",
+                    defect_idx, stem, image_path,
+                )
                 continue
             W, H = wh
 
             # ── Step 5: coordinate conversion ────────────────────────────────
-            center_x = float(meas.get("center_x", W / 2))
-            center_y = float(meas.get("center_y", H / 2))
+            center_x    = float(meas.get("center_x",    W / 2))
+            center_y    = float(meas.get("center_y",    H / 2))
             nm_per_pixel = float(meas.get("nm_per_pixel", 1.0))
 
-            # Step 5a: pixel offset from image centre
             dx_px = center_x - W / 2
             dy_px = center_y - H / 2
-
-            # Step 5b: convert to nm
             dx_nm = dx_px * nm_per_pixel
             dy_nm = dy_px * nm_per_pixel
 
-            # Step 5c: update KLARF coordinates
-            # X axes are aligned — add dx_nm
-            # Y axes are OPPOSITE (image Y↓, KLARF Y↑) — subtract dy_nm
-            # ⚠️ YREL uses minus — do NOT change to plus
             try:
                 xrel_orig = float(defect.get("XREL", defect.get("xrel", 0)))
                 yrel_orig = float(defect.get("YREL", defect.get("yrel", 0)))
@@ -120,18 +137,30 @@ class KlarfTopNExporter:
                 xrel_orig, yrel_orig = 0.0, 0.0
 
             xrel_new = xrel_orig + dx_nm
-            yrel_new = yrel_orig - dy_nm
+            yrel_new = yrel_orig - dy_nm   # ⚠️ minus is intentional
 
             matched.append({
-                "defect": defect,
+                "defect":        defect,
                 "calibrated_nm": float(meas.get("calibrated_nm", 0.0)),
-                "image_stem": stem,
-                "xrel_orig": xrel_orig,
-                "yrel_orig": yrel_orig,
-                "xrel_new": xrel_new,
-                "yrel_new": yrel_new,
-                "nm_per_pixel": nm_per_pixel,
+                "image_stem":    stem,
+                "xrel_orig":     xrel_orig,
+                "yrel_orig":     yrel_orig,
+                "xrel_new":      xrel_new,
+                "yrel_new":      yrel_new,
+                "nm_per_pixel":  nm_per_pixel,
             })
+            _log.debug(
+                "[exporter]   defect[%d] stem=%r → MATCH "
+                "(cd=%.2f nm, xrel %g→%g, yrel %g→%g)",
+                defect_idx, stem,
+                float(meas.get("calibrated_nm", 0.0)),
+                xrel_orig, xrel_new, yrel_orig, yrel_new,
+            )
+
+        _log.debug(
+            "[exporter] Match summary: total=%d matched=%d unmatched=%d",
+            len(all_defects), len(matched), len(unmatched_stems),
+        )
 
         # ── Step 6: sort and take top-N ───────────────────────────────────────
         matched.sort(key=lambda x: x["calibrated_nm"], reverse=not ascending)
@@ -140,13 +169,17 @@ class KlarfTopNExporter:
         else:
             selected = matched
 
+        _log.debug(
+            "[exporter] top_n=%d, selected=%d defects for output",
+            top_n, len(selected),
+        )
+
         # ── Step 7: build output defect list ──────────────────────────────────
         output_defects: list[dict[str, Any]] = []
-        preview_rows: list[dict[str, Any]] = []
+        preview_rows:   list[dict[str, Any]] = []
 
         for item in selected:
             d = dict(item["defect"])
-            # Update XREL / YREL columns (case-insensitive key lookup)
             xrel_key = next((k for k in d if k.lower() == "xrel"), None)
             yrel_key = next((k for k in d if k.lower() == "yrel"), None)
             if xrel_key:
@@ -156,13 +189,13 @@ class KlarfTopNExporter:
             output_defects.append(d)
 
             preview_rows.append({
-                "defect_id": d.get("DEFECTID", d.get("defectid", "")),
+                "defect_id":  d.get("DEFECTID", d.get("defectid", "")),
                 "image_stem": item["image_stem"],
-                "ycd_nm": item["calibrated_nm"],
-                "xrel_orig": item["xrel_orig"],
-                "yrel_orig": item["yrel_orig"],
-                "xrel_new": item["xrel_new"],
-                "yrel_new": item["yrel_new"],
+                "ycd_nm":     item["calibrated_nm"],
+                "xrel_orig":  item["xrel_orig"],
+                "yrel_orig":  item["yrel_orig"],
+                "xrel_new":   item["xrel_new"],
+                "yrel_new":   item["yrel_new"],
             })
 
         # ── Step 8: write output KLARF ────────────────────────────────────────
@@ -174,13 +207,13 @@ class KlarfTopNExporter:
         max_cd = max(cd_values) if cd_values else 0.0
 
         return {
-            "exported_count": len(selected),
+            "exported_count":  len(selected),
             "unmatched_count": len(unmatched_stems),
             "unmatched_images": unmatched_stems,
-            "min_ycd_nm": min_cd,
-            "max_ycd_nm": max_cd,
-            "output_path": str(output_path),
-            "preview_rows": preview_rows,
+            "min_ycd_nm":      min_cd,
+            "max_ycd_nm":      max_cd,
+            "output_path":     str(output_path),
+            "preview_rows":    preview_rows,
         }
 
 
@@ -198,31 +231,54 @@ def _build_lookup(batch_run: Any, ascending: bool) -> dict[str, dict[str, Any]]:
     if isinstance(batch_run, MultiDatasetBatchRun):
         for ds in batch_run.datasets:
             all_results.extend(ds.output_manifest.get("results", []))
+        _log.debug(
+            "[exporter] _build_lookup: MultiDatasetBatchRun with %d datasets, "
+            "%d total results",
+            len(batch_run.datasets), len(all_results),
+        )
     elif isinstance(batch_run, BatchRunRecord):
         all_results.extend(batch_run.output_manifest.get("results", []))
+        _log.debug(
+            "[exporter] _build_lookup: BatchRunRecord with %d results",
+            len(all_results),
+        )
+    else:
+        _log.warning(
+            "[exporter] _build_lookup: batch_run type %s is not recognised "
+            "(expected BatchRunRecord or MultiDatasetBatchRun) — lookup will be empty",
+            type(batch_run).__name__,
+        )
 
     lookup: dict[str, dict[str, Any]] = {}
     for result in all_results:
-        image_path = result.get("image_path", "")
-        stem = Path(image_path).stem.lower()
+        image_path   = result.get("image_path", "")
+        stem         = Path(image_path).stem.lower()
         measurements = result.get("measurements", [])
+        _log.debug(
+            "[exporter]   result stem=%r, measurements=%d",
+            stem, len(measurements),
+        )
 
         for meas_dict in measurements:
             try:
                 m = MeasurementRecord.from_dict(meas_dict)
-            except Exception:
+            except Exception as exc:
+                _log.warning(
+                    "[exporter]   MeasurementRecord.from_dict FAILED for stem=%r: %s",
+                    stem, exc,
+                )
                 continue
-            # Derive nm_per_pixel from the stored raw/nm values
+
             nm_per_pixel = 1.0
             if m.raw_px and m.raw_px > 0:
                 nm_per_pixel = m.calibrated_nm / m.raw_px
 
             entry = {
-                "image_path": image_path,
-                "center_x": m.center_x,
-                "center_y": m.center_y,
+                "image_path":    image_path,
+                "center_x":      m.center_x,
+                "center_y":      m.center_y,
                 "calibrated_nm": m.calibrated_nm,
-                "nm_per_pixel": nm_per_pixel,
+                "nm_per_pixel":  nm_per_pixel,
             }
 
             existing = lookup.get(stem)
@@ -234,6 +290,7 @@ def _build_lookup(batch_run: Any, ascending: bool) -> dict[str, dict[str, Any]]:
                 elif not ascending and entry["calibrated_nm"] > existing["calibrated_nm"]:
                     lookup[stem] = entry
 
+    _log.debug("[exporter] _build_lookup done: %d stems in lookup", len(lookup))
     return lookup
 
 
@@ -243,6 +300,7 @@ _size_cache: dict[str, tuple[int, int]] = {}
 def _get_image_size(image_path: str) -> tuple[int, int] | None:
     """Return (W, H) of an image, cached by path."""
     if not image_path:
+        _log.debug("[exporter] _get_image_size: empty path")
         return None
     cached = _size_cache.get(image_path)
     if cached is not None:
@@ -251,9 +309,16 @@ def _get_image_size(image_path: str) -> tuple[int, int] | None:
         import cv2
         img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
         if img is None:
+            _log.warning(
+                "[exporter] _get_image_size: cv2.imread returned None for %r "
+                "(file missing or unreadable)",
+                image_path,
+            )
             return None
         h, w = img.shape[:2]
         _size_cache[image_path] = (w, h)
+        _log.debug("[exporter] _get_image_size: %r → (%d, %d)", image_path, w, h)
         return (w, h)
-    except Exception:
+    except Exception as exc:
+        _log.warning("[exporter] _get_image_size EXCEPTION for %r: %s", image_path, exc)
         return None
