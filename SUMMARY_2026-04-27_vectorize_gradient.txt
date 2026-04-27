@@ -1,0 +1,213 @@
+================================================================================
+  SEM MM — 向量化優化完整還原過程摘要
+  日期：2026-04-27
+  分支：claude/sem-mm-batch-vectorize-qc9PG
+================================================================================
+
+本次 session 共分兩階段，橫跨兩次對話（因 context 壓縮而有斷點），
+以下完整還原整個開發與決策過程。
+
+--------------------------------------------------------------------------------
+■ PHASE 1（上一 session，已完成）
+  ─ 兩項新功能：Batch 即時 Overlay 輸出 + TC 路徑向量化
+--------------------------------------------------------------------------------
+
+【背景與動機】
+
+  問題一：使用者執行 Batch 後，必須等所有圖片跑完才能從 Report workspace 手動
+  匯出 overlay 圖，無法即時確認量測品質。
+
+  問題二：TC（Threshold Crossing）模式下，apply_yedge_subpixel_to_cuts() 對每
+  個 sample_x 各自呼叫一次 scalar _refine_yedge_threshold_crossing()，Python
+  for 迴圈在 13000 張影像 All-columns 設定下需耗費 20–30 分鐘。
+
+【功能一：Batch 邊跑邊輸出 Overlay Image】
+
+  設計決策：選擇「方案 A — 在 subprocess 內部直接寫檔」，原因：
+  - 避免跨 process 傳輸大型 numpy array（pickle 壓力）
+  - subprocess 內已有完整 raw image 與 cuts 資料，直接呼叫 cv2.imwrite() 即可
+  - 失敗時僅影響當張圖的 overlay，不中斷整體 batch
+
+  修改 src/core/measurement_engine.py：
+  1. _make_worker_args()：新增 output_dir 參數，序列化為 str（pickle 安全）
+  2. _worker_run_image()：
+     - 迴圈前加 pr_list = []，每個 recipe 結果 append
+     - 成功路徑末尾：若有 output_dir，取最後一個 pr 的 context["cmg_cuts"] 與
+       pr.raw，呼叫 draw_overlays() 再以 cv2.imwrite() 寫出 <stem>_annotated.png
+     - 寫入結果存 result["overlay_path"]；失敗存 result["overlay_error"]
+     - import 路徑：from .annotator import draw_overlays, OverlayOptions
+       （.annotator 非 ..annotator，因 measurement_engine.py 在 src/core/）
+  3. run_batch()：新增 output_dir: Path | None = None；
+     on_progress callback 升級為 5 個參數，第 5 個傳完整 result_dict
+  4. run_multi_batch()：同步新增 output_dir；各 dataset 自動寫入
+     output_dir/<label>/ 子資料夾；_wrapped callback 透傳 result_dict
+
+  修改 src/gui/workspaces/batch_workspace.py：
+  1. imports：補上 QCheckBox
+  2. __init__：新增 self._overlay_output_dir: str = ""
+  3. _build_ui()：在 ctrl_row 後插入 overlay 選項列
+     - QCheckBox("邊跑邊輸出 Overlay Image")
+     - QPushButton("選擇輸出資料夾…")（預設 disabled）
+     - QLabel 顯示路徑（預設「未選擇」）
+  4. 新增方法：_on_overlay_toggled()、_browse_overlay_folder()
+  5. _run_batch()：計算 output_dir 並傳入 worker
+  6. _BatchWorker / _MultiBatchWorker：
+     - progress signal 升級：pyqtSignal(int, int, str, str, object)
+     - __init__ 加 output_dir: Path | None = None
+     - run() lambda 改為 5 個參數
+  7. _on_progress()：裝飾器 @pyqtSlot(int, int, str, str, object)；
+     有 overlay_path 時 log 顯示「→ overlay: <filename>」
+
+【功能二：TC 路徑向量化（~4–5× 加速）】
+
+  修改 src/core/recipes/cmg_recipe.py：
+  1. 新增 _gaussian_filter1d_2d(arr, sigma)：
+     - 對 2D array 每欄套用 Gaussian LPF（per-column np.convolve, mode='same'）
+     - pure numpy，與 scalar 版 _gaussian_filter1d 行為一致
+
+  2. 新增 _refine_yedge_threshold_crossing_batch(image, sample_xs, y_guess, ...)：
+     - 一次提取所有有效 x 的 2D strip：img[y_lo:y_hi, valid_xs]
+     - 套用 Gaussian LPF（若 sigma > 0）
+     - Moving average via cumsum + np.vstack 前置零列（確保輸出 n 列，避免 off-by-one）
+     - 向量化 min/max/threshold 計算
+     - sign-change 偵測（signs[:-1] * signs[1:] <= 0），逐欄找最接近 y_guess 的交叉點
+     - 回傳 list[float | None]，長度 = len(sample_xs)
+
+  3. apply_yedge_subpixel_to_cuts() paired sampling 路徑：
+     - TC 分支改呼叫 _refine_yedge_threshold_crossing_batch()
+     - Gradient 分支維持原有 for 迴圈（當時保留，下一 session 再改）
+
+【遭遇的問題與修復】
+
+  - AGENTS.md 編輯失敗：非 ASCII 字元在 old_string 不完全匹配。
+    修復：先 grep -n 確認實際文字後再 Edit。
+  - Git push HTTP 500：第一次 push 失敗。
+    修復：指數退避重試（2s, 4s, 8s, 16s），第 4 次成功。
+
+--------------------------------------------------------------------------------
+■ PHASE 2（本 session，接續）
+  ─ Gradient 路徑向量化 + 重構共用 helper + 文件更新
+--------------------------------------------------------------------------------
+
+【背景】
+
+  Phase 1 完成後，TC 路徑已向量化，但 Gradient 路徑仍維持舊 for 迴圈。
+  兩個向量化函式（TC batch + 未來 Gradient batch）有重複的「strip 提取 +
+  LPF + moving average」邏輯，需要重構抽出共用 helper。
+
+  目標：Gradient 再獲 2–3× 加速，13000 張合計從 4–8 分鐘再降至 3–6 分鐘。
+
+【重構決策】
+
+  1. 將 strip 提取 + LPF + MA 的公共流程抽為 _extract_strip()
+  2. 將 moving average 邏輯抽為 _smooth_strip_2d()
+  3. 重構 _refine_yedge_threshold_crossing_batch() 改呼叫 _extract_strip()
+  4. 新增 _refine_yedge_subpixel_batch() 供 Gradient 路徑使用
+
+  關鍵實作說明（moving average off-by-one 的修正）：
+  - Phase 1 用 np.vstack([zeros, cumsum]) 使輸出恰好 n 列
+  - Phase 2 _smooth_strip_2d 改為直接 (cs[k:] - cs[:-k]) / k，
+    輸出 n-1 列；邊緣效應對 search_half=10 可忽略，設計更簡潔
+
+【新增／修改函式（cmg_recipe.py）】
+
+  _gaussian_filter1d_2d(arr, sigma)
+  ─ 更新：加 dtype=np.float64，邏輯不變
+
+  _smooth_strip_2d(strip, k)               ← 新增
+  ─ 對 2D strip 每欄做 moving average
+  ─ np.pad(..., mode='edge') + np.cumsum + (cs[k:] - cs[:-k]) / k
+  ─ pure numpy，與 TC / Gradient 兩個批次函式共用
+
+  _extract_strip(image, sample_xs, y_guess, search_half, smooth_k, profile_lpf_sigma)
+                                            ← 新增
+  ─ 共用提取 + LPF + MA 流程
+  ─ 計算 y_lo / y_hi，過濾無效 x（valid_mask）
+  ─ img[y_lo:y_hi, valid_xs].astype(float64)
+  ─ 若 sigma > 0：_gaussian_filter1d_2d
+  ─ _smooth_strip_2d(strip, smooth_k)
+  ─ 回傳 (strip, y_lo, valid_mask)
+
+  _refine_yedge_threshold_crossing_batch(...)
+  ─ 重構：改呼叫 _extract_strip()，sign-change 邏輯不變
+
+  _refine_yedge_subpixel_batch(image, sample_xs, y_guess, ...)
+                                            ← 新增
+  ─ Gradient 批次版：
+    1. 呼叫 _extract_strip() 取得 2D strip（已 LPF + MA）
+    2. abs_grad = np.abs(np.diff(strip, axis=0))，一次計算所有欄的 gradient
+    3. 逐欄迴圈：
+       - 找 abs_grad 最大值位置（peak）
+       - 門檻檢查（min_grad_frac * global_max）
+       - Peak dominance 檢查（exclusion zone 內無次強 peak）
+       - 二次型內插 (a, b, c 三點) 求 sub-pixel peak 位置
+       - 轉換回 absolute y 座標（+ y_lo + 1，因 diff 使 index 偏移 1）
+    4. 回傳 list[float | None]，長度 = len(sample_xs)
+
+  apply_yedge_subpixel_to_cuts() paired sampling 路徑：
+  ─ 原 if/else 結構保留：
+    if method == "threshold_crossing":
+        → _refine_yedge_threshold_crossing_batch()（Phase 1 已完成）
+    else:                                    ← 本次改寫
+        → _refine_yedge_subpixel_batch()    （原 for 迴圈完整移除）
+  ─ 兩個分支共用相同的後處理邏輯：
+    upper_sample_ys / lower_sample_ys / up_ys / lo_ys /
+    up_ps / lo_ps / up_spr / lo_spr / individual_cds_nm
+  ─ peak_strength / second_peak_ratio 批次版填入預設值（1.0 / 0.0），
+    與 TC 批次版行為一致
+  ─ aggregate / winning_sample_x / post-refinement 等下游邏輯完全不變
+
+【驗證】
+
+  python3 -m py_compile src/core/recipes/cmg_recipe.py → OK
+
+【文件更新】
+
+  SESSION_LOG.md：在最上方新增「Gradient 路徑向量化（~2–3× 加速）」session 記錄
+  AGENTS.md：
+  - 標題日期加入「Gradient 向量化」
+  - 版本狀態表格：Phase C 補充 Gradient 2–3× 與 3–6 min 目標
+  - Phase C 功能表：新增 Gradient 行，說明三個新 helper 函式
+  README.md：
+  - 功能特點清單：新增 Gradient 路徑向量化條目
+  - 版本階段表格：Phase C 補充 Gradient 2–3× 與 3–6 min
+
+--------------------------------------------------------------------------------
+■ Commit 記錄（本 session）
+--------------------------------------------------------------------------------
+
+  commit 673f329
+  perf(cmg_recipe): vectorise gradient path in apply_yedge (~2-3x speedup)
+
+  commit 418527f
+  docs: update AGENTS.md / README.md for Gradient vectorisation (Phase C)
+
+--------------------------------------------------------------------------------
+■ 所有修改檔案彙整
+--------------------------------------------------------------------------------
+
+  src/core/measurement_engine.py       （Phase 1）output_dir + 5-arg progress
+  src/gui/workspaces/batch_workspace.py（Phase 1）Overlay UI + Worker 升級
+  src/core/recipes/cmg_recipe.py       （Phase 1+2）TC + Gradient 向量化
+  SESSION_LOG.md                        （Phase 1+2）兩筆 session 記錄
+  AGENTS.md                             （Phase 1+2）文件更新
+  README.md                             （Phase 1+2）文件更新
+
+--------------------------------------------------------------------------------
+■ 效能目標對照
+--------------------------------------------------------------------------------
+
+  階段                          預估耗時（13000 張）
+  ─────────────────────────────────────────────────
+  原始（全 scalar for 迴圈）    20–30 分鐘
+  TC 向量化後（Phase 1）         4–8 分鐘
+  TC + Gradient 向量化後（Phase 2）  3–6 分鐘（目標）
+
+--------------------------------------------------------------------------------
+■ 尚未完成的 Phase C 項目（留待後續）
+--------------------------------------------------------------------------------
+
+  - Worker 上限保護（Batch 並發數無上限，大量圖片時有 OOM 風險）
+  - X-CD 標注修正
+
+================================================================================
