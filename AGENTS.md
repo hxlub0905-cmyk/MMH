@@ -1,7 +1,7 @@
 # AGENTS.md — SEM MM 開發指南
 
 本文件供 AI Agent 或開發者快速掌握 SEM MM 專案的架構、慣例與開發方式。
-最後更新：2026-04-27（Bug Fix Round2 H1–L2 + Phase D SQLite 遷移）
+最後更新：2026-04-27（Round3：KLARF overlay 修復 + IQC 影像預覽 + H2/H4）
 
 ---
 
@@ -19,7 +19,7 @@
 
 | 項目 | 說明 |
 |------|------|
-| 版本階段 | **Phase A + F2 + G2 + B + Bug Fix Series + Phase C（部分）+ Bug Fix C1–C4/M1–M7/m1–m3 + Bug Fix Round2 + Phase D（BatchRunStore SQLite）已完成** |
+| 版本階段 | **Phase A + F2 + G2 + B + Bug Fix Series + Phase C（部分）+ Bug Fix C1–C4/M1–M7/m1–m3 + Bug Fix Round2 + Phase D（BatchRunStore SQLite）+ UI Improvements / Bug Fix B1–B6 已完成** |
 | 核心演算法 | CMG Y-CD / X-CD 量測（完整保留，以 Recipe 包裝） |
 | X-Proj 偵測 | Pitch-anchored 相位偵測（`detect_mg_column_centers_pitch_phase()`） |
 | 架構模型 | Recipe-driven SEM Metrology Platform |
@@ -29,7 +29,10 @@
 | Phase C（部分） | Batch 即時 Overlay 輸出 + TC 路徑向量化（4–5×）+ Gradient 路徑向量化（2–3×）；合計 13000 張目標 3–6 分鐘 |
 | Bug Fix Round2 | H1（imwrite 回傳值）、H3（NumPy 2.0 ptp 移除）、M1–M4（UX/HTML/file count/X-CD 偏移）、L1–L2（EC key 清理、KLARF 大小寫） |
 | Phase D（部分） | BatchRunStore 遷移至 SQLite（`~/.mmh/runs.db`）；Recipe SQLite 遷移、Plugin 介面待完成 |
-| 未完成 Phase | C（Worker 上限保護、X-CD 標注修正）、D（Recipe SQLite、Plugin 介面） |
+| **UI Improvements 2026-04-27** | **功能一/二/三/四 完成**：KLARF Export 進度條；KLARF Export 影像預覽 + 十字 overlay；Recipe 連動 ControlPanel Cards；Run Single 不再跳轉 Review |
+| **Bug Fix B1–B6 2026-04-27** | B1 worker 訊號洩漏；B2 `_size_cache` 上限；B3 `BatchRunStore.close()`；B4 `nm_per_pixel=0` 警告；B5 Nth Y-CD 降冪邊界；B6 `future.result()` 例外捕捉 |
+| **Round3 修復 2026-04-27** | **KLARF overlay 不顯示**（16-bit TIFF 未正規化 + 線條過細）已修；**IQC 影像預覽**新增；M6（nm_per_pixel=0 警告）；H2（RecipeRegistry 原子寫入）；H4（`aborted` 旗標 + SQLite 持久化） |
+| 未完成 Phase | C（Worker 上限保護、X-CD 標注修正）、D（Recipe SQLite、Plugin 介面）、待修：M5/M7/M8/M9/M10/L3–L7（詳見 SEM_MM_Bug修復清單.md） |
 
 ---
 
@@ -102,12 +105,17 @@ main.py
 
 ```
 Browse.image_selected  →  Measure.set_image_record + 切換至 Measure tab
-Measure.run_completed  →  Review.load_result + 切換至 Review tab
-Batch.batch_completed  →  Report.load_batch_run + 切換至 Report tab
+Measure.run_completed  →  Review.load_result（資料同步，2026-04-27 起不再切換 tab）★
+Batch.batch_completed  →  Review.load_batch_run + Report.load_batch_run + 切換至 Review tab
+Batch.multi_batch_completed  →  Review.load_multi_batch + Report.load_multi_batch + 切換至 Report tab
 Recipe.recipe_saved    →  Measure.refresh_recipe_selector
 Recipe.recipe_saved    →  Batch.refresh_recipe_selector
+Measure.recipe_saved   →  Batch.refresh_recipe_selector + Recipe.refresh_from_registry
 各 workspace.status_message  →  MainWindow status bar
 ```
+
+★ 2026-04-27 起 Run Single 完成後**停留在 Measure tab**，使用者可就地調整參數重跑；
+   Review 仍透過 `load_result` 同步資料，使用者手動切換 tab 即可看到。
 
 ---
 
@@ -395,15 +403,20 @@ self._engine      = MeasurementEngine(self._registry)
 - **Recipe 路徑**（新）：選擇 Registry 中的 Recipe → `engine.run_single()` → `PipelineResult` → `records_to_legacy_cuts()` → `ResultsPanel`
 - **Legacy Cards 路徑**（舊，保留相容）：使用 `ControlPanel` 的量測設定檔卡片直接呼叫 `cmg_analyzer.analyze()`
 
-### ControlPanel（src/gui/control_panel.py，保留不動）
+### ControlPanel（src/gui/control_panel.py）
 
 Phase A 保留供 MeasureWorkspace 的 Legacy Cards 路徑使用。Phase B 考慮將其拆解整合至 RecipeWorkspace。
+2026-04-27 新增 `load_from_recipe_descriptor()`，與 Recipe combo 連動。
 
 重要方法：
 - `get_preprocess_params() -> PreprocessParams`
 - `get_nm_per_pixel() -> float`
 - `get_min_area() -> int | None`
-- `get_measurement_cards() -> list[dict]`（每個 card 含：`name`, `axis`, `gl_min`, `gl_max`, `min_area`）
+- `get_measurement_cards() -> list[dict]`（每個 card 含：`name`, `axis`, `gl_min`, `gl_max`, `min_area`...）
+- **`load_from_recipe_descriptor(desc: MeasurementRecipe) -> None`**（2026-04-27 新增）：
+  清除現有 profiles 後，依 Recipe 的 `preprocess_config`、`detector_config`、`axis_mode`
+  自動建立並填入一個 profile。由 `MeasureWorkspace._on_recipe_combo_changed()` 呼叫。
+  - 注意：目前實作會觸發兩次 `params_changed`（M7，待修）；高解析度影像下可見閃爍。
 
 ### ResultsPanel（src/gui/results_panel.py，保留不動）
 
@@ -479,10 +492,15 @@ pytest tests/ -v
 | `store_meta` | Cards 路徑的 `apply_yedge_subpixel_to_cuts()` 必須 `store_meta=True`（Detail CD 需要） |
 | DataFrame 欄位 | `records_to_dataframe()` 輸出 `cut_id`/`column_id`（不是 `cmg_id`/`col_id`）；13 欄標準順序 |
 | **BatchRunStore SQLite** | `save()` 回傳 `str batch_id`（非 Path）；`load()`/`delete()` 接受 `batch_id: str`；`list_runs()["file_path"]` 存 batch_id；呼叫方（batch_workspace / report_workspace / klarf_export_dialog）**無需改動** |
+| **BatchRunStore.close()** | 2026-04-27 新增：釋放 thread-local SQLite connection，建議在 MainWindow.closeEvent 呼叫；目前尚未有呼叫方（M5 待修） |
 | `_EC_CANONICAL_KEYS` | `recipe_workspace._save_recipe()` 存檔時過濾廢棄 edge_locator_config key，只保留 16 個已知 key |
 | KLARF XREL/YREL | `klarf_exporter` 與 `klarf_writer` 均改用大小寫不敏感查詢（`k.lower() == "xrel"`），防混合大小寫靜默略過 |
 | **KLARF Export YREL 換算** | **`YREL_new = YREL_orig - dy_nm`（負號，Y 軸翻轉，勿改為加號）** |
 | **KLARF Export XREL 換算** | **`XREL_new = XREL_orig + dx_nm`（正號，X 方向一致）** |
+| **KLARF overlay 座標換算** | XREL/YREL 是 die-corner 絕對座標（常為數百萬 nm），**不能** 直接 `cx + xrel/nm_px`（會遠超影像範圍）。Orig 位置永遠是影像中心 (W/2, H/2)（影像以 Orig 為瞄準中心拍攝）；New 位置 = `(W/2 + (xrel_new−xrel_orig)/nm_px, H/2 + (yrel_orig−yrel_new)/nm_px)`，注意 Y 軸翻轉是 `orig−new`。超出影像時 clip 至邊界並提示偏移量 |
+| **KLARF overlay 顯示** | 影像必須先 `cv2.normalize` 至 uint8（16-bit TIFF 不正規化會導致線條顏色在 RGB888 顯示為近黑）；十字 arm/thickness 應依影像大小 scale（4096×4096 至少 arm=80, thickness=4）|
+| **Recipe JSON 原子寫入**（H2） | `RecipeRegistry.save()` 必須先寫 `.json.tmp` 再 `os.replace()`，不可直接 `path.write_text()` |
+| **`aborted` 旗標**（H4） | `BatchRunRecord.aborted` 與 `MultiDatasetBatchRun.aborted` 在 `abort_check` 觸發時設為 True；SQLite schema 新增 `aborted INTEGER DEFAULT 0` 欄，舊 DB 開啟時 ALTER TABLE 自動遷移 |
 
 ---
 
@@ -537,8 +555,32 @@ pytest tests/ -v
 | 已修復 | recipe_workspace.py | _save_recipe() 廢棄 EC key 永久累積（L1） | ✅ Round2 |
 | 已修復 | klarf_exporter.py / klarf_writer.py | XREL/YREL 大小寫混合時靜默略過（L2） | ✅ Round2 |
 | 已完成 | batch_run_store.py | BatchRunStore 遷移至 SQLite（Phase D 部分） | ✅ Phase D |
+| 已修復 | klarf_export_dialog.py | Worker 訊號連接洩漏（B1） | ✅ 2026-04-27 |
+| 已修復 | klarf_exporter.py | `_size_cache` 模組級 dict 無上限（B2） | ✅ 2026-04-27 |
+| 已修復 | batch_run_store.py | thread-local SQLite connection 未提供關閉介面（B3） | ✅ 2026-04-27 |
+| 已修復 | klarf_exporter.py | `raw_px=0` 時 `nm_per_pixel` 回退為 1.0 造成錯誤位移（B4） | ✅ 2026-04-27 |
+| 已修復 | klarf_export_dialog.py | 「第 N 筆 Y-CD」stat card 降冪排序時顯示 max 而非 min（B5） | ✅ 2026-04-27 |
+| 已修復 | measurement_engine.py | Batch pool `future.result()` 未捕捉例外致整批中止（B6） | ✅ 2026-04-27 |
+| 已修復 | klarf_export_dialog.py | 「執行並輸出」缺進度條 UI 看似凍結（功能一） | ✅ 2026-04-27 |
+| 已修復 | klarf_export_dialog.py / klarf_exporter.py | 預覽表格無影像連動 + 原始/新座標十字 overlay（功能二） | ✅ 2026-04-27 |
+| 已修復 | control_panel.py / measure_workspace.py | 選 Recipe 不會帶出 Cards 參數（功能三） | ✅ 2026-04-27 |
+| 已修復 | workspace_host.py | Run Single 強制跳轉 Review，無法就地調整重跑（功能四） | ✅ 2026-04-27 |
+| 已修復 | klarf_export_dialog.py | KLARF Export 影像 overlay 看不見（16-bit TIFF 未正規化 + 線條過細） | ✅ Round3 |
+| 已修復 | tools/image_quality_checker.py | IQC 缺即時影像預覽，無法視覺判斷 PASS/FAIL 是否合理 | ✅ Round3 |
+| 已修復 H2 | recipe_registry.py | `save()` 非原子寫入，已改為 .tmp + os.replace | ✅ Round3 |
+| 已修復 H4 | models.py + measurement_engine.py + batch_run_store.py | `run_multi_batch` abort 未標記 aborted；新增 `aborted` 欄位 + SQLite 持久化 | ✅ Round3 |
+| 已修復 M6 | klarf_export_dialog.py | `nm_per_pixel=0` 時改為顯示警告而非繪製假座標 | ✅ Round3 |
+| 待修 M5 | main_window.py / batch_workspace.py | `BatchRunStore.close()` 從未被呼叫 | 待修 |
+| 待修 M7 | control_panel.py | `load_from_recipe_descriptor` 觸發雙重 preview | 待修 |
+| 待修 M8 | measure_workspace.py | 切換 Recipe combo 直接覆蓋 Cards 設定無確認 | 待修 |
+| 待修 M9 | klarf_export_dialog.py | 高解析度影像每次重新解碼，缺 LRU 快取 | 待修 |
+| 待修 M10 | klarf_parser.py | 階層式 KLARF 多 DefectRecordSpec 區塊處理待驗證 | 待修 |
+| 待修 L3 | measurement_engine.py | `quality_score` PASS 路徑未設定 | 待修 |
+| 待修 L4 | image_viewer.py | `nm_per_pixel=0` 時 ruler 計算可能除以零 | 待修 |
+| 待修 L5 | klarf_export_dialog.py / klarf_exporter.py | 含中文/特殊字元路徑 cv2.imread 失敗（Windows） | 待修 |
+| 待修 L6 | recipe_workspace.py | 空 Recipe combo 時 `currentData()` 為 None 缺保護 | 待修 |
+| 待修 L7 | annotator.py | X-CD 標注 overlay 座標對齊待驗證 | 待修 |
 | 待修 | review_workspace.py | Review 工作流程為基礎版，缺 Accept/Reject 操作 | 待修 |
-| 待修 | annotator.py | X-CD 標注 overlay 座標對齊待驗證 | 待修 |
 | Phase C | measure/batch | Worker 數可調已實作，但無上限保護 | 待改善 |
 | Phase D | recipe_registry.py | Recipe 仍以 JSON 檔案儲存，待遷移至 SQLite | 規劃中 |
 | Phase D | — | Plugin 介面、ValidationWorkspace、HistoryWorkspace | 規劃中 |
@@ -581,12 +623,39 @@ pytest tests/ -v
 | TC 路徑向量化 | `_refine_yedge_threshold_crossing_batch()` 一次提取 2D strip，向量化 MA + sign-change；預期 4–5× 加速（13000 張 20–30 min → 4–8 min） | `cmg_recipe.py` |
 | Gradient 路徑向量化 | `_refine_yedge_subpixel_batch()` 共用 `_extract_strip()` + `_smooth_strip_2d()` 提取 2D strip，`np.abs(np.diff())` 向量化 abs-gradient，逐欄 peak 偵測 + 二次型內插；預期 2–3× 加速；合計目標 3–6 min | `cmg_recipe.py` |
 
+#### UI Improvements + Bug Fix B1–B6（2026-04-27 完成）
+
+| 編號 | 變更 | 主要檔案 |
+|------|------|---------|
+| 功能一 | KLARF Export「執行並輸出」加入脈動進度條 | `klarf_export_dialog.py` |
+| 功能二 | KLARF Export 預覽表格選列連動 SEM 影像 + 藍/橘十字 overlay | `klarf_export_dialog.py`, `klarf_exporter.py` |
+| 功能三 | Recipe 選擇連動 ControlPanel Cards（新增 `load_from_recipe_descriptor()`） | `control_panel.py`, `measure_workspace.py` |
+| 功能四 | Run Single 不再自動跳轉 Review（改為純資料同步） | `workspace_host.py` |
+| B1 | Worker 訊號連接洩漏：建立新 worker 前先 disconnect 舊 worker | `klarf_export_dialog.py` |
+| B2 | `_size_cache` 加入 500 筆上限（超過即清空） | `klarf_exporter.py` |
+| B3 | 新增 `BatchRunStore.close()` 釋放 thread-local connection | `batch_run_store.py` |
+| B4 | `raw_px=0` 時 `nm_per_pixel=0`（記錄警告，跳過座標調整） | `klarf_exporter.py` |
+| B5 | 「第 N 筆 Y-CD」stat card 依排序方向選 min/max | `klarf_export_dialog.py` |
+| B6 | Batch pool `future.result()` 包 try/except，記為單筆 FAIL | `measurement_engine.py` |
+
+#### Round3 修復（2026-04-27 完成）
+
+| 編號 | 變更 | 主要檔案 |
+|------|------|---------|
+| KLARF overlay 看不見（**根本原因**） | XREL/YREL 是 die-corner 絕對座標（常為數百萬 nm），原本誤當成相對影像中心偏移 → 十字跑到圖外。修正為 Orig=影像中心、New=(W/2+(Δx)/nm_px, H/2+(Δy)/nm_px) | `klarf_export_dialog.py` |
+| KLARF overlay 視覺輔助 | 同時加上：16-bit TIFF 正規化、十字尺寸自適應、Orig→New 黃色箭頭、超出範圍 clip+警告 | `klarf_export_dialog.py` |
+| IQC 影像預覽 | 表格右側 `QSplitter` 加 image preview pane，選列即顯示對應影像 + PASS/FAIL 標記 | `tools/image_quality_checker.py` |
+| H2 原子寫入 | `RecipeRegistry.save()` 改為 `.tmp + os.replace` | `recipe_registry.py` |
+| H4 aborted 旗標 | 新增 `aborted: bool` 至 `BatchRunRecord` 與 `MultiDatasetBatchRun`；SQLite schema 加欄位 + ALTER 遷移 | `models.py`, `measurement_engine.py`, `batch_run_store.py` |
+| M6 順便修 | KLARF Export `nm_per_pixel=0` 改為警告文字 | `klarf_export_dialog.py` |
+
 ### Phase D 下一步（剩餘項目）
 
-1. **Recipe 遷移至 SQLite**：`recipe_registry.py` 目前仍用 `~/.mmh/recipes/*.json`，待遷移
+1. **Recipe 遷移至 SQLite**：`recipe_registry.py` 目前仍用 `~/.mmh/recipes/*.json`，待遷移（H2 已先以原子寫入過渡）
 2. **Review 工作流程完善**：ReviewWorkspace 加入 Accept / Reject / Mark False Detect 操作，並記錄 review log
 3. **Plugin 介面**：BaseRecipe 擴充 plugin 載入機制，支援第三方 Recipe
 4. **Worker 上限保護**（Phase C 遺留）：Batch Worker 數量設定缺上限保護
+5. **剩餘待修**：M5（close 未呼叫）、M7（雙重 preview）、M8（覆蓋 Cards 確認）、M9（影像快取）、M10（多 DefectRecordSpec）、L3–L7
 
 ### 重要檔案路徑
 

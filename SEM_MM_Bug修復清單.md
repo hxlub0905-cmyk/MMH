@@ -1,6 +1,6 @@
-# SEM MM — 待修復 Bug 清單 Prompt
-> 產生日期：2026-04-27
-> 適用版本：Bug Fix Series Round2 之後（含 KLARF Export、nm/px 統一整合）
+# SEM MM — Bug 修復清單
+> 最後更新：2026-04-27（UI Improvements + Bug Fix B1–B6 之後）
+> 適用版本：Bug Fix Round2 + Phase D SQLite + UI Improvements
 
 ---
 
@@ -16,335 +16,239 @@
 
 ---
 
-## 高優先修復項目
+# 一、已修復清單（依完成日期排序，最新在上）
+
+## 2026-04-27 — Round3：H2/H4 + KLARF overlay 修復 + IQC 影像預覽 ✅
+
+| ID | 位置 | 簡述 |
+|----|------|------|
+| **KLARF overlay 修復（根本原因）** | `klarf_export_dialog.py` | **十字跑到圖外面去**。XREL/YREL 是 KLARF 絕對座標（die corner 為原點，常為數百萬 nm），原本程式碼當成「相對影像中心的偏移」直接除以 nm_per_pixel，於是 px = cx + 數百萬，遠在影像外。修正：影像中心 (W/2, H/2) 即為 Orig 位置（影像以 Orig 為瞄準中心拍攝）；New 位置 = (W/2 + (xrel_new−xrel_orig)/nm_px, H/2 + (yrel_orig−yrel_new)/nm_px)；New 超出影像時 clip 至邊界並在狀態列顯示警告；加上 Orig→New 黃色箭頭視覺化補正方向 |
+| KLARF overlay 16-bit 正規化 | `klarf_export_dialog.py` | 同時加入：16-bit TIFF 強制 `cv2.normalize` 至 uint8；十字尺寸與線寬依影像大小自適應；文字加黑色描邊提升對比 |
+| **IQC 影像預覽** | `tools/image_quality_checker.py` | 結果表格右側新增即時影像預覽 QSplitter，選列即顯示對應 SEM 影像（使用 `_load_gray()` 已正規化結果），下方顯示 PASS/FAIL 顏色標記 + 三項 metrics |
+| **M6** | `klarf_export_dialog.py` | KLARF Export `nm_per_pixel=0` 時改為顯示警告文字，不再繪製假座標 |
+| **H2** | `recipe_registry.py` | `save()` 改為原子寫入：先寫 `.json.tmp` → `os.replace()` 替換；崩潰時不會留下半損毀 JSON |
+| **H4** | `models.py`, `measurement_engine.py`, `batch_run_store.py` | 新增 `aborted` 欄位至 `BatchRunRecord` 與 `MultiDatasetBatchRun`，`abort_check` 觸發時設為 True；SQLite schema 加 `aborted INTEGER DEFAULT 0` 欄並 ALTER TABLE 遷移；UI 可正確區分「正常完成」與「中斷」 |
+
+## 2026-04-27 — UI Improvements + Bug Fix B1–B6 ✅
+
+| ID | 位置 | 簡述 |
+|----|------|------|
+| **功能一** | `klarf_export_dialog.py` | 「執行並輸出 KLARF」加進度條（脈動式） |
+| **功能二** | `klarf_export_dialog.py` + `klarf_exporter.py` | 預覽表格選列連動 SEM 影像 + 原始/新座標十字 overlay |
+| **功能三** | `control_panel.py` + `measure_workspace.py` | Recipe 選擇連動 ControlPanel Cards 自動帶出參數 |
+| **功能四** | `workspace_host.py` | Run Single 不再自動跳轉至 Review，停留在 Measure |
+| **B1** | `klarf_export_dialog.py` | Worker 訊號連接洩漏（重複觸發回呼） |
+| **B2** | `klarf_exporter.py` | `_size_cache` 加 500 筆上限，避免記憶體無限增長 |
+| **B3** | `batch_run_store.py` | 新增 `close()` 釋放 thread-local SQLite connection |
+| **B4** | `klarf_exporter.py` | `raw_px=0` 時改為跳過座標調整並記錄警告 |
+| **B5** | `klarf_export_dialog.py` | Stat card「第 N 筆 Y-CD」降冪排序時顯示正確邊界值 |
+| **B6** | `measurement_engine.py` | Batch pool `future.result()` 捕捉例外，單筆崩潰不中止整批 |
+
+## 2026-04-27 — Bug Fix Round2 ✅
+
+| ID | 位置 | 簡述 |
+|----|------|------|
+| H1 | `measurement_engine.py` | `cv2.imwrite()` 失敗未檢查回傳值（overlay_path 假性存在） |
+| H3 | `image_loader.py` | `ndarray.ptp()` 在 NumPy 2.0 已移除（改用 `max-min`） |
+| M1 | `report_workspace.py` | Export Dialog tasks 為空時靜默 return，已加 QMessageBox 提示 |
+| M2 | `batch_dialog.py` | X-CD blob 座標轉換與 `_rot_blob_to_ori` 不一致（差 1px） |
+| M3 | `file_tree_panel.py` | 缺 `root_path()` 方法，file count 永遠空白 |
+| M4 | `report_generator.py` | `fail_list` / dataset label 未 `html.escape()` 防 XSS |
+| L1 | `recipe_workspace.py` | `_save_recipe()` 廢棄 EC key 永久累積，加入 `_EC_CANONICAL_KEYS` |
+| L2 | `klarf_exporter.py` / `klarf_writer.py` | XREL/YREL 大小寫混合靜默略過，改用 `k.lower() == "xrel"` |
+
+## 2026-04-26 — Phase D（SQLite 遷移）✅
+
+| 項目 | 位置 | 簡述 |
+|------|------|------|
+| BatchRunStore SQLite | `batch_run_store.py` | JSON 檔案 → SQLite（WAL + thread-local + executemany） |
+| 多執行緒 QThread 安全 | `batch_run_store.py` | `_local: threading.local()`，每執行緒獨立 connection |
+| `get_stats_for_recipe` SQL JOIN | `batch_run_store.py` | 改用 SQL JOIN 取代 Python iteration |
+| state_name / structure_name 持久化 | `batch_run_store.py` | 修補 ALTER TABLE 補欄位（向後相容） |
+
+## 2026-04-26 — KLARF Export ✅
+
+| 項目 | 位置 | 簡述 |
+|------|------|------|
+| KlarfTopNExporter | `klarf_exporter.py` | Top-N 篩選 + 座標補正 + 階層式格式支援 |
+| nm/px 統一整合 | `cmg_recipe.py` 等 | Recipe 內建 `nm_per_pixel`，Measure / Batch / KLARF 全部沿用 |
+
+## 2026-04-24 — Bug Fix C1–C4 / M1–M7 / m1–m3 ✅（精簡帶過）
+
+含：bbox tuple 還原、Windows 路徑正規化、`end_time` finally 保證、Detail CD fallback、全域 MIN/MAX、LRU 上限、進度條重置、`dropna` 防 NaN、測試 key 更新等 14 項。
+
+## 2026-04-23 — Bug Fix Series（首輪）✅（精簡帶過）
+
+含：CD 計算一致性（A1/A2/F1/G1）、UX 修復（B1/G2/I2/Q1）、效能（L2）、Review 批次導航（> 1000 張）、Duplicate Recipe 覆蓋、CSV/Excel 欄位重命名等。
+
+## 2026-04-21 — Phase B（持久化 + 驗證 + 歷史）✅（精簡帶過）
+
+含：BatchRunStore JSON 持久化（已被 Phase D SQLite 取代）、RecipeValidator、HistoryWorkspace Run Chart、77 項測試。
+
+## 2026-04-20 — Phase A / F2 / G2（架構升級）✅（精簡帶過）
+
+含：Recipe 抽象化、統一資料模型、六工作區 GUI、Pitch-anchored 偵測、Save as Recipe、表格排序、Batch 早期進度等。
 
 ---
 
-### [H1] `measurement_engine.py` — `cv2.imwrite` 無回傳值檢查
+# 二、待修復清單
 
-**位置**：`src/core/measurement_engine.py`，函式 `_worker_run_image()`
+## 中優先
+
+---
+
+### [M5] `batch_workspace.py` — `BatchRunStore.close()` 從未被呼叫
+
+**位置**：`src/gui/workspaces/batch_workspace.py`、`workspace_host.py`
 
 **問題描述**：
-`cv2.imwrite()` 在寫入失敗時（磁碟滿、路徑不存在、權限不足）只會靜默回傳 `False`，
-不會拋出例外。目前程式碼沒有檢查回傳值，直接把路徑存入 `result["overlay_path"]`，
-導致下游以為 overlay 圖片存在，但實際上檔案並不存在。
+本次（2026-04-27）已新增 `BatchRunStore.close()` 方法，但無任何呼叫方使用它。
+應在應用程式關閉時（`MainWindow.closeEvent`）或 batch worker 結束時呼叫，
+否則 thread-local SQLite connection 仍會殘留至 process 終止。
 
-**目前程式碼**：
+**修正方式**（兩處擇一）：
 ```python
-cv2.imwrite(out_path, annotated)
-result["overlay_path"] = out_path
+# 方式 A：MainWindow 關閉時
+class MainWindow(QMainWindow):
+    def closeEvent(self, event):
+        self._workspace_host._run_store.close()
+        super().closeEvent(event)
+
+# 方式 B：BatchWorker 結束時（避免主線程遺留）
+class _BatchWorker(QThread):
+    def run(self):
+        try:
+            ...
+        finally:
+            # 若 BatchWorker 內有自己的 store 連線
+            pass
 ```
+
+**影響範圍**：`src/gui/main_window.py` 或 `src/gui/workspaces/batch_workspace.py`
+
+---
+
+### [M7] `control_panel.py` — `load_from_recipe_descriptor` 觸發雙重 preview
+
+**位置**：`src/gui/control_panel.py`，`load_from_recipe_descriptor()`
+
+**問題描述**：
+本次（2026-04-27）功能三新增的 `load_from_recipe_descriptor()` 中：
+1. 呼叫 `self._add_profile()` → `_add_profile` 結尾觸發 `self._emit()`（用預設值）
+2. 設完所有 widget 值後再次 `self._emit()`（用 recipe 值）
+
+兩次 emit 導致 MeasureWorkspace 跑兩次 preview，第一次用預設值會白做，
+且高解析度影像下有可見閃爍。
+
+**修正方式**：
+在 `_add_profile` 內呼叫 `_emit()` 前加旗標，或在 `load_from_recipe_descriptor`
+中暫時停用訊號：
+```python
+def load_from_recipe_descriptor(self, desc):
+    self.blockSignals(True)
+    try:
+        # 既有清除/新增/設定流程
+        ...
+    finally:
+        self.blockSignals(False)
+    self._emit()
+```
+
+**影響範圍**：`src/gui/control_panel.py`
+
+---
+
+### [M8] `measure_workspace.py` — 切換 Recipe combo 直接覆蓋現有 Cards 設定
+
+**位置**：`src/gui/workspaces/measure_workspace.py`，`_on_recipe_combo_changed()`
+
+**問題描述**：
+本次（2026-04-27）功能三完成後，使用者若已在 ControlPanel 手動細調 Cards 參數，
+不小心點到 Recipe combo 切換 → 所有設定被覆蓋且無法復原。應加入確認對話框，
+或記錄「未儲存修改」狀態並提示。
 
 **修正方式**：
 ```python
-ret = cv2.imwrite(out_path, annotated)
-if not ret:
-    raise IOError(f"cv2.imwrite 寫入失敗，請確認路徑與磁碟空間：{out_path}")
-result["overlay_path"] = out_path
+def _on_recipe_combo_changed(self):
+    if self._has_unsaved_card_changes():
+        ans = QMessageBox.question(
+            self, "覆蓋現有 Cards？",
+            "切換 Recipe 將覆蓋目前 ControlPanel Cards 的所有設定，是否繼續？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            # 還原 combo 至上次選擇
+            self._recipe_combo.blockSignals(True)
+            self._recipe_combo.setCurrentIndex(self._last_recipe_idx)
+            self._recipe_combo.blockSignals(False)
+            return
+    # 既有流程
+    ...
 ```
 
-**影響範圍**：`src/core/measurement_engine.py`
+**影響範圍**：`src/gui/workspaces/measure_workspace.py`
 
 ---
 
-### [H2] `batch_run_store.py` — `save()` 非原子寫入
+### [M9] `klarf_export_dialog.py` — 高解析度 SEM 影像每次選列重新解碼
 
-**位置**：`src/core/batch_run_store.py`，函式 `save()` 與 `save_multi()`
+**位置**：`src/gui/klarf_export_dialog.py`，`_on_table_row_changed()`
 
 **問題描述**：
-目前直接使用 `path.write_text(...)` 寫入，若寫入過程中程式崩潰（例如強制關閉、
-斷電），會產生損毀的 JSON 檔案，下次載入時直接報錯。
-應改為先寫入 `.tmp` 暫存檔，確認寫入完成後再用 `os.replace()` 原子替換。
-
-**目前程式碼**：
-```python
-path.write_text(
-    json.dumps(batch_run.to_dict(), indent=2, ensure_ascii=False),
-    encoding="utf-8",
-)
-```
+本次（2026-04-27）功能二的影像預覽：每次選列都呼叫 `cv2.imread()`
+重新讀檔解碼。SEM 影像常為 4096×4096 灰階 8-bit（~16 MB），
+頻繁切換列時 CPU/IO 負擔可觀。
 
 **修正方式**：
+加入 LRU 快取（檔案 → 已解碼 ndarray），上限 8 張：
 ```python
-import os
+from functools import lru_cache
 
-tmp_path = path.with_suffix(".json.tmp")
-tmp_path.write_text(
-    json.dumps(batch_run.to_dict(), ensure_ascii=False, separators=(',', ':')),
-    encoding="utf-8",
-)
-os.replace(tmp_path, path)   # 原子操作，寫入完成才替換
+@lru_cache(maxsize=8)
+def _load_image_cached(path: str):
+    import cv2
+    return cv2.imread(path, cv2.IMREAD_UNCHANGED)
 ```
+或在 dialog 內以 dict + FIFO 實作。
 
-**注意**：同時移除 `indent=2`，改用 `separators=(',', ':')` 壓縮格式，
-可大幅減少檔案大小與序列化時間（對 13000 張圖的 batch 影響尤其明顯）。
-
-**影響範圍**：`src/core/batch_run_store.py`（`save()` 與 `save_multi()` 兩處）
+**影響範圍**：`src/gui/klarf_export_dialog.py`
 
 ---
 
-### [H3] `image_loader.py` — `img.ptp()` NumPy 2.0 已移除
+### [M10] `klarf_parser.py` — 階層式 KLARF 多 `DefectRecordSpec` 區塊處理待驗證
 
-**位置**：`src/core/image_loader.py`，函式 `load_grayscale()`
+**位置**：`src/core/klarf_parser.py`
 
 **問題描述**：
-`ndarray.ptp()` 方法在 NumPy 2.0 中已被正式移除（deprecated since 1.x）。
-目前在處理非 uint8 影像時使用此方法，在 NumPy 2.0 環境下會直接 `AttributeError` 崩潰。
-
-**目前程式碼**：
-```python
-img = ((img - img.min()) / (img.ptp() + 1e-9) * 255).astype(np.uint8)
-```
+2026-04-27 的 `bbfebe9` commit 加入階層式 KLARF 支援，但若 KLARF 檔案中有
+多個 `DefectRecordSpec` 區塊（不同 Sample/Wafer），目前實作只解析第一個。
+需以實際多 Sample KLARF 樣本驗證並補強。
 
 **修正方式**：
-```python
-img = ((img - img.min()) / ((img.max() - img.min()) + 1e-9) * 255).astype(np.uint8)
-```
+新增測試樣本，逐一驗證每個 `DefectRecordSpec` 區塊都能被解析、合併到對應的
+`SampleRecord` 下。
 
-**影響範圍**：`src/core/image_loader.py`
-
----
-
-## 中優先修復項目
+**影響範圍**：`src/core/klarf_parser.py`、`tests/test_klarf_parser.py`（待新增）
 
 ---
 
-### [M1] `report_workspace.py` — `ExportDialog` tasks 為空時無任何提示
+## 低優先
 
-**位置**：`src/gui/workspaces/report_workspace.py`，函式 `_export_dialog_clicked()`
+---
+
+### [L3] `measurement_engine.py` — `quality_score` PASS 路徑未設定
+
+**位置**：`src/core/measurement_engine.py`，`_worker_run_image()`
 
 **問題描述**：
-當使用者在 Export Dialog 中沒有勾選任何格式（或所有格式都因條件不符被跳過），
-`tasks` list 為空，函式直接 `return` 結束，使用者完全不知道為何沒有任何動作發生。
-
-**目前程式碼**：
-```python
-if not tasks:
-    return
-```
-
-**修正方式**：
-```python
-if not tasks:
-    QMessageBox.information(
-        self,
-        "未選擇任何輸出格式",
-        "請至少勾選一種匯出格式（Excel、JSON、HTML 或圖片）。",
-    )
-    return
-```
-
-**影響範圍**：`src/gui/workspaces/report_workspace.py`
-
----
-
-### [M2] `batch_dialog.py` — X 軸 Blob 座標轉換與 `_rot_blob_to_ori` 不一致（差 1px）
-
-**位置**：`src/gui/batch_dialog.py`，函式 `_process_one()` 中 X 軸 blob 轉換段落
-
-**問題描述**：
-Legacy batch dialog 在處理 X-CD 時，blob 座標從旋轉空間轉回原始影像空間的公式，
-與 `cmg_recipe.py` 的 `_rot_blob_to_ori()` 函式不一致，導致差 1px 的系統性偏移。
-
-**目前程式碼**（`batch_dialog.py`）：
-```python
-blobs = [Blob(
-    label=b.label,
-    x0=b.y0, y0=(h - 1) - (b.x1 - 1),
-    x1=b.y1, y1=(h - 1) - b.x0 + 1,
-    area=b.area, cx=b.cy, cy=(h - 1) - b.cx
-) for b in blobs]
-```
-
-**`_rot_blob_to_ori()` 的正確公式**（`cmg_recipe.py`）：
-```python
-ox0 = int(b.y0)
-oy0 = int(orig_h - b.x1)
-ox1 = int(b.y1)
-oy1 = int(orig_h - b.x0)
-```
-
-**修正方式**：
-在 `batch_dialog.py` 頂部 import `_rot_blob_to_ori`，並將 blob 轉換改為：
-```python
-from ..core.recipes.cmg_recipe import _rot_blob_to_ori
-# ...
-if axis.startswith("X"):
-    blobs = [_rot_blob_to_ori(b, h) for b in blobs]
-```
-
-**影響範圍**：`src/gui/batch_dialog.py`
-
----
-
-### [M3] `file_tree_panel.py` — 缺少 `root_path()` 方法，file count 永不顯示
-
-**位置**：`src/gui/file_tree_panel.py`
-
-**問題描述**：
-`browse_workspace.py` 的 `_update_file_count()` 呼叫 `self._tree.root_path()`，
-但 `FileTreePanel` 類別從未實作此方法。
-目前靠 `hasattr` 保護不會崩潰，但 file count 標籤永遠顯示空白。
-
-**目前程式碼**（`file_tree_panel.py`）：
-缺少 `root_path()` 方法，且 `set_root()` 沒有記錄 root 路徑。
-
-**修正方式**：
-```python
-class FileTreePanel(QTreeWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._root: Path | None = None   # 新增
-        # ... 其餘不變
-
-    def set_root(self, folder: str | Path) -> None:
-        self.clear()
-        self._root = Path(folder)        # 新增：記錄 root
-        self._populate(self.invisibleRootItem(), self._root)
-        self.expandAll()
-
-    def root_path(self) -> Path | None:  # 新增方法
-        return self._root
-```
-
-**影響範圍**：`src/gui/file_tree_panel.py`
-
----
-
-### [M4] `report_generator.py` — HTML 報告 fail_list 未做 `html.escape()`
-
-**位置**：`src/output/report_generator.py`，函式 `_render_html()`
-
-**問題描述**：
-失敗影像的檔名（`fail_list`）直接插入 HTML，若路徑包含 `<`、`>`、`&` 等字元，
-會造成 HTML 版面破裂，甚至產生 XSS 風險（若路徑來自外部輸入）。
-
-**目前程式碼**：
-```python
-fail_items = "".join(f"<li>{name}</li>" for name in fail_list) or "<li>None</li>"
-```
-
-**修正方式**：
-```python
-import html as _html
-fail_items = "".join(
-    f"<li>{_html.escape(name)}</li>" for name in fail_list
-) or "<li>None</li>"
-```
-
-同時檢查 `generate_multi_dataset_report()` 中 dataset label 是否也需要 escape：
-```python
-# 修正前
-f"<h2>{label}</h2>"
-# 修正後
-f"<h2>{_html.escape(label)}</h2>"
-```
-
-**影響範圍**：`src/output/report_generator.py`
-
----
-
-## 低優先修復項目
-
----
-
-### [L1] `recipe_workspace.py` — `_save_recipe()` 廢棄 EC key 永久累積
-
-**位置**：`src/gui/workspaces/recipe_workspace.py`，函式 `_save_recipe()`
-
-**問題描述**：
-`edge_locator_config` 使用 `**(desc.edge_locator_config.to_dict() if desc else {})` 
-先展開舊有 key，再覆蓋 UI 控制的 key。這樣舊版 Recipe JSON 中的廢棄 key
-（例如早期版本的 `"subpixel"` key）會永久保留在新存的 Recipe 中，
-隨著版本迭代導致 key 越積越多。
-
-**修正方式**：
-定義 canonical key set，存檔時只保留已知 key：
-
-```python
-_EC_CANONICAL_KEYS = {
-    "ycd_edge_method", "threshold_frac", "sample_lines_mode",
-    "aggregate_method", "profile_lpf_enabled", "profile_lpf_sigma",
-    "x_overlap_ratio", "y_cluster_tol", "border_margin_px", "x_inset_px",
-    "subpixel_half_col", "subpixel_search_half", "subpixel_proximity",
-    "subpixel_smooth_k", "subpixel_min_grad_frac", "subpixel_peak_ratio",
-}
-
-# _save_recipe() 中的 edge_locator_config 改為：
-edge_locator_config=RecipeConfig(data={
-    # 只保留 canonical keys（過濾廢棄 key）
-    **{k: v for k, v in (desc.edge_locator_config.to_dict() if desc else {}).items()
-       if k in _EC_CANONICAL_KEYS},
-    # UI 控制的 key 直接覆蓋
-    "ycd_edge_method":     self._edge_method.currentData(),
-    "threshold_frac":      self._threshold_frac.value(),
-    # ... 其餘不變
-}),
-```
-
-**影響範圍**：`src/gui/workspaces/recipe_workspace.py`
-
----
-
-### [L2] `klarf_exporter.py` — XREL/YREL 欄位名稱大小寫混合時靜默略過
-
-**位置**：`src/core/klarf_exporter.py`，函式 `KlarfTopNExporter.export()` 中更新座標的段落
-
-**問題描述**：
-目前只比對全大寫（`"XREL"`）或全小寫（`"xrel"`），若 KLARF 廠商使用混合大小寫
-（例如 `"Xrel"`、`"XRel"`），座標不會被更新，但也不會報錯，靜默略過。
-
-**目前程式碼**：
-```python
-if "XREL" in d:
-    d["XREL"] = str(int(round(item["xrel_new"])))
-elif "xrel" in d:
-    d["xrel"] = str(int(round(item["xrel_new"])))
-```
-
-**修正方式**：
-```python
-# 找出實際的 key 名稱（不分大小寫）
-xrel_key = next((k for k in d if k.lower() == "xrel"), None)
-yrel_key = next((k for k in d if k.lower() == "yrel"), None)
-
-if xrel_key:
-    d[xrel_key] = str(int(round(item["xrel_new"])))
-if yrel_key:
-    d[yrel_key] = str(int(round(item["yrel_new"])))
-```
-
-**同樣修正** `klarf_writer.py` 的 `_serialise_defect()` 中的欄位比對邏輯。
-
-**影響範圍**：`src/core/klarf_exporter.py`、`src/core/klarf_writer.py`
-
----
-
-### [L3] `measurement_engine.py` — `quality_score` 只在 FAIL 路徑設定
-
-**位置**：`src/core/measurement_engine.py`，函式 `_worker_run_image()`
-
-**問題描述**：
-`quality_score` 在影像通過品質檢查（PASS）後不會被設定到 `result` dict，
+`quality_score` 在 PASS 路徑（影像通過品質檢查）後不會被設定到 `result` dict，
 導致 OK 結果的 result dict 缺少此 key，下游若嘗試讀取 `result["quality_score"]`
-會 `KeyError`。
-
-**目前程式碼**：
-```python
-result["quality_score"] = round(lap_score, 2)
-thr = float(args.get("quality_lap_threshold", 140.0))
-if lap_score < thr:
-    result["status"] = "FAIL"
-    result["error"] = (...)
-    return result   # ← quality_score 有設定
-# 之後沒有再設定 quality_score，OK 路徑的 result 缺此 key
-```
+會 KeyError。
 
 **修正方式**：
-`quality_score` 在品質檢查後立即設定，不論 PASS 或 FAIL 都保留：
 ```python
 lap_score = check_lap_quality(_raw)
-result["quality_score"] = round(lap_score, 2)   # 先設定，不論結果
+result["quality_score"] = round(lap_score, 2)   # 先設定，PASS/FAIL 都保留
 thr = float(args.get("quality_lap_threshold", 140.0))
 if lap_score < thr:
     result["status"] = "FAIL"
@@ -359,20 +263,116 @@ if lap_score < thr:
 
 ---
 
-## 修復後驗證步驟
+### [L4] `image_viewer.py` — `nm_per_pixel=0` 時 ruler 計算可能除以零
+
+**位置**：`src/gui/image_viewer.py`，ruler / measurement 計算邏輯
+
+**問題描述**：
+若 ImageRecord 的 `pixel_size_nm` 為 0（罕見但可能發生：未校正樣本 + 手動清空 spinbox），
+ImageViewer 內的距離量測會除以 0 拋例外。應在 `set_nm_per_pixel()` 加入 guard
+（`max(value, 1e-6)`）。
+
+**影響範圍**：`src/gui/image_viewer.py`
+
+---
+
+### [L5] `klarf_export_dialog.py` — 含空白字元路徑可能 cv2.imread 失敗（Windows）
+
+**位置**：`src/gui/klarf_export_dialog.py`、`klarf_exporter.py`
+
+**問題描述**：
+Windows 上若影像路徑含中文或特殊字元，`cv2.imread()` 可能返回 None
+（cv2 對 UTF-8 路徑支援不完善）。應改用 `cv2.imdecode(np.fromfile(path, np.uint8), ...)`
+讀取，繞過 cv2 路徑限制。
+
+**修正方式**：
+```python
+def _imread_safe(path: str):
+    import cv2, numpy as np
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+        return cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+    except Exception:
+        return None
+```
+
+**影響範圍**：`src/gui/klarf_export_dialog.py`、`src/core/klarf_exporter.py`
+
+---
+
+### [L6] `recipe_workspace.py` — 空 Recipe combo 時 `currentData()` 為 None 缺保護
+
+**位置**：`src/gui/workspaces/recipe_workspace.py`
+
+**問題描述**：
+若 `~/.mmh/recipes/` 為空，Recipe combo 沒有任何項目，部分流程呼叫
+`currentData()` 取到 None 後直接拿來查找 registry，造成 AttributeError。
+應一律先檢查 `is not None`。
+
+**影響範圍**：`src/gui/workspaces/recipe_workspace.py`
+
+---
+
+### [L7] `annotator.py` — X-CD 標注 overlay 座標對齊待驗證
+
+**位置**：`src/core/annotator.py`、`src/core/recipes/cmg_recipe.py`
+
+**問題描述**：
+X-CD 模式下 blob 經過 `_rot_blob_to_ori()` 反轉座標回原圖，但 annotator 繪製
+overlay 時的座標是否完全對齊待驗證。需以 X-CD 實樣影像逐一比對 annotated PNG。
+
+**影響範圍**：`src/core/annotator.py`
+
+---
+
+## 規劃中（Phase D / Phase E）
+
+| 項目 | 描述 |
+|------|------|
+| Recipe SQLite 遷移 | `recipe_registry.py` 由 JSON 改為 SQLite（與 BatchRunStore 同步） |
+| Plugin 介面 | `BaseRecipe` 擴充為可插拔，支援第三方 Recipe 動態載入 |
+| Review Accept/Reject | ReviewWorkspace 加入 Accept / Reject / Mark False Detect 操作 |
+| Worker 上限保護 | Batch Worker 數加上限（CPU × 2 或 16 取小者） |
+| ValidationWorkspace 完善 | 黃金樣品驗證 UI 補完（目前後端已有，UI 待補） |
+| HistoryWorkspace 完善 | 歷史趨勢 UI 加入更多篩選與比對 |
+
+---
+
+# 三、本輪（Round3）潛在新發現待確認
+
+下列為 Round3 修改後可能衍生的新潛在風險，建議後續 session 觀察：
+
+| 觀察項 | 描述 |
+|--------|------|
+| KLARF overlay 影像預覽記憶體 | 4096×4096 大圖載入解碼 + `cv2.normalize` + 繪製 + scaledPixmap，每次選列約 60-80 MB 暫態，連續切換可能造成 GC 壓力。已列入 M9（LRU 快取） |
+| `BatchRunRecord.aborted` 欄位向後相容 | 舊版 SQLite DB 第一次開啟時 ALTER TABLE 加欄位，若使用者跨版本切換可能短暫看到 OperationalError；目前已用 `try/except` 包覆，舊 DB 也能正常開 |
+| `RecipeRegistry.save()` 並發寫入 | 多執行緒同時 save 同一 recipe_id 時，`os.replace()` 仍可能 race（後到者覆蓋前者）。目前 Recipe save 都在主執行緒，無實際風險，但 Phase D Plugin 介面落地後需重新評估 |
+| IQC 影像預覽 `_load_gray()` 共用 worker thread | 若使用者在掃描中途點選表格列，預覽會在主執行緒重複呼叫 `cv2.medianBlur`，與 worker 競爭 CPU；可考慮預覽路徑跳過 medianBlur（只顯示原圖） |
+
+---
+
+# 四、修復後驗證步驟
 
 ```bash
 # 1. 語法檢查（所有修改的檔案）
 python3 -m py_compile src/core/measurement_engine.py
 python3 -m py_compile src/core/batch_run_store.py
-python3 -m py_compile src/core/image_loader.py
+python3 -m py_compile src/core/recipe_registry.py
 python3 -m py_compile src/core/klarf_exporter.py
 python3 -m py_compile src/core/klarf_writer.py
+python3 -m py_compile src/core/klarf_parser.py
+python3 -m py_compile src/core/image_loader.py
 python3 -m py_compile src/output/report_generator.py
 python3 -m py_compile src/gui/file_tree_panel.py
 python3 -m py_compile src/gui/batch_dialog.py
-python3 -m py_compile src/gui/workspaces/report_workspace.py
+python3 -m py_compile src/gui/control_panel.py
+python3 -m py_compile src/gui/image_viewer.py
+python3 -m py_compile src/gui/klarf_export_dialog.py
+python3 -m py_compile src/gui/workspaces/measure_workspace.py
 python3 -m py_compile src/gui/workspaces/recipe_workspace.py
+python3 -m py_compile src/gui/workspaces/report_workspace.py
+python3 -m py_compile src/gui/workspaces/batch_workspace.py
+python3 -m py_compile src/gui/workspace_host.py
 
 # 2. 執行不依賴 numpy/cv2 的測試
 pytest tests/test_models.py tests/test_batch_run_store.py tests/test_history.py -v
@@ -383,9 +383,12 @@ pytest tests/ -v
 
 ---
 
-## 重要注意事項
+# 五、重要注意事項
 
 - **KLARF YREL 換算必須維持減號**：`YREL_new = YREL_orig - dy_nm`，勿改為加號
 - **`analyze()` gap edge** 必須使用 `upper.y1` / `lower.y0`（bbox 邊緣），不可改回 `cy ± height/2`
 - **全圖 MIN/MAX re-flag** 必須使用 `_flag_global_minmax`，確保整張圖只有一個 MIN 和一個 MAX
 - **核心演算法**（`cmg_analyzer.py`、`preprocessor.py`、`mg_detector.py`、`annotator.py`）除非有充分測試，否則不要修改
+- **Run Single 不再跳轉至 Review**（2026-04-27 後）：MeasureWorkspace 結果就地顯示，Review 仍透過 `run_completed` 訊號同步資料但不切換 tab
+- **ControlPanel `load_from_recipe_descriptor()`** 為 2026-04-27 新增方法：將 Recipe descriptor 套用到 cards，僅在 Measure workspace 切換 Recipe 時呼叫
+- **`BatchRunStore.close()`** 為 2026-04-27 新增方法：釋放 thread-local SQLite connection，建議在 MainWindow.closeEvent 呼叫（M5 待修）

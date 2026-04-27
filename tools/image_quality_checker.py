@@ -29,7 +29,7 @@ import numpy as np
 
 # ── PyQt6 imports ─────────────────────────────────────────────────────────────
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QDoubleSpinBox, QFileDialog, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox,
@@ -254,7 +254,10 @@ class ImageQualityChecker(QMainWindow):
         self._summary_label.setStyleSheet("font-size:12px; color:#555; padding:2px 0;")
         root.addWidget(self._summary_label)
 
-        # ── Results table ──────────────────────────────────────────────────────
+        # ── Results table + image preview (horizontal splitter) ───────────────
+        body_split = QSplitter(Qt.Orientation.Horizontal)
+        body_split.setChildrenCollapsible(False)
+
         self._table = QTableWidget(0, 7)
         self._table.setHorizontalHeaderLabels([
             "Status", "Filename", "Laplacian Var", "Tenengrad",
@@ -272,7 +275,34 @@ class ImageQualityChecker(QMainWindow):
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setSortingEnabled(True)
-        root.addWidget(self._table, 1)
+        self._table.currentCellChanged.connect(self._on_table_row_changed)
+        body_split.addWidget(self._table)
+
+        # 右側：即時影像預覽
+        preview_w = QWidget()
+        pv = QVBoxLayout(preview_w)
+        pv.setContentsMargins(8, 0, 0, 0)
+        pv.setSpacing(4)
+        preview_title = QLabel("Image Preview")
+        preview_title.setStyleSheet(
+            "color:#6a5a4a; font-size:11px; font-weight:600; padding:2px 4px;")
+        pv.addWidget(preview_title)
+        self._image_label = QLabel("Select a row to preview the image")
+        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image_label.setMinimumSize(280, 280)
+        self._image_label.setStyleSheet(
+            "background:#1a1a1a; color:#888; border:1px solid #c8b8a8;"
+            "border-radius:4px; font-size:11px;"
+        )
+        pv.addWidget(self._image_label, 1)
+        self._preview_meta = QLabel("")
+        self._preview_meta.setStyleSheet("color:#5a4a3a; font-size:11px; padding:2px 4px;")
+        self._preview_meta.setWordWrap(True)
+        pv.addWidget(self._preview_meta)
+        body_split.addWidget(preview_w)
+
+        body_split.setSizes([720, 360])
+        root.addWidget(body_split, 1)
 
         # ── Style ──────────────────────────────────────────────────────────────
         self.setStyleSheet("""
@@ -386,6 +416,9 @@ class ImageQualityChecker(QMainWindow):
         folder_item = QTableWidgetItem(str(Path(metrics["path"]).parent))
         err_item   = QTableWidgetItem(metrics.get("error", ""))
 
+        # 將完整 metrics dict 存到第 0 欄的 UserRole，供影像預覽使用
+        status_item.setData(Qt.ItemDataRole.UserRole, dict(metrics))
+
         for col, item in enumerate([status_item, name_item, lap_item, ten_item,
                                      fft_item, folder_item, err_item]):
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -396,6 +429,60 @@ class ImageQualityChecker(QMainWindow):
     def _on_progress(self, done: int, total: int, name: str) -> None:
         self._progress.setValue(done)
         self._status.showMessage(f"[{done}/{total}]  {name}")
+
+    # ── Image preview ─────────────────────────────────────────────────────────
+
+    def _on_table_row_changed(
+        self,
+        cur_row: int,
+        _cur_col: int,
+        _prev_row: int,
+        _prev_col: int,
+    ) -> None:
+        """選取列時即時顯示對應影像，方便視覺判斷 PASS/FAIL 是否合理。"""
+        if cur_row < 0:
+            self._image_label.setText("Select a row to preview the image")
+            self._image_label.setPixmap(QPixmap())
+            self._preview_meta.setText("")
+            return
+        item = self._table.item(cur_row, 0)
+        if item is None:
+            return
+        metrics = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(metrics, dict):
+            return
+        path = metrics.get("path", "")
+        if not path:
+            self._image_label.setText("(no path)")
+            return
+
+        gray = _load_gray(path)   # 已正規化為 uint8
+        if gray is None:
+            self._image_label.setText(f"無法載入影像：\n{Path(path).name}")
+            self._image_label.setPixmap(QPixmap())
+            self._preview_meta.setText("")
+            return
+
+        h, w = gray.shape
+        qi = QImage(gray.tobytes(), w, h, w, QImage.Format.Format_Grayscale8)
+        pix = QPixmap.fromImage(qi)
+        lw = max(self._image_label.width(),  100)
+        lh = max(self._image_label.height(), 100)
+        self._image_label.setPixmap(
+            pix.scaled(lw, lh, Qt.AspectRatioMode.KeepAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation)
+        )
+        passed = self._is_pass(metrics)
+        status = "PASS ✓" if passed else "FAIL ✗"
+        color  = "#2a7a2a" if passed else "#cc0000"
+        self._preview_meta.setText(
+            f"<span style='color:{color}; font-weight:600;'>{status}</span>  ·  "
+            f"{w}×{h} px  ·  Lap={metrics.get('laplacian_var', 0):.1f}  ·  "
+            f"Ten={metrics.get('tenengrad', 0):.0f}  ·  "
+            f"FFT={metrics.get('fft_hf_ratio', 0):.4f}<br>"
+            f"<span style='color:#888;'>{Path(path).name}</span>"
+        )
+        self._preview_meta.setTextFormat(Qt.TextFormat.RichText)
 
     def _on_scan_done(self) -> None:
         self._table.setSortingEnabled(True)

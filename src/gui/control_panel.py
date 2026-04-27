@@ -381,6 +381,100 @@ class ControlPanel(QWidget):
         cards = self.get_measurement_cards()
         return cards[0]["min_area"] if cards else 50
 
+    def load_from_recipe_descriptor(self, desc: object) -> None:
+        """清除現有 profiles，依 recipe descriptor 載入一個 profile（功能三）。"""
+        # 1. 移除所有現有 profiles
+        for p in list(self._profiles):
+            self._profiles_layout.removeWidget(p["_widget"])
+            p["_widget"].setParent(None)
+            p["_widget"].deleteLater()
+        self._profiles.clear()
+
+        # 2. 新增一個以 recipe 名稱為名的 profile
+        self._add_profile(getattr(desc, "recipe_name", "Recipe"))
+        if not self._profiles:
+            return
+        p = self._profiles[0]
+
+        pc = desc.preprocess_config
+        dc = desc.detector_config
+        axis_mode = str(getattr(desc, "axis_mode", "Y")).upper()
+
+        # 設定 widgets（阻擋訊號避免互相觸發）
+        def _bs(w):
+            """傳回 widget 並阻擋訊號。"""
+            w.blockSignals(True)
+            return w
+
+        # axis
+        _bs(p["axis"]).setCurrentIndex(0 if axis_mode == "Y" else 1)
+        p["axis"].blockSignals(False)
+
+        # gl_min / gl_max（先設 max 再設 min，避免 min>max 的校驗問題）
+        _bs(p["gl_max"]).setValue(int(pc.get("gl_max", 220)))
+        p["gl_max"].blockSignals(False)
+        _bs(p["gl_min"]).setValue(int(pc.get("gl_min", 100)))
+        p["gl_min"].blockSignals(False)
+
+        # preprocess
+        _bs(p["vert_erode_k"]).setValue(int(pc.get("vert_erode_k", 0)))
+        p["vert_erode_k"].blockSignals(False)
+        _bs(p["vert_erode_iter"]).setValue(int(pc.get("vert_erode_iter", 1)))
+        p["vert_erode_iter"].blockSignals(False)
+
+        # detector basic
+        min_area = dc.get("min_area") or 50
+        _bs(p["min_area"]).setValue(int(min_area))
+        p["min_area"].blockSignals(False)
+        _bs(p["min_aspect_ratio"]).setValue(float(dc.get("min_aspect_ratio", 0.0)))
+        p["min_aspect_ratio"].blockSignals(False)
+        _bs(p["max_aspect_ratio"]).setValue(float(dc.get("max_aspect_ratio", 0.0)))
+        p["max_aspect_ratio"].blockSignals(False)
+        _bs(p["min_width"]).setValue(int(dc.get("min_width", 0)))
+        p["min_width"].blockSignals(False)
+        _bs(p["max_width"]).setValue(int(dc.get("max_width", 0)))
+        p["max_width"].blockSignals(False)
+        _bs(p["min_height"]).setValue(int(dc.get("min_height", 0)))
+        p["min_height"].blockSignals(False)
+
+        # col mask strip
+        _bs(p["col_mask_enabled"]).setChecked(bool(dc.get("col_mask_enabled", False)))
+        p["col_mask_enabled"].blockSignals(False)
+        _bs(p["col_mask_auto_centers"]).setChecked(bool(dc.get("col_mask_auto_centers", False)))
+        p["col_mask_auto_centers"].blockSignals(False)
+        _bs(p["xproj_smooth_k"]).setValue(int(dc.get("xproj_smooth_k", 5)))
+        p["xproj_smooth_k"].blockSignals(False)
+        _bs(p["xproj_min_pitch_px"]).setValue(int(dc.get("xproj_min_pitch_px", 30)))
+        p["xproj_min_pitch_px"].blockSignals(False)
+        _bs(p["xproj_peak_min_frac"]).setValue(float(dc.get("xproj_peak_min_frac", 0.3)))
+        p["xproj_peak_min_frac"].blockSignals(False)
+        _bs(p["col_mask_start_x"]).setValue(int(dc.get("col_mask_start_x", 0)))
+        p["col_mask_start_x"].blockSignals(False)
+        _bs(p["col_mask_pitch_px"]).setValue(int(dc.get("col_mask_pitch_px", 44)))
+        p["col_mask_pitch_px"].blockSignals(False)
+        _bs(p["col_mask_width_px"]).setValue(int(dc.get("col_mask_width_px", 22)))
+        p["col_mask_width_px"].blockSignals(False)
+        _bs(p["col_mask_margin_px"]).setValue(int(dc.get("col_mask_margin_px", 4)))
+        p["col_mask_margin_px"].blockSignals(False)
+        _bs(p["col_mask_edge_margin_px"]).setValue(int(dc.get("col_mask_edge_margin_px", 0)))
+        p["col_mask_edge_margin_px"].blockSignals(False)
+        _bs(p["col_mask_regularize"]).setChecked(bool(dc.get("col_mask_regularize", False)))
+        p["col_mask_regularize"].blockSignals(False)
+        _bs(p["col_mask_pitch_tol_px"]).setValue(int(dc.get("col_mask_pitch_tol_px", 5)))
+        p["col_mask_pitch_tol_px"].blockSignals(False)
+        _bs(p["col_mask_normalize_x"]).setChecked(bool(dc.get("col_mask_normalize_x", True)))
+        p["col_mask_normalize_x"].blockSignals(False)
+
+        # range filter
+        _bs(p["range_enabled"]).setChecked(bool(dc.get("range_enabled", False)))
+        p["range_enabled"].blockSignals(False)
+        _bs(p["min_line_px"]).setValue(float(dc.get("min_line_px", 0.0)))
+        p["min_line_px"].blockSignals(False)
+        _bs(p["max_line_px"]).setValue(float(dc.get("max_line_px", 0.0)))
+        p["max_line_px"].blockSignals(False)
+
+        self._emit()
+
     def _emit(self) -> None:
         self.params_changed.emit(self.get_nm_per_pixel(), self.get_preprocess_params())
 
