@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS measurements (
     status         TEXT DEFAULT 'normal',
     review_state   TEXT DEFAULT 'unreviewed',
     extra_metrics  TEXT DEFAULT '{}',
+    state_name     TEXT DEFAULT '',
+    structure_name TEXT DEFAULT '',
     FOREIGN KEY (batch_id) REFERENCES batch_runs(batch_id)
 );
 
@@ -92,8 +94,9 @@ INSERT INTO measurements
     (batch_id, image_id, recipe_id, measurement_id,
      feature_type, feature_id, axis, raw_px, calibrated_nm,
      center_x, center_y, cmg_id, col_id, flag,
-     status, review_state, extra_metrics)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     status, review_state, extra_metrics,
+     state_name, structure_name)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 """
 
 _INSERT_IMG = """
@@ -126,6 +129,8 @@ def _meas_tuple(batch_id: str, m: dict) -> tuple:
         m.get("status", "normal"),
         m.get("review_state", "unreviewed"),
         _j(m.get("extra_metrics", {})),
+        m.get("state_name", ""),
+        m.get("structure_name", ""),
     )
 
 
@@ -156,6 +161,16 @@ class BatchRunStore:
         conn = self._get_conn()
         conn.executescript(_SCHEMA)
         conn.commit()
+        # Migrate existing DBs: add new columns if absent (idempotent)
+        for sql in (
+            "ALTER TABLE measurements ADD COLUMN state_name TEXT DEFAULT ''",
+            "ALTER TABLE measurements ADD COLUMN structure_name TEXT DEFAULT ''",
+        ):
+            try:
+                conn.execute(sql)
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -377,12 +392,12 @@ class BatchRunStore:
                     "status":         m["status"],
                     "review_state":   m["review_state"],
                     "extra_metrics":  json.loads(m["extra_metrics"] or "{}"),
-                    # Required MeasurementRecord fields not stored separately
+                    # Fields not stored in SQLite — restored to safe defaults
                     "bbox":           [0, 0, 0, 0],
                     "edge_points":    [],
                     "confidence":     1.0,
-                    "state_name":     "",
-                    "structure_name": "",
+                    "state_name":     m["state_name"] or "",
+                    "structure_name": m["structure_name"] or "",
                 }
                 for m in meas_rows
             ]
@@ -483,7 +498,7 @@ class BatchRunStore:
                FROM batch_runs br
                JOIN measurements m ON m.batch_id = br.batch_id
                WHERE m.status != 'rejected'
-                 AND br.parent_run_id IS NULL
+                 AND br.type != 'multi'
                  AND (? IS NULL OR m.recipe_id = ?)
                ORDER BY br.start_time ASC, br.batch_id""",
             (recipe_id, recipe_id),
