@@ -1,0 +1,274 @@
+================================================================================
+  MMH 專案 — 2026-04-22 Session Summary
+  涵蓋範圍：本次對話的完整還原過程、Bug 診斷、功能實作
+================================================================================
+
+--------------------------------------------------------------------------------
+一、Session 起點與背景
+--------------------------------------------------------------------------------
+
+本次 Session 是上一次對話的延續。上一個 Session 已完成五項主要改善
+（T1–T7，見下方二），並將所有變更 commit & push 至分支：
+  claude/fix-ui-freeze-update-methods-cBUWh
+
+但在那次 Session 結束前，使用者回報了兩個新 Bug：
+
+  Bug 1：Run Measure 三種方法（TC / Gradient / BBox）全部顯示 FAIL
+  Bug 2：Detail CD 按鈕按下去沒有任何反應
+
+本次 Session 的任務就是找出並修復這兩個問題。
+
+
+--------------------------------------------------------------------------------
+二、前一 Session 完成的五項改善（背景資訊）
+--------------------------------------------------------------------------------
+
+T1  刪除 History Tab
+    原因：_render_chart() 在主執行緒讀取所有 JSON + 呼叫 matplotlib，
+    導致 UI 凍結（freeze）
+    做法：刪除 history_workspace.py；workspace_host.py 移除 6 處相關程式碼
+
+T2  Subpixel → Gradient 更名
+    UI 標籤與內部 data key 統一改為 "gradient"
+    cmg_recipe.py 加入向後相容：讀到舊 key "subpixel" 自動轉換
+
+T3  Review Workspace 加入 Ruler 按鈕
+    header 區新增 checkable 按鈕，切換 ImageViewer 的 ruler mode
+
+T4  Y-CD 取樣策略可設定 + Detail CD 細節檢視
+    - cmg_recipe.py：新增 _compute_sample_xs()、_aggregate_values()
+    - apply_yedge_subpixel_to_cuts() 改為配對取樣（Paired Sampling）
+      在上下 blob 的 X 重疊區間取相同 x 位置，計算 individual_cds_nm
+    - _refine_meta 中新增儲存：sample_xs、upper_sample_ys、lower_sample_ys、
+      individual_cds_nm、aggregate_method
+    - UI：新增 Vertical lines（All / N evenly spaced）+ Aggregation 控件
+    - annotator.py：OverlayOptions 新增 show_detail 欄位；
+      新增 _draw_detail_measurements() 函式
+    - measure_workspace.py & review_workspace.py 各加 Detail CD 按鈕
+
+T5  方法動態分群 UI
+    BBox → 隱藏進階參數；TC → 顯示 Threshold level；Gradient → 只顯示取樣設定
+
+
+--------------------------------------------------------------------------------
+三、Bug 2 診斷過程（Detail CD 按鈕無效）
+--------------------------------------------------------------------------------
+
+症狀：
+  按下 Detail CD 按鈕，畫面上的標注線完全沒有變化（看不到個別取樣線）
+
+追蹤流程：
+
+  Step 1：確認 annotator.py 邏輯
+    draw_overlays() 中已正確判斷：
+      if opts.show_detail:
+          _draw_detail_measurements(...)
+      else:
+          _draw_measurement(...)
+    → 這層沒問題
+
+  Step 2：追蹤 _draw_detail_measurements()
+    函式第一步驟：
+      meta = getattr(m, "_refine_meta", None)
+      if meta is None or "sample_xs" not in meta:
+          _draw_measurement(...)  # fallback 至普通繪圖
+          return
+    → 如果 _refine_meta 是 None，就直接 fallback，看不出差異
+
+  Step 3：找出 _refine_meta 在哪裡消失
+    資料流：
+      量測核心 (cmg_recipe.py)
+        → m._refine_meta = { sample_xs, upper_sample_ys, ... }  ✓ 有存
+        → extra_metrics = { **getattr(m, "_refine_meta", {}) }   ✓ 有展開進去
+        → MeasurementRecord.extra_metrics                         ✓ 有存
+        ↓
+      顯示時 records_to_legacy_cuts() (_compat.py)
+        → YCDMeasurement(cmg_id=..., cd_px=..., ...)             ← 只重建基本欄位
+        → m._refine_meta 從未被設定！                            ✗ 資料在此遺失
+
+  根本原因：
+    _compat.py 的 records_to_legacy_cuts() 在「MeasurementRecord → YCDMeasurement」
+    轉換時，只搬了基本量測欄位，卻遺忘將 extra_metrics 中的取樣資料
+    還原回 _refine_meta。
+
+  修法（src/_compat.py）：
+    在建完 YCDMeasurement 物件之後，加入：
+
+      _refine_keys = (
+          "sample_xs", "upper_sample_ys", "lower_sample_ys",
+          "individual_cds_nm", "aggregate_method",
+      )
+      _meta = {k: r.extra_metrics[k] for k in _refine_keys if k in r.extra_metrics}
+      if _meta:
+          m._refine_meta = _meta
+
+    這樣 _draw_detail_measurements() 就能正常讀到取樣資料。
+
+  Commit：fix: restore _refine_meta in records_to_legacy_cuts for Detail CD view
+
+
+--------------------------------------------------------------------------------
+四、Bug 1 狀況說明（三種方法全部 FAIL）
+--------------------------------------------------------------------------------
+
+  調查範圍：
+    - cmg_recipe.py：compute_metrics()、apply_yedge_subpixel_to_cuts()
+    - measure_workspace.py：_analyze_with_cards()、_run_with_recipe()
+    - recipe_base.py：run_pipeline() 的 try/except 結構
+    - cmg_analyzer.py：analyze() 回傳邏輯
+    - annotator.py：OverlayOptions 欄位順序
+
+  調查結論：
+    透過靜態程式碼分析無法重現，所有路徑邏輯正確。
+    使用者在後續回覆中表示「Bug 1 不用修了」，可能為操作設定問題。
+
+
+--------------------------------------------------------------------------------
+五、新功能：1D Profile Gaussian LPF 預濾波
+--------------------------------------------------------------------------------
+
+背景與需求：
+  使用者詢問業界是否有對 1D profile 做低通濾波的做法。
+
+調查結果：
+  程式中已有 Moving Average（boxcar）濾波，由 smooth_k 參數控制（預設 5），
+  但未暴露在 UI 上，且業界主流（KLA、ASML 等 CDSEM 工具）使用的是
+  Gaussian LPF，頻率響應更佳（無 Gibbs 效應、不失真邊緣形狀）。
+
+決策：
+  保留原有 Moving Average，額外加入 Gaussian LPF 作為可選的前置濾波，
+  預設關閉，不影響現有行為。
+
+處理順序（每條取樣線）：
+  原始像素列
+    → X strip 取平均（1D profile 建立）
+    → [Gaussian LPF  σ px]  ← 新增，可開關
+    → Moving Average（smooth_k = 5）← 原有，固定
+    → 梯度峰值 / 門檻交叉偵測
+
+核心實作（cmg_recipe.py）：
+
+  新增 module-level helper：
+    def _gaussian_filter1d(profile, sigma):
+        k = max(3, int(6 * sigma) | 1)       # 奇數 kernel，寬度 ≈ 6σ
+        x = np.arange(k) - k // 2
+        kernel = np.exp(-0.5 * (x / sigma) ** 2)
+        kernel /= kernel.sum()
+        return np.convolve(profile, kernel, mode='same')
+    （純 numpy 實作，不依賴 scipy）
+
+  修改的函式：
+    _refine_yedge_subpixel()          ← 新增 profile_lpf_sigma 參數
+    _refine_yedge_threshold_crossing() ← 同上
+    _collect_edge_by_columns()         ← 透傳 profile_lpf_sigma
+    apply_yedge_subpixel_to_cuts()     ← 新增 profile_lpf_enabled / profile_lpf_sigma
+    compute_metrics()                   ← 讀取 edge_locator_config 並傳遞
+
+UI 實作（recipe_workspace.py + measure_workspace.py）：
+  在進階參數區塊（BBox 方法時隱藏）底部新增「─── Profile Filter ───」區段：
+    [✓ Gaussian LPF]  [1.0 px  σ ↕]
+  - checkbox 切換時啟用/停用 sigma spinbox
+  - 範圍：0.1–10.0 px；預設 1.0 px
+  - 存入 edge_locator_config：profile_lpf_enabled / profile_lpf_sigma
+
+
+--------------------------------------------------------------------------------
+六、scipy 相依性 Bug 修復
+--------------------------------------------------------------------------------
+
+問題：
+  第一版實作使用 from scipy.ndimage import gaussian_filter1d，
+  但此環境未安裝 scipy，勾選 checkbox 時報錯：
+    ModuleNotFoundError: No module named 'scipy'
+
+解法：
+  將 scipy 呼叫替換為上方的 _gaussian_filter1d() 純 numpy 實作，
+  效果完全相同（自建 Gaussian kernel + np.convolve），零額外相依。
+
+Commit：fix: replace scipy gaussian_filter1d with pure-numpy implementation
+
+
+--------------------------------------------------------------------------------
+七、Sigma 值說明（σ 代表什麼）
+--------------------------------------------------------------------------------
+
+  σ 控制 Gaussian kernel 的「寬度」，單位為像素：
+    σ 越大 → 曲線越平滑 → 去除更多高頻雜訊，但邊緣估計越模糊
+
+  建議參考值：
+    0（關閉）    → 不濾波，只有原本的 Moving Average（影像雜訊少時適用）
+    0.5–1.0 px  → 輕微平滑，幾乎不影響邊緣精度（一般推薦起點）
+    1.5–2.5 px  → 明顯去雜訊（高雜訊影像）
+    3.0 px 以上 → 強力平滑，邊緣細節可能被吃掉（通常不建議）
+
+
+--------------------------------------------------------------------------------
+八、Commit 歷程（本 Session）
+--------------------------------------------------------------------------------
+
+  hash 7cffb49  fix: restore _refine_meta in records_to_legacy_cuts for Detail CD view
+                (src/_compat.py)
+
+  hash 2303f8b  feat: add Gaussian LPF pre-filter option for 1D edge-detection profiles
+                (cmg_recipe.py, recipe_workspace.py, measure_workspace.py)
+
+  hash 03461ba  fix: replace scipy gaussian_filter1d with pure-numpy implementation
+                (cmg_recipe.py)
+
+  hash be66f7a  docs: add session log entries for 2026-04-22 changes
+                (SESSION_LOG.md)
+
+  分支：claude/fix-ui-freeze-update-methods-cBUWh
+
+
+--------------------------------------------------------------------------------
+九、修改檔案一覽
+--------------------------------------------------------------------------------
+
+  src/_compat.py
+    → records_to_legacy_cuts() 補回 _refine_meta 還原邏輯
+
+  src/core/recipes/cmg_recipe.py
+    → 新增 _gaussian_filter1d() helper
+    → _refine_yedge_subpixel() 新增 profile_lpf_sigma 參數
+    → _refine_yedge_threshold_crossing() 新增 profile_lpf_sigma 參數
+    → _collect_edge_by_columns() 透傳 profile_lpf_sigma
+    → apply_yedge_subpixel_to_cuts() 新增 profile_lpf_enabled / profile_lpf_sigma
+    → compute_metrics() 讀取並傳遞新參數
+
+  src/gui/workspaces/recipe_workspace.py
+    → Profile LPF checkbox + sigma spinbox（widget 建立、layout、載入、儲存）
+
+  src/gui/workspaces/measure_workspace.py
+    → Profile LPF checkbox + sigma spinbox（widget 建立、layout、recipe 載入、
+      _run_with_recipe 路徑、_analyze_with_cards 路徑）
+
+  SESSION_LOG.md
+    → 補寫兩筆 2026-04-22 session 記錄
+
+
+--------------------------------------------------------------------------------
+十、新電腦安裝備忘（本 Session 附帶說明）
+--------------------------------------------------------------------------------
+
+  1. 安裝 Python 3.11（python.org，Windows 記得勾 Add to PATH）
+  2. 解壓 zip 至任意資料夾，例如 C:\Projects\MMH
+  3. 開啟終端機，進入專案目錄
+       cd C:\Projects\MMH
+  4. 建立虛擬環境
+       python -m venv .venv
+  5. 啟動虛擬環境
+       Windows:  .venv\Scripts\activate
+       macOS/Linux: source .venv/bin/activate
+  6. 安裝相依套件
+       pip install -r requirements.txt
+  7. 執行
+       python main.py
+
+  PyCharm 設定：
+    File → Settings → Project → Python Interpreter → Add Existing → 選 .venv
+    Edit Configurations → + Python → Script: main.py → Working dir: MMH 根目錄
+
+================================================================================
+  End of Summary
+================================================================================
