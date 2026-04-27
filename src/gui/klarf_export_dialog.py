@@ -592,31 +592,61 @@ class KlarfExportDialog(QDialog):
                 )
                 return
 
-            # KLARF 座標(nm) → 影像像素（Y 軸反向）
-            def _klarf_to_px(xrel_nm: float, yrel_nm: float) -> tuple[int, int]:
-                px = int(round(cx + xrel_nm / nm_px))
-                py = int(round(cy - yrel_nm / nm_px))
-                return px, py
+            # ── 座標換算（這是先前 overlay 看不見的根本原因）────────────────
+            # XREL/YREL 是 KLARF 絕對座標（die corner 為原點），通常是
+            # 數百萬 nm 等級，不是相對影像中心的偏移。
+            #
+            # 從 exporter 的補正公式推回：
+            #   xrel_new = xrel_orig + (center_x - W/2) * nm_per_pixel
+            #   yrel_new = yrel_orig - (center_y - H/2) * nm_per_pixel
+            # 解得：
+            #   dx_px = (xrel_new - xrel_orig) / nm_per_pixel  → Orig→New X 偏移
+            #   dy_px = (yrel_orig - yrel_new) / nm_per_pixel  → Orig→New Y 偏移
+            #                                                    (Y 軸翻轉，故為 orig-new)
+            #
+            # 影像是以 Orig 為瞄準中心拍攝的：
+            #   Orig 在影像 = (W/2, H/2)         ← 永遠是影像中心
+            #   New  在影像 = (W/2+dx_px, H/2+dy_px)  ← 即 gap 中心 (center_x, center_y)
+            dx_px = (xrel_new - xrel_orig) / nm_px
+            dy_px = (yrel_orig - yrel_new) / nm_px
 
-            orig_pt = _klarf_to_px(xrel_orig, yrel_orig)
-            new_pt  = _klarf_to_px(xrel_new,  yrel_new)
+            orig_pt = (int(round(cx)), int(round(cy)))
+            new_pt  = (int(round(cx + dx_px)), int(round(cy + dy_px)))
 
-            # 步驟 3：尺寸依影像大小自適應（高解析度上 1px 線條會被縮放成不可見）
-            arm       = max(40, min(W, H) // 40)   # 4096 → 102，1024 → 40
-            thickness = max(2,  min(W, H) // 600)  # 4096 → 6，1024 → 2
+            # 鉗制至影像範圍（若 dx/dy 過大代表資料異常，仍畫但 clip 至邊界）
+            new_pt_clipped = (
+                max(0, min(W - 1, new_pt[0])),
+                max(0, min(H - 1, new_pt[1])),
+            )
+            out_of_bounds = new_pt != new_pt_clipped
+
+            # 步驟 3：尺寸依影像大小自適應
+            arm       = max(40, min(W, H) // 40)
+            thickness = max(2,  min(W, H) // 600)
             font      = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = max(0.6, min(W, H) / 1500)
             font_thick = max(1, thickness - 1)
 
             annotated = img.copy()
-            _draw_crosshair(annotated, orig_pt, color=(255, 80, 60),
+
+            # 從 Orig → New 畫箭頭，視覺化補正方向（先畫，避免覆蓋十字）
+            if abs(dx_px) > 1 or abs(dy_px) > 1:
+                cv2.arrowedLine(
+                    annotated, orig_pt, new_pt_clipped,
+                    color=(0, 255, 255),  # 黃色箭頭
+                    thickness=max(1, thickness - 1),
+                    line_type=cv2.LINE_AA,
+                    tipLength=0.05,
+                )
+
+            _draw_crosshair(annotated, orig_pt,         color=(255, 80, 60),
                             arm=arm, thickness=thickness)
-            _draw_crosshair(annotated, new_pt,  color=(40, 160, 240),
+            _draw_crosshair(annotated, new_pt_clipped,  color=(40, 160, 240),
                             arm=arm, thickness=thickness)
 
             # 文字說明（先畫黑色描邊提升對比，再畫彩色文字）
-            for label, pt, color in (("Orig", orig_pt, (255, 80, 60)),
-                                      ("New",  new_pt,  (40, 160, 240))):
+            for label, pt, color in (("Orig", orig_pt,       (255, 80, 60)),
+                                      ("New",  new_pt_clipped, (40, 160, 240))):
                 tx = pt[0] + arm // 2
                 ty = pt[1] - arm // 2
                 cv2.putText(annotated, label, (tx, ty), font, font_scale,
@@ -632,6 +662,12 @@ class KlarfExportDialog(QDialog):
                 pix.scaled(lw, lh, Qt.AspectRatioMode.KeepAspectRatio,
                            Qt.TransformationMode.SmoothTransformation)
             )
+            # 若 New 超出影像範圍，加狀態標記顯示偏移量
+            if out_of_bounds:
+                self._status_label.setText(
+                    f"⚠ New 座標 (Δ={dx_px:+.0f}, {dy_px:+.0f} px) 超出影像範圍，"
+                    f"已 clip 至邊界顯示。"
+                )
         except Exception as exc:
             self._image_label.setText(f"影像載入失敗：{exc}")
 

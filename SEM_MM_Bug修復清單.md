@@ -22,7 +22,8 @@
 
 | ID | 位置 | 簡述 |
 |----|------|------|
-| **KLARF overlay 修復** | `klarf_export_dialog.py` | 16-bit TIFF 影像未正規化 → cvtColor 後顏色 (200,100,60) 在 RGB888 顯示為近黑，十字看不見。改為 `cv2.normalize` 強制 uint8；十字尺寸與線寬依影像大小自適應（4096×4096 → arm=102, thickness=6）；加黑色描邊提升對比 |
+| **KLARF overlay 修復（根本原因）** | `klarf_export_dialog.py` | **十字跑到圖外面去**。XREL/YREL 是 KLARF 絕對座標（die corner 為原點，常為數百萬 nm），原本程式碼當成「相對影像中心的偏移」直接除以 nm_per_pixel，於是 px = cx + 數百萬，遠在影像外。修正：影像中心 (W/2, H/2) 即為 Orig 位置（影像以 Orig 為瞄準中心拍攝）；New 位置 = (W/2 + (xrel_new−xrel_orig)/nm_px, H/2 + (yrel_orig−yrel_new)/nm_px)；New 超出影像時 clip 至邊界並在狀態列顯示警告；加上 Orig→New 黃色箭頭視覺化補正方向 |
+| KLARF overlay 16-bit 正規化 | `klarf_export_dialog.py` | 同時加入：16-bit TIFF 強制 `cv2.normalize` 至 uint8；十字尺寸與線寬依影像大小自適應；文字加黑色描邊提升對比 |
 | **IQC 影像預覽** | `tools/image_quality_checker.py` | 結果表格右側新增即時影像預覽 QSplitter，選列即顯示對應 SEM 影像（使用 `_load_gray()` 已正規化結果），下方顯示 PASS/FAIL 顏色標記 + 三項 metrics |
 | **M6** | `klarf_export_dialog.py` | KLARF Export `nm_per_pixel=0` 時改為顯示警告文字，不再繪製假座標 |
 | **H2** | `recipe_registry.py` | `save()` 改為原子寫入：先寫 `.json.tmp` → `os.replace()` 替換；崩潰時不會留下半損毀 JSON |

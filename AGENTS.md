@@ -497,6 +497,7 @@ pytest tests/ -v
 | KLARF XREL/YREL | `klarf_exporter` 與 `klarf_writer` 均改用大小寫不敏感查詢（`k.lower() == "xrel"`），防混合大小寫靜默略過 |
 | **KLARF Export YREL 換算** | **`YREL_new = YREL_orig - dy_nm`（負號，Y 軸翻轉，勿改為加號）** |
 | **KLARF Export XREL 換算** | **`XREL_new = XREL_orig + dx_nm`（正號，X 方向一致）** |
+| **KLARF overlay 座標換算** | XREL/YREL 是 die-corner 絕對座標（常為數百萬 nm），**不能** 直接 `cx + xrel/nm_px`（會遠超影像範圍）。Orig 位置永遠是影像中心 (W/2, H/2)（影像以 Orig 為瞄準中心拍攝）；New 位置 = `(W/2 + (xrel_new−xrel_orig)/nm_px, H/2 + (yrel_orig−yrel_new)/nm_px)`，注意 Y 軸翻轉是 `orig−new`。超出影像時 clip 至邊界並提示偏移量 |
 | **KLARF overlay 顯示** | 影像必須先 `cv2.normalize` 至 uint8（16-bit TIFF 不正規化會導致線條顏色在 RGB888 顯示為近黑）；十字 arm/thickness 應依影像大小 scale（4096×4096 至少 arm=80, thickness=4）|
 | **Recipe JSON 原子寫入**（H2） | `RecipeRegistry.save()` 必須先寫 `.json.tmp` 再 `os.replace()`，不可直接 `path.write_text()` |
 | **`aborted` 旗標**（H4） | `BatchRunRecord.aborted` 與 `MultiDatasetBatchRun.aborted` 在 `abort_check` 觸發時設為 True；SQLite schema 新增 `aborted INTEGER DEFAULT 0` 欄，舊 DB 開啟時 ALTER TABLE 自動遷移 |
@@ -641,7 +642,8 @@ pytest tests/ -v
 
 | 編號 | 變更 | 主要檔案 |
 |------|------|---------|
-| KLARF overlay 不顯示 | 16-bit TIFF 統一 `cv2.normalize` 至 uint8；十字尺寸與線寬依影像大小自適應；加黑色描邊提升對比 | `klarf_export_dialog.py` |
+| KLARF overlay 看不見（**根本原因**） | XREL/YREL 是 die-corner 絕對座標（常為數百萬 nm），原本誤當成相對影像中心偏移 → 十字跑到圖外。修正為 Orig=影像中心、New=(W/2+(Δx)/nm_px, H/2+(Δy)/nm_px) | `klarf_export_dialog.py` |
+| KLARF overlay 視覺輔助 | 同時加上：16-bit TIFF 正規化、十字尺寸自適應、Orig→New 黃色箭頭、超出範圍 clip+警告 | `klarf_export_dialog.py` |
 | IQC 影像預覽 | 表格右側 `QSplitter` 加 image preview pane，選列即顯示對應影像 + PASS/FAIL 標記 | `tools/image_quality_checker.py` |
 | H2 原子寫入 | `RecipeRegistry.save()` 改為 `.tmp + os.replace` | `recipe_registry.py` |
 | H4 aborted 旗標 | 新增 `aborted: bool` 至 `BatchRunRecord` 與 `MultiDatasetBatchRun`；SQLite schema 加欄位 + ALTER 遷移 | `models.py`, `measurement_engine.py`, `batch_run_store.py` |

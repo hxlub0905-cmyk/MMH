@@ -280,7 +280,7 @@ pytest tests/test_history.py             # 歷史統計（4 項）
 | Bug Fix Round2 | ✅ 完成（2026-04-27） | H1 cv2.imwrite 回傳值驗證、H3 NumPy 2.0 ptp() 移除、M1 無任務 QMessageBox 警告、M2 X-CD blob _rot_blob_to_ori 修正、M3 FileTreePanel root_path()、M4 html.escape XSS 防護、L1 _EC_CANONICAL_KEYS 過濾廢棄鍵、L2 KLARF XREL/YREL 大小寫不敏感查詢 |
 | Phase D（部分） | ✅ 完成（2026-04-27） | BatchRunStore 遷移至 SQLite（WAL+Thread-local）、thread-safe QThread 存取、executemany 批量寫入、get_stats_for_recipe SQL JOIN；Plugin 介面、ValidationWorkspace、HistoryWorkspace 規劃中 |
 | UI Improvements + Bug Fix B1–B6 | ✅ 完成（2026-04-27） | 功能一 KLARF Export 進度條；功能二 KLARF Export 影像預覽 + 原始/新座標十字 overlay；功能三 Recipe 連動 ControlPanel Cards；功能四 Run Single 不再跳轉 Review；B1 worker 訊號洩漏；B2 _size_cache 上限；B3 BatchRunStore.close()；B4 nm_per_pixel=0 警告；B5 Nth Y-CD 降冪邊界值；B6 future.result() 例外捕捉 |
-| Round3 修復 + IQC 影像預覽 | ✅ 完成（2026-04-27） | 修正 KLARF Export 影像 overlay 不顯示問題（16-bit TIFF 正規化 + 十字尺寸自適應）；tools/image_quality_checker 加入即時影像預覽；H2 RecipeRegistry 原子寫入；H4 BatchRunRecord/MultiDatasetBatchRun 加 aborted 欄位 + SQLite 持久化；M6 順便修 |
+| Round3 修復 + IQC 影像預覽 | ✅ 完成（2026-04-27） | **修正 KLARF Export 影像 overlay 看不見的根本原因**：XREL/YREL 是 die-corner 絕對座標（常為百萬 nm 等級），原本誤當成相對影像中心偏移，十字跑到圖外。修正為 Orig=影像中心、New=從中心加上 (xrel_new−xrel_orig)/nm_px 偏移；同時加上 16-bit TIFF 正規化、十字尺寸自適應、Orig→New 黃色箭頭、超出範圍 clip 提示。tools/image_quality_checker 加入即時影像預覽；H2 RecipeRegistry 原子寫入；H4 BatchRunRecord/MultiDatasetBatchRun 加 aborted 欄位 + SQLite 持久化；M6 順便修 |
 
 ---
 
