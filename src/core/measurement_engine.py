@@ -84,6 +84,7 @@ class MeasurementEngine:
             }
             for future in as_completed(future_map):
                 if abort_check and abort_check():
+                    batch.aborted = True
                     break
                 done += 1
                 try:
@@ -144,6 +145,7 @@ class MeasurementEngine:
         offset = 0
         for i, ds in enumerate(datasets):
             if abort_check and abort_check():
+                mbr.aborted = True
                 break
             label = ds.get("label", f"Dataset {i+1}")
             if on_dataset_start:
@@ -171,6 +173,10 @@ class MeasurementEngine:
             br.dataset_label = label
             mbr.datasets.append(br)
             offset += len(ds["image_records"])
+            # 若 dataset 內部 run_batch 已中斷，整個 multi-batch 也視為中斷
+            if br.aborted:
+                mbr.aborted = True
+                break
         mbr.end_time = datetime.now(timezone.utc).isoformat()
         return mbr
 

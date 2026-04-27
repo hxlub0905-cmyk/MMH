@@ -18,6 +18,16 @@
 
 # 一、已修復清單（依完成日期排序，最新在上）
 
+## 2026-04-27 — Round3：H2/H4 + KLARF overlay 修復 + IQC 影像預覽 ✅
+
+| ID | 位置 | 簡述 |
+|----|------|------|
+| **KLARF overlay 修復** | `klarf_export_dialog.py` | 16-bit TIFF 影像未正規化 → cvtColor 後顏色 (200,100,60) 在 RGB888 顯示為近黑，十字看不見。改為 `cv2.normalize` 強制 uint8；十字尺寸與線寬依影像大小自適應（4096×4096 → arm=102, thickness=6）；加黑色描邊提升對比 |
+| **IQC 影像預覽** | `tools/image_quality_checker.py` | 結果表格右側新增即時影像預覽 QSplitter，選列即顯示對應 SEM 影像（使用 `_load_gray()` 已正規化結果），下方顯示 PASS/FAIL 顏色標記 + 三項 metrics |
+| **M6** | `klarf_export_dialog.py` | KLARF Export `nm_per_pixel=0` 時改為顯示警告文字，不再繪製假座標 |
+| **H2** | `recipe_registry.py` | `save()` 改為原子寫入：先寫 `.json.tmp` → `os.replace()` 替換；崩潰時不會留下半損毀 JSON |
+| **H4** | `models.py`, `measurement_engine.py`, `batch_run_store.py` | 新增 `aborted` 欄位至 `BatchRunRecord` 與 `MultiDatasetBatchRun`，`abort_check` 觸發時設為 True；SQLite schema 加 `aborted INTEGER DEFAULT 0` 欄並 ALTER TABLE 遷移；UI 可正確區分「正常完成」與「中斷」 |
+
 ## 2026-04-27 — UI Improvements + Bug Fix B1–B6 ✅
 
 | ID | 位置 | 簡述 |
@@ -82,75 +92,6 @@
 
 # 二、待修復清單
 
-## 高優先
-
----
-
-### [H2] `batch_run_store.py` — Recipe JSON 寫入仍非原子操作
-
-**位置**：`src/core/recipe_registry.py`，`save()` 函式
-
-**問題描述**：
-雖然 BatchRunStore 已遷移至 SQLite（原子事務），但 `RecipeRegistry.save()` 仍直接使用
-`path.write_text(...)` 寫入 Recipe JSON。若寫入過程中崩潰（強制關閉、斷電），
-會產生損毀 JSON，下次啟動時 `_load_all()` 雖然有 try/except 包覆但會靜默丟失該 Recipe。
-
-**目前程式碼**：
-```python
-path.write_text(
-    json.dumps(descriptor.to_dict(), indent=2, ensure_ascii=False),
-    encoding="utf-8",
-)
-```
-
-**修正方式**：
-```python
-import os
-tmp_path = path.with_suffix(".json.tmp")
-tmp_path.write_text(
-    json.dumps(descriptor.to_dict(), indent=2, ensure_ascii=False),
-    encoding="utf-8",
-)
-os.replace(tmp_path, path)   # 原子操作
-```
-
-**注意**：Phase D 後 Recipe 預計也遷移至 SQLite，此修正屬於過渡期保護。
-
-**影響範圍**：`src/core/recipe_registry.py`
-
----
-
-### [H4] `measurement_engine.py` — `run_multi_batch` 自身 abort 中途無清理
-
-**位置**：`src/core/measurement_engine.py`，`run_multi_batch()`
-
-**問題描述**：
-`run_multi_batch` 雖然在 `abort_check` 觸發時 `break` 跳出 dataset 迴圈，
-但已經完成的 dataset 結果保留，未完成的 dataset 完全被丟棄，UI 端可能顯示
-「批次中斷但缺少最後一個 dataset 的部分結果」。應在 `MultiDatasetBatchRun`
-中標記 `aborted=True` 並寫入 `end_time`，讓 UI 能正確區分「正常完成」與「中斷」。
-
-**修正方式**：
-```python
-@dataclass
-class MultiDatasetBatchRun:
-    # ... 既有欄位
-    aborted: bool = False     # 新增
-
-# run_multi_batch():
-for i, ds in enumerate(datasets):
-    if abort_check and abort_check():
-        mbr.aborted = True
-        break
-    ...
-mbr.end_time = datetime.now(timezone.utc).isoformat()
-return mbr
-```
-
-**影響範圍**：`src/core/models.py`、`src/core/measurement_engine.py`、`src/gui/workspaces/batch_workspace.py`
-
----
-
 ## 中優先
 
 ---
@@ -183,35 +124,6 @@ class _BatchWorker(QThread):
 ```
 
 **影響範圍**：`src/gui/main_window.py` 或 `src/gui/workspaces/batch_workspace.py`
-
----
-
-### [M6] `klarf_export_dialog.py` — 影像預覽 nm_per_pixel=0 時十字落在中心，無警告
-
-**位置**：`src/gui/klarf_export_dialog.py`，`_on_table_row_changed()`
-
-**問題描述**：
-本次（2026-04-27）的 B4 修正：當 `m.raw_px=0` 時 `nm_per_pixel` 改為 `0.0`。
-影像預覽程式碼遇到 `nm_px <= 0` 時會把十字落在影像中心：
-```python
-if nm_px > 0:
-    px = int(round(cx + xrel_nm / nm_px))
-    py = int(round(cy - yrel_nm / nm_px))
-else:
-    px, py = int(cx), int(cy)
-```
-這會誤導使用者以為原始與新座標是同一點。應改為顯示警告文字而非繪製假座標。
-
-**修正方式**：
-```python
-if nm_px <= 0:
-    self._image_label.setText(
-        f"⚠ 此 defect 的 nm/pixel 無法計算（raw_px=0），無法顯示座標 overlay。"
-    )
-    return
-```
-
-**影響範圍**：`src/gui/klarf_export_dialog.py`
 
 ---
 
@@ -425,7 +337,20 @@ overlay 時的座標是否完全對齊待驗證。需以 X-CD 實樣影像逐一
 
 ---
 
-# 三、修復後驗證步驟
+# 三、本輪（Round3）潛在新發現待確認
+
+下列為 Round3 修改後可能衍生的新潛在風險，建議後續 session 觀察：
+
+| 觀察項 | 描述 |
+|--------|------|
+| KLARF overlay 影像預覽記憶體 | 4096×4096 大圖載入解碼 + `cv2.normalize` + 繪製 + scaledPixmap，每次選列約 60-80 MB 暫態，連續切換可能造成 GC 壓力。已列入 M9（LRU 快取） |
+| `BatchRunRecord.aborted` 欄位向後相容 | 舊版 SQLite DB 第一次開啟時 ALTER TABLE 加欄位，若使用者跨版本切換可能短暫看到 OperationalError；目前已用 `try/except` 包覆，舊 DB 也能正常開 |
+| `RecipeRegistry.save()` 並發寫入 | 多執行緒同時 save 同一 recipe_id 時，`os.replace()` 仍可能 race（後到者覆蓋前者）。目前 Recipe save 都在主執行緒，無實際風險，但 Phase D Plugin 介面落地後需重新評估 |
+| IQC 影像預覽 `_load_gray()` 共用 worker thread | 若使用者在掃描中途點選表格列，預覽會在主執行緒重複呼叫 `cv2.medianBlur`，與 worker 競爭 CPU；可考慮預覽路徑跳過 medianBlur（只顯示原圖） |
+
+---
+
+# 四、修復後驗證步驟
 
 ```bash
 # 1. 語法檢查（所有修改的檔案）
@@ -457,7 +382,7 @@ pytest tests/ -v
 
 ---
 
-# 四、重要注意事項
+# 五、重要注意事項
 
 - **KLARF YREL 換算必須維持減號**：`YREL_new = YREL_orig - dy_nm`，勿改為加號
 - **`analyze()` gap edge** 必須使用 `upper.y1` / `lower.y0`（bbox 邊緣），不可改回 `cy ± height/2`

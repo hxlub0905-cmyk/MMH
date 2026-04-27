@@ -174,6 +174,7 @@ class BatchRunRecord:
     dataset_label: str = ""
     error_log: list[dict] = field(default_factory=list)
     output_manifest: dict = field(default_factory=dict)
+    aborted: bool = False   # H4：True 表示因 abort_check 中斷，非正常完成
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -189,6 +190,7 @@ class BatchRunRecord:
             "dataset_label": self.dataset_label,
             "error_log": self.error_log,
             "output_manifest": self.output_manifest,
+            "aborted": bool(self.aborted),
         }
 
     @staticmethod
@@ -206,6 +208,7 @@ class BatchRunRecord:
             dataset_label=d.get("dataset_label", ""),
             error_log=d.get("error_log", []),
             output_manifest=d.get("output_manifest", {}),
+            aborted=bool(d.get("aborted", False)),
         )
 
 
@@ -260,6 +263,7 @@ class MultiDatasetBatchRun:
     start_time: str = ""
     end_time: str = ""
     worker_count: int = 1
+    aborted: bool = False   # H4：True 表示中途收到 abort_check，未跑完所有 dataset
 
     @property
     def total_images(self) -> int:

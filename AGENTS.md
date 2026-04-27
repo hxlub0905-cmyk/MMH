@@ -1,7 +1,7 @@
 # AGENTS.md — SEM MM 開發指南
 
 本文件供 AI Agent 或開發者快速掌握 SEM MM 專案的架構、慣例與開發方式。
-最後更新：2026-04-27（UI Improvements + Bug Fix B1–B6 + Phase D SQLite + Round2）
+最後更新：2026-04-27（Round3：KLARF overlay 修復 + IQC 影像預覽 + H2/H4）
 
 ---
 
@@ -31,7 +31,8 @@
 | Phase D（部分） | BatchRunStore 遷移至 SQLite（`~/.mmh/runs.db`）；Recipe SQLite 遷移、Plugin 介面待完成 |
 | **UI Improvements 2026-04-27** | **功能一/二/三/四 完成**：KLARF Export 進度條；KLARF Export 影像預覽 + 十字 overlay；Recipe 連動 ControlPanel Cards；Run Single 不再跳轉 Review |
 | **Bug Fix B1–B6 2026-04-27** | B1 worker 訊號洩漏；B2 `_size_cache` 上限；B3 `BatchRunStore.close()`；B4 `nm_per_pixel=0` 警告；B5 Nth Y-CD 降冪邊界；B6 `future.result()` 例外捕捉 |
-| 未完成 Phase | C（Worker 上限保護、X-CD 標注修正）、D（Recipe SQLite、Plugin 介面）、待修：H2/H4/M5–M10/L3–L7（詳見 SEM_MM_Bug修復清單.md） |
+| **Round3 修復 2026-04-27** | **KLARF overlay 不顯示**（16-bit TIFF 未正規化 + 線條過細）已修；**IQC 影像預覽**新增；M6（nm_per_pixel=0 警告）；H2（RecipeRegistry 原子寫入）；H4（`aborted` 旗標 + SQLite 持久化） |
+| 未完成 Phase | C（Worker 上限保護、X-CD 標注修正）、D（Recipe SQLite、Plugin 介面）、待修：M5/M7/M8/M9/M10/L3–L7（詳見 SEM_MM_Bug修復清單.md） |
 
 ---
 
@@ -496,6 +497,9 @@ pytest tests/ -v
 | KLARF XREL/YREL | `klarf_exporter` 與 `klarf_writer` 均改用大小寫不敏感查詢（`k.lower() == "xrel"`），防混合大小寫靜默略過 |
 | **KLARF Export YREL 換算** | **`YREL_new = YREL_orig - dy_nm`（負號，Y 軸翻轉，勿改為加號）** |
 | **KLARF Export XREL 換算** | **`XREL_new = XREL_orig + dx_nm`（正號，X 方向一致）** |
+| **KLARF overlay 顯示** | 影像必須先 `cv2.normalize` 至 uint8（16-bit TIFF 不正規化會導致線條顏色在 RGB888 顯示為近黑）；十字 arm/thickness 應依影像大小 scale（4096×4096 至少 arm=80, thickness=4）|
+| **Recipe JSON 原子寫入**（H2） | `RecipeRegistry.save()` 必須先寫 `.json.tmp` 再 `os.replace()`，不可直接 `path.write_text()` |
+| **`aborted` 旗標**（H4） | `BatchRunRecord.aborted` 與 `MultiDatasetBatchRun.aborted` 在 `abort_check` 觸發時設為 True；SQLite schema 新增 `aborted INTEGER DEFAULT 0` 欄，舊 DB 開啟時 ALTER TABLE 自動遷移 |
 
 ---
 
@@ -560,10 +564,12 @@ pytest tests/ -v
 | 已修復 | klarf_export_dialog.py / klarf_exporter.py | 預覽表格無影像連動 + 原始/新座標十字 overlay（功能二） | ✅ 2026-04-27 |
 | 已修復 | control_panel.py / measure_workspace.py | 選 Recipe 不會帶出 Cards 參數（功能三） | ✅ 2026-04-27 |
 | 已修復 | workspace_host.py | Run Single 強制跳轉 Review，無法就地調整重跑（功能四） | ✅ 2026-04-27 |
-| 待修 H2 | recipe_registry.py | `save()` 非原子寫入，崩潰時可能損毀 JSON | 待修 |
-| 待修 H4 | measurement_engine.py | `run_multi_batch` abort 未標記 aborted 旗標 | 待修 |
+| 已修復 | klarf_export_dialog.py | KLARF Export 影像 overlay 看不見（16-bit TIFF 未正規化 + 線條過細） | ✅ Round3 |
+| 已修復 | tools/image_quality_checker.py | IQC 缺即時影像預覽，無法視覺判斷 PASS/FAIL 是否合理 | ✅ Round3 |
+| 已修復 H2 | recipe_registry.py | `save()` 非原子寫入，已改為 .tmp + os.replace | ✅ Round3 |
+| 已修復 H4 | models.py + measurement_engine.py + batch_run_store.py | `run_multi_batch` abort 未標記 aborted；新增 `aborted` 欄位 + SQLite 持久化 | ✅ Round3 |
+| 已修復 M6 | klarf_export_dialog.py | `nm_per_pixel=0` 時改為顯示警告而非繪製假座標 | ✅ Round3 |
 | 待修 M5 | main_window.py / batch_workspace.py | `BatchRunStore.close()` 從未被呼叫 | 待修 |
-| 待修 M6 | klarf_export_dialog.py | `nm_per_pixel=0` 時十字落在中心無警告 | 待修 |
 | 待修 M7 | control_panel.py | `load_from_recipe_descriptor` 觸發雙重 preview | 待修 |
 | 待修 M8 | measure_workspace.py | 切換 Recipe combo 直接覆蓋 Cards 設定無確認 | 待修 |
 | 待修 M9 | klarf_export_dialog.py | 高解析度影像每次重新解碼，缺 LRU 快取 | 待修 |
@@ -631,13 +637,23 @@ pytest tests/ -v
 | B5 | 「第 N 筆 Y-CD」stat card 依排序方向選 min/max | `klarf_export_dialog.py` |
 | B6 | Batch pool `future.result()` 包 try/except，記為單筆 FAIL | `measurement_engine.py` |
 
+#### Round3 修復（2026-04-27 完成）
+
+| 編號 | 變更 | 主要檔案 |
+|------|------|---------|
+| KLARF overlay 不顯示 | 16-bit TIFF 統一 `cv2.normalize` 至 uint8；十字尺寸與線寬依影像大小自適應；加黑色描邊提升對比 | `klarf_export_dialog.py` |
+| IQC 影像預覽 | 表格右側 `QSplitter` 加 image preview pane，選列即顯示對應影像 + PASS/FAIL 標記 | `tools/image_quality_checker.py` |
+| H2 原子寫入 | `RecipeRegistry.save()` 改為 `.tmp + os.replace` | `recipe_registry.py` |
+| H4 aborted 旗標 | 新增 `aborted: bool` 至 `BatchRunRecord` 與 `MultiDatasetBatchRun`；SQLite schema 加欄位 + ALTER 遷移 | `models.py`, `measurement_engine.py`, `batch_run_store.py` |
+| M6 順便修 | KLARF Export `nm_per_pixel=0` 改為警告文字 | `klarf_export_dialog.py` |
+
 ### Phase D 下一步（剩餘項目）
 
-1. **Recipe 遷移至 SQLite**：`recipe_registry.py` 目前仍用 `~/.mmh/recipes/*.json`，待遷移（H2 同步修正）
+1. **Recipe 遷移至 SQLite**：`recipe_registry.py` 目前仍用 `~/.mmh/recipes/*.json`，待遷移（H2 已先以原子寫入過渡）
 2. **Review 工作流程完善**：ReviewWorkspace 加入 Accept / Reject / Mark False Detect 操作，並記錄 review log
 3. **Plugin 介面**：BaseRecipe 擴充 plugin 載入機制，支援第三方 Recipe
 4. **Worker 上限保護**（Phase C 遺留）：Batch Worker 數量設定缺上限保護
-5. **B1–B6 衍生待修項目**：M5（close 未呼叫）、M6（nm_per_pixel=0 警告）、M7（雙重 preview）、M8（覆蓋 Cards 確認）、M9（影像快取）、M10（多 DefectRecordSpec）
+5. **剩餘待修**：M5（close 未呼叫）、M7（雙重 preview）、M8（覆蓋 Cards 確認）、M9（影像快取）、M10（多 DefectRecordSpec）、L3–L7
 
 ### 重要檔案路徑
 

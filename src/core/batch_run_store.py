@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS batch_runs (
     success_count INTEGER DEFAULT 0,
     fail_count    INTEGER DEFAULT 0,
     worker_count  INTEGER DEFAULT 1,
-    error_log     TEXT DEFAULT '[]'
+    error_log     TEXT DEFAULT '[]',
+    aborted       INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS image_results (
@@ -165,6 +166,7 @@ class BatchRunStore:
         for sql in (
             "ALTER TABLE measurements ADD COLUMN state_name TEXT DEFAULT ''",
             "ALTER TABLE measurements ADD COLUMN structure_name TEXT DEFAULT ''",
+            "ALTER TABLE batch_runs ADD COLUMN aborted INTEGER DEFAULT 0",   # H4
         ):
             try:
                 conn.execute(sql)
@@ -190,8 +192,8 @@ class BatchRunStore:
                 """INSERT OR REPLACE INTO batch_runs
                    (batch_id, type, dataset_label, input_folder, recipe_ids,
                     start_time, end_time, total_images, success_count, fail_count,
-                    worker_count, error_log)
-                   VALUES (?, 'single', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    worker_count, error_log, aborted)
+                   VALUES (?, 'single', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     batch_run.batch_id,
                     batch_run.dataset_label,
@@ -204,6 +206,7 @@ class BatchRunStore:
                     batch_run.fail_count,
                     batch_run.worker_count,
                     _j(batch_run.error_log),
+                    1 if batch_run.aborted else 0,
                 ),
             )
             conn.executemany(
@@ -247,8 +250,8 @@ class BatchRunStore:
                 """INSERT OR REPLACE INTO batch_runs
                    (batch_id, type, run_id, dataset_label, input_folder, recipe_ids,
                     start_time, end_time, total_images, success_count, fail_count,
-                    worker_count, error_log)
-                   VALUES (?, 'multi', ?, '', ?, '[]', ?, ?, ?, ?, ?, ?, '[]')""",
+                    worker_count, error_log, aborted)
+                   VALUES (?, 'multi', ?, '', ?, '[]', ?, ?, ?, ?, ?, ?, '[]', ?)""",
                 (
                     parent_batch_id,
                     mbr.run_id,
@@ -259,6 +262,7 @@ class BatchRunStore:
                     mbr.success_count,
                     mbr.fail_count,
                     mbr.worker_count,
+                    1 if mbr.aborted else 0,
                 ),
             )
             for ds in mbr.datasets:
@@ -267,8 +271,8 @@ class BatchRunStore:
                     """INSERT OR REPLACE INTO batch_runs
                        (batch_id, type, parent_run_id, dataset_label, input_folder,
                         recipe_ids, start_time, end_time, total_images, success_count,
-                        fail_count, worker_count, error_log)
-                       VALUES (?, 'single', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        fail_count, worker_count, error_log, aborted)
+                       VALUES (?, 'single', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         ds.batch_id,
                         parent_batch_id,
@@ -282,6 +286,7 @@ class BatchRunStore:
                         ds.fail_count,
                         ds.worker_count,
                         _j(ds.error_log),
+                        1 if ds.aborted else 0,
                     ),
                 )
                 conn.executemany(
@@ -412,6 +417,12 @@ class BatchRunStore:
                 "quality_score": ir["quality_score"],
             })
 
+        # 從 sqlite3.Row 讀 aborted（舊 DB 可能沒此欄位 → 預設 False）
+        try:
+            aborted_val = bool(row["aborted"])
+        except (IndexError, KeyError):
+            aborted_val = False
+
         return BatchRunRecord(
             batch_id=row["batch_id"],
             input_folder=row["input_folder"],
@@ -425,6 +436,7 @@ class BatchRunStore:
             dataset_label=row["dataset_label"],
             error_log=json.loads(row["error_log"] or "[]"),
             output_manifest={"results": results},
+            aborted=aborted_val,
         )
 
     def _load_multi(
@@ -439,11 +451,16 @@ class BatchRunStore:
                ORDER BY start_time""",
             (batch_id,),
         ).fetchall()
+        try:
+            parent_aborted = bool(parent_row["aborted"])
+        except (IndexError, KeyError):
+            parent_aborted = False
         mbr = MultiDatasetBatchRun(
             run_id=parent_row["run_id"] or batch_id,
             start_time=parent_row["start_time"],
             end_time=parent_row["end_time"],
             worker_count=parent_row["worker_count"],
+            aborted=parent_aborted,
         )
         for child in child_rows:
             ds = self._load_single(child["batch_id"], conn)

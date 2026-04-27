@@ -5,6 +5,7 @@ Recipes are stored as JSON files in ~/.mmh/recipes/<recipe_id>.json.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,12 +37,19 @@ class RecipeRegistry:
                 pass
 
     def save(self, descriptor: MeasurementRecipe) -> None:
+        """原子寫入 Recipe JSON（H2 修復）：先寫 .tmp，成功後 os.replace 替換。
+
+        若寫入過程崩潰，目標檔案保持原狀（非半損毀），
+        重啟後 _load_all() 仍可正常載入舊版本。
+        """
         descriptor.modified_at = datetime.now(timezone.utc).isoformat()
-        path = self._dir / f"{descriptor.recipe_id}.json"
-        path.write_text(
+        path     = self._dir / f"{descriptor.recipe_id}.json"
+        tmp_path = path.with_suffix(".json.tmp")
+        tmp_path.write_text(
             json.dumps(descriptor.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        os.replace(tmp_path, path)
         self._descriptors[descriptor.recipe_id] = descriptor
 
     def delete(self, recipe_id: str) -> bool:

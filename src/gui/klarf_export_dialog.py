@@ -562,13 +562,20 @@ class KlarfExportDialog(QDialog):
 
         try:
             import cv2
+            import numpy as np
             img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
             if img is None:
                 self._image_label.setText(f"無法載入影像：\n{image_path}")
                 self._image_label.setPixmap(QPixmap())
                 return
 
-            # 轉為 BGR 3 通道（灰階或 BGRA 統一處理）
+            # 步驟 1：將位元深度標準化為 uint8（SEM TIFF 常為 16-bit，
+            # 否則 cvtColor 後 0-65535 範圍下，繪製顏色 (200,100,60) 在
+            # QImage Format_RGB888 顯示為近黑，十字會看不見）
+            if img.dtype != np.uint8:
+                img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
+            # 步驟 2：轉為 BGR 3 通道（灰階或 BGRA 統一處理）
             if img.ndim == 2:
                 img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
             elif img.shape[2] == 4:
@@ -577,29 +584,45 @@ class KlarfExportDialog(QDialog):
             H, W = img.shape[:2]
             cx, cy = W / 2.0, H / 2.0
 
+            # 若 nm/pixel 無法計算，顯示警告而非繪製假座標（M6）
+            if nm_px <= 0:
+                self._image_label.setText(
+                    f"⚠ 此 defect 的 nm/pixel 無法計算（raw_px=0），\n"
+                    f"無法顯示座標 overlay。"
+                )
+                return
+
             # KLARF 座標(nm) → 影像像素（Y 軸反向）
             def _klarf_to_px(xrel_nm: float, yrel_nm: float) -> tuple[int, int]:
-                if nm_px > 0:
-                    px = int(round(cx + xrel_nm / nm_px))
-                    py = int(round(cy - yrel_nm / nm_px))
-                else:
-                    px, py = int(cx), int(cy)
+                px = int(round(cx + xrel_nm / nm_px))
+                py = int(round(cy - yrel_nm / nm_px))
                 return px, py
 
             orig_pt = _klarf_to_px(xrel_orig, yrel_orig)
             new_pt  = _klarf_to_px(xrel_new,  yrel_new)
 
-            annotated = img.copy()
-            _draw_crosshair(annotated, orig_pt, color=(200, 100, 60),  arm=22, thickness=1)
-            _draw_crosshair(annotated, new_pt,  color=(40,  160, 220), arm=22, thickness=1)
+            # 步驟 3：尺寸依影像大小自適應（高解析度上 1px 線條會被縮放成不可見）
+            arm       = max(40, min(W, H) // 40)   # 4096 → 102，1024 → 40
+            thickness = max(2,  min(W, H) // 600)  # 4096 → 6，1024 → 2
+            font      = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = max(0.6, min(W, H) / 1500)
+            font_thick = max(1, thickness - 1)
 
-            # 文字說明
-            font  = cv2.FONT_HERSHEY_SIMPLEX
-            scale = max(0.35, min(W, H) / 1200)
-            cv2.putText(annotated, "Orig", (orig_pt[0] + 5, orig_pt[1] - 5),
-                        font, scale, (200, 100, 60), 1, cv2.LINE_AA)
-            cv2.putText(annotated, "New",  (new_pt[0]  + 5, new_pt[1]  - 5),
-                        font, scale, (40,  160, 220), 1, cv2.LINE_AA)
+            annotated = img.copy()
+            _draw_crosshair(annotated, orig_pt, color=(255, 80, 60),
+                            arm=arm, thickness=thickness)
+            _draw_crosshair(annotated, new_pt,  color=(40, 160, 240),
+                            arm=arm, thickness=thickness)
+
+            # 文字說明（先畫黑色描邊提升對比，再畫彩色文字）
+            for label, pt, color in (("Orig", orig_pt, (255, 80, 60)),
+                                      ("New",  new_pt,  (40, 160, 240))):
+                tx = pt[0] + arm // 2
+                ty = pt[1] - arm // 2
+                cv2.putText(annotated, label, (tx, ty), font, font_scale,
+                            (0, 0, 0), font_thick + 2, cv2.LINE_AA)
+                cv2.putText(annotated, label, (tx, ty), font, font_scale,
+                            color, font_thick, cv2.LINE_AA)
 
             pix = _bgr_to_pixmap(annotated)
             # 縮放至 label 大小（保持比例）
