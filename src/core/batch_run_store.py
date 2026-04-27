@@ -450,6 +450,15 @@ class BatchRunStore:
             mbr.datasets.append(ds)
         return mbr
 
+    def close(self) -> None:
+        """關閉目前執行緒的 SQLite connection（Bug B3：避免 Windows 檔案鎖定）。"""
+        if hasattr(self._local, "conn"):
+            try:
+                self._local.conn.close()
+            except Exception:
+                pass
+            del self._local.conn
+
     def delete(self, batch_id: str) -> bool:
         """刪除一筆記錄（含 image_results / measurements）。
 

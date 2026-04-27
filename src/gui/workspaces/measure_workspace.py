@@ -487,6 +487,9 @@ class MeasureWorkspace(QWidget):
         self._ec_cluster_tol.setValue(int(ec.get("y_cluster_tol", 10)))
         self._ec_border.setValue(int(ec.get("border_margin_px", 0)))
 
+        # 連動 ControlPanel cards（功能三）
+        self._ctrl.load_from_recipe_descriptor(desc)
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def set_image_record(self, ir: ImageRecord) -> None:

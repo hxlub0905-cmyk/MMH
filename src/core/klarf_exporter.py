@@ -143,6 +143,7 @@ class KlarfTopNExporter:
                 "defect":        defect,
                 "calibrated_nm": float(meas.get("calibrated_nm", 0.0)),
                 "image_stem":    stem,
+                "image_path":    image_path,
                 "xrel_orig":     xrel_orig,
                 "yrel_orig":     yrel_orig,
                 "xrel_new":      xrel_new,
@@ -189,13 +190,15 @@ class KlarfTopNExporter:
             output_defects.append(d)
 
             preview_rows.append({
-                "defect_id":  d.get("DEFECTID", d.get("defectid", "")),
-                "image_stem": item["image_stem"],
-                "ycd_nm":     item["calibrated_nm"],
-                "xrel_orig":  item["xrel_orig"],
-                "yrel_orig":  item["yrel_orig"],
-                "xrel_new":   item["xrel_new"],
-                "yrel_new":   item["yrel_new"],
+                "defect_id":    d.get("DEFECTID", d.get("defectid", "")),
+                "image_stem":   item["image_stem"],
+                "image_path":   item.get("image_path", ""),
+                "ycd_nm":       item["calibrated_nm"],
+                "xrel_orig":    item["xrel_orig"],
+                "yrel_orig":    item["yrel_orig"],
+                "xrel_new":     item["xrel_new"],
+                "yrel_new":     item["yrel_new"],
+                "nm_per_pixel": item["nm_per_pixel"],
             })
 
         # ── Step 8: write output KLARF ────────────────────────────────────────
@@ -269,9 +272,16 @@ def _build_lookup(batch_run: Any, ascending: bool) -> dict[str, dict[str, Any]]:
                 )
                 continue
 
-            nm_per_pixel = 1.0
             if m.raw_px and m.raw_px > 0:
                 nm_per_pixel = m.calibrated_nm / m.raw_px
+            else:
+                # raw_px=0 無法計算比例尺；略過座標調整（Bug B4）
+                _log.warning(
+                    "[exporter]   raw_px=0 for stem=%r meas_id=%s — "
+                    "cannot compute nm/px, coordinate adjustment will be skipped",
+                    stem, m.measurement_id,
+                )
+                nm_per_pixel = 0.0
 
             entry = {
                 "image_path":    image_path,
@@ -295,6 +305,7 @@ def _build_lookup(batch_run: Any, ascending: bool) -> dict[str, dict[str, Any]]:
 
 
 _size_cache: dict[str, tuple[int, int]] = {}
+_SIZE_CACHE_MAX = 500  # 超過此數量就清空，避免長時間使用記憶體無限增長（Bug B2）
 
 
 def _get_image_size(image_path: str) -> tuple[int, int] | None:
@@ -316,6 +327,8 @@ def _get_image_size(image_path: str) -> tuple[int, int] | None:
             )
             return None
         h, w = img.shape[:2]
+        if len(_size_cache) >= _SIZE_CACHE_MAX:
+            _size_cache.clear()
         _size_cache[image_path] = (w, h)
         _log.debug("[exporter] _get_image_size: %r → (%d, %d)", image_path, w, h)
         return (w, h)

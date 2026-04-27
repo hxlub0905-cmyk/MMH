@@ -71,11 +71,8 @@ class WorkspaceHost(QTabWidget):
             lambda _: self.setCurrentIndex(self.TAB_MEASURE)
         )
 
-        # Measure → Review
+        # Measure → Review（保留資料同步，但不自動跳轉；使用者在 Measure 就地查看結果）
         self._measure.run_completed.connect(self._review.load_result)
-        self._measure.run_completed.connect(
-            lambda _: self.setCurrentIndex(self.TAB_REVIEW)
-        )
 
         # Single-batch → Review + Report; navigate to Review
         self._batch.batch_completed.connect(self._review.load_batch_run)

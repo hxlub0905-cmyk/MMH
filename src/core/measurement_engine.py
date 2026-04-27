@@ -86,7 +86,18 @@ class MeasurementEngine:
                 if abort_check and abort_check():
                     break
                 done += 1
-                result_dict = future.result()
+                try:
+                    result_dict = future.result()
+                except Exception as exc:
+                    # Worker 崩潰或被取消（Bug B6）：記錄失敗而非讓整批中止
+                    img_path = future_map.get(future, "")
+                    result_dict = {
+                        "image_path": str(img_path),
+                        "status": "FAIL",
+                        "error": f"Worker exception: {exc}",
+                        "measurements": [],
+                        "cuts": [],
+                    }
                 results.append(result_dict)
                 if on_progress:
                     on_progress(done, total, Path(result_dict["image_path"]).name,
