@@ -14,7 +14,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-DEFAULT_LAP_THRESHOLD: float = 140.0
+DEFAULT_LAP_THRESHOLD: float = 145.0
 
 
 def check_lap_quality(img: np.ndarray) -> float:
