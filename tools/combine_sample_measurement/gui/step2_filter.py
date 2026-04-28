@@ -119,7 +119,7 @@ class Step2FilterWidget(QWidget):
         tg.addWidget(QLabel("低於此值的圖片視為模糊 (FAIL)："))
         self._thresh_spin = QDoubleSpinBox()
         self._thresh_spin.setRange(0.0, 100000.0)
-        self._thresh_spin.setValue(100.0)
+        self._thresh_spin.setValue(140.0)
         self._thresh_spin.setSingleStep(10.0)
         self._thresh_spin.setDecimals(1)
         tg.addWidget(self._thresh_spin)
