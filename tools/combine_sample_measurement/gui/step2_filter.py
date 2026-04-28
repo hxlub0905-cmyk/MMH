@@ -30,10 +30,18 @@ if str(_PROJECT_ROOT) not in sys.path:
 from tools.combine_sample_measurement.core.data_loader import _laplacian_var
 
 
+class _NumericItem(QTableWidgetItem):
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        try:
+            return float(self.text()) < float(other.text())
+        except (ValueError, TypeError):
+            return super().__lt__(other)
+
+
 # ── Background worker ─────────────────────────────────────────────────────────
 
 class _QualityWorker(QThread):
-    row_done = pyqtSignal(int, float)   # row_index, laplacian_score
+    row_done = pyqtSignal(int, float, int)  # row_index, laplacian_score, completed_count
     finished = pyqtSignal()
     error    = pyqtSignal(str)
 
@@ -42,10 +50,22 @@ class _QualityWorker(QThread):
         self._paths = image_paths
 
     def run(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         try:
-            for i, path in enumerate(self._paths):
-                score = _laplacian_var(path)
-                self.row_done.emit(i, score)
+            n = len(self._paths)
+            completed = 0
+            max_workers = min(6, max(1, n))
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futures = {ex.submit(_laplacian_var, p): i
+                           for i, p in enumerate(self._paths)}
+                for future in as_completed(futures):
+                    i = futures[future]
+                    try:
+                        score = future.result()
+                    except Exception:
+                        score = 0.0
+                    completed += 1
+                    self.row_done.emit(i, score, completed)
             self.finished.emit()
         except Exception as exc:
             self.error.emit(str(exc))
@@ -231,8 +251,8 @@ class Step2FilterWidget(QWidget):
         self._worker.error.connect(self._on_error)
         self._worker.start()
 
-    @pyqtSlot(int, float)
-    def _on_row_done(self, row_idx: int, score: float) -> None:
+    @pyqtSlot(int, float, int)
+    def _on_row_done(self, row_idx: int, score: float, completed: int) -> None:
         if self._df is None:
             return
         self._df.at[self._df.index[row_idx], "laplacian_score"] = score
@@ -241,13 +261,15 @@ class Step2FilterWidget(QWidget):
         pass_str  = "PASS" if score >= threshold else "FAIL"
 
         self._table.setSortingEnabled(False)
-        self._progress.setValue(row_idx + 1)
+        self._progress.setValue(completed)
 
         # find table row whose #-column matches row_idx
         for r in range(self._table.rowCount()):
             idx_item = self._table.item(r, self._COL_IDX)
             if idx_item and int(idx_item.text()) == row_idx:
-                self._table.item(r, self._COL_LAP).setText(f"{score:.1f}")
+                lap_item = self._table.item(r, self._COL_LAP)
+                if lap_item:
+                    lap_item.setText(f"{score:.1f}")
                 self._table.item(r, self._COL_PASS).setText(pass_str)
                 color = QColor("#d4edda") if pass_str == "PASS" else QColor("#f8d7da")
                 for c in range(self._table.columnCount()):
@@ -357,19 +379,19 @@ class Step2FilterWidget(QWidget):
                 pass_str = "PASS" if lap >= self._thresh_spin.value() else "FAIL"
             keep_str = "✓" if bool(row.get("keep", True)) else "✗"
 
-            vals = [
-                str(i),
-                str(row.get("source_dataset", "")),
-                str(row.get("image_file", "")),
-                f"{float(row.get('cd_nm', 0) or 0):.2f}",
-                lap_str,
-                pass_str,
-                keep_str,
+            cd_str = f"{float(row.get('cd_nm', 0) or 0):.2f}"
+            items = [
+                QTableWidgetItem(str(i)),
+                QTableWidgetItem(str(row.get("source_dataset", ""))),
+                QTableWidgetItem(str(row.get("image_file", ""))),
+                _NumericItem(cd_str),
+                _NumericItem(lap_str),
+                QTableWidgetItem(pass_str),
+                QTableWidgetItem(keep_str),
             ]
-            for c, v in enumerate(vals):
-                item = QTableWidgetItem(v)
+            for c, item in enumerate(items):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setData(Qt.ItemDataRole.UserRole, i)   # store df row index
+                item.setData(Qt.ItemDataRole.UserRole, i)
                 self._table.setItem(r, c, item)
 
         self._table.setSortingEnabled(True)

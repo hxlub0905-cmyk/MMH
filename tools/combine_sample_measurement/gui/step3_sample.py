@@ -24,6 +24,14 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 
+class _NumericItem(QTableWidgetItem):
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        try:
+            return float(self.text()) < float(other.text())
+        except (ValueError, TypeError):
+            return super().__lt__(other)
+
+
 class Step3SampleWidget(QWidget):
     """Sampling configuration panel."""
 
@@ -198,19 +206,18 @@ class Step3SampleWidget(QWidget):
             lap = row.get("laplacian_score", float("nan"))
             lap_str = f"{lap:.1f}" if not pd.isna(lap) else "—"
 
-            vals = [
-                str(int(row.get("new_did", 0))),
-                str(row.get("source_dataset", "")),
-                str(row.get("image_file", "")),
-                f"{float(row.get('cd_nm', 0) or 0):.2f}",
-                f"{float(row.get('nm_per_pixel', 0) or 0):.4f}",
-                lap_str,
-                str(row.get("old_did", "")),
-                _fmt(row.get("orig_xrel")),
-                _fmt(row.get("orig_yrel")),
+            items = [
+                _NumericItem(str(int(row.get("new_did", 0)))),
+                QTableWidgetItem(str(row.get("source_dataset", ""))),
+                QTableWidgetItem(str(row.get("image_file", ""))),
+                _NumericItem(f"{float(row.get('cd_nm', 0) or 0):.2f}"),
+                _NumericItem(f"{float(row.get('nm_per_pixel', 0) or 0):.4f}"),
+                _NumericItem(lap_str),
+                QTableWidgetItem(str(row.get("old_did", ""))),
+                _NumericItem(_fmt(row.get("orig_xrel"))),
+                _NumericItem(_fmt(row.get("orig_yrel"))),
             ]
-            for c, v in enumerate(vals):
-                item = QTableWidgetItem(v)
+            for c, item in enumerate(items):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._table.setItem(r, c, item)
 
