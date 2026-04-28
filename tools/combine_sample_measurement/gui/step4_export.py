@@ -31,6 +31,7 @@ from tools.combine_sample_measurement.core.exporter import (
     export_klarf, export_excel, export_overlay,
     draw_overlay_on_image, bgr_to_pixmap, _is_valid,
 )
+from tools.combine_sample_measurement.core.data_loader import compute_new_coords
 
 
 # ── Background worker ─────────────────────────────────────────────────────────
@@ -128,7 +129,8 @@ class Step4ExportWidget(QWidget):
         template_parsed: dict[str, Any],
         ds_klafs: dict[str, dict[str, Any]],
     ) -> None:
-        self._df             = df.copy()
+        # Compute corrected coordinates only for the N sampled rows (fast with PIL)
+        self._df             = compute_new_coords(df.copy())
         self._template_parsed = template_parsed
         self._ds_klafs       = ds_klafs
         self._fill_table()

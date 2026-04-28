@@ -42,12 +42,13 @@ class DatasetEntry:
 def load_dataset(
     entry: DatasetEntry,
     phase_cb: Callable[[str], None] | None = None,
-    coord_progress_cb: Callable[[int, int], None] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Parse one dataset's Excel + KLARF, return (df, parsed_klarf).
 
-    phase_cb(msg)            – called at each major phase (Excel, KLARF, coords)
-    coord_progress_cb(i, n)  – called per row during coordinate calculation
+    Coordinate calculation (new_xrel/new_yrel) is NOT done here —
+    it is deferred to Step 4 so it runs only for the final sampled rows.
+
+    phase_cb(msg) – called at each major phase for status display.
     """
     excel_path   = Path(entry.excel_path)
     image_folder = Path(entry.image_folder)
@@ -83,14 +84,12 @@ def load_dataset(
             orig_xrels.append(float("nan"))
             orig_yrels.append(float("nan"))
 
-    df["old_did"]   = old_dids
-    df["orig_xrel"] = orig_xrels
-    df["orig_yrel"] = orig_yrels
-
-    if phase_cb:
-        phase_cb("計算修正座標…")
-    df = _compute_new_coords(df, coord_progress_cb)
-
+    df["old_did"]    = old_dids
+    df["orig_xrel"]  = orig_xrels
+    df["orig_yrel"]  = orig_yrels
+    # new coords deferred — will be computed in Step 4 for sampled rows only
+    df["new_xrel"]   = float("nan")
+    df["new_yrel"]   = float("nan")
     df["laplacian_score"] = float("nan")
     df["keep"]    = True
     df["new_did"] = -1
@@ -204,7 +203,7 @@ def _get_image_size(image_path: str) -> tuple[int, int] | None:
         return None
 
 
-def _compute_new_coords(
+def compute_new_coords(
     df: pd.DataFrame,
     progress_cb: Callable[[int, int], None] | None = None,
 ) -> pd.DataFrame:

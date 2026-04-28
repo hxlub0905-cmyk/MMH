@@ -33,12 +33,9 @@ from tools.combine_sample_measurement.core.data_loader import (
 # ── Background worker ─────────────────────────────────────────────────────────
 
 class _LoadWorker(QThread):
-    # (dataset_idx, total_datasets, phase_message)
-    progress     = pyqtSignal(int, int, str)
-    # (row_i, row_total, detail_message)  — emitted per row during coord calc
-    row_progress = pyqtSignal(int, int, str)
-    finished     = pyqtSignal(object, dict, dict)
-    error        = pyqtSignal(str)
+    progress = pyqtSignal(int, int, str)   # dataset_cur, dataset_total, msg
+    finished = pyqtSignal(object, dict, dict)
+    error    = pyqtSignal(str)
 
     def __init__(self, entries: list[DatasetEntry], template_idx: int):
         super().__init__()
@@ -47,30 +44,17 @@ class _LoadWorker(QThread):
 
     def run(self) -> None:
         try:
-            dfs: list[pd.DataFrame]         = []
-            ds_klafs: dict[str, dict]        = {}
-            template_parsed: dict[str, Any]  = {}
+            dfs: list[pd.DataFrame]        = []
+            ds_klafs: dict[str, dict]       = {}
+            template_parsed: dict[str, Any] = {}
 
             total = len(self._entries)
             for i, entry in enumerate(self._entries):
-                # Phase callback: Excel / KLARF / coord phases
-                def _phase(msg: str, _i: int = i, _total: int = total) -> None:
-                    self.progress.emit(_i, _total,
-                                       f"[{_i+1}/{_total}] {entry.name}  —  {msg}")
+                def _phase(msg: str, _i: int = i, _t: int = total) -> None:
+                    self.progress.emit(_i, _t,
+                                       f"[{_i+1}/{_t}] {entry.name}  —  {msg}")
 
-                # Row-level progress during coordinate calculation
-                def _coord_cb(row_i: int, row_total: int,
-                               _name: str = entry.name) -> None:
-                    self.row_progress.emit(
-                        row_i, row_total,
-                        f"計算座標 {row_i+1}/{row_total}",
-                    )
-
-                df, parsed = load_dataset(
-                    entry,
-                    phase_cb=_phase,
-                    coord_progress_cb=_coord_cb,
-                )
+                df, parsed = load_dataset(entry, phase_cb=_phase)
                 dfs.append(df)
                 ds_klafs[entry.name] = parsed
                 if i == self._template_idx:
@@ -161,7 +145,6 @@ class Step1LoadWidget(QWidget):
         load_row.addStretch()
         root.addLayout(load_row)
 
-        # 主進度：Dataset 層級 (N datasets)
         self._status_lbl = QLabel("")
         self._status_lbl.setStyleSheet("color:#3f3428; font-size:11px;")
         root.addWidget(self._status_lbl)
@@ -172,18 +155,6 @@ class Step1LoadWidget(QWidget):
         self._progress_bar.setFormat("%v / %m  Dataset")
         self._progress_bar.hide()
         root.addWidget(self._progress_bar)
-
-        # 子進度：row 層級（計算座標時）
-        self._row_status_lbl = QLabel("")
-        self._row_status_lbl.setStyleSheet("color:#9a8a7a; font-size:10px;")
-        self._row_status_lbl.hide()
-        root.addWidget(self._row_status_lbl)
-
-        self._row_progress_bar = QProgressBar()
-        self._row_progress_bar.setFixedHeight(5)
-        self._row_progress_bar.setTextVisible(False)
-        self._row_progress_bar.hide()
-        root.addWidget(self._row_progress_bar)
 
         # ── Combined preview table ─────────────────────────────────────────────
         prev_grp = QGroupBox("合併預覽（載入後顯示）")
@@ -291,18 +262,13 @@ class Step1LoadWidget(QWidget):
         if self._worker and self._worker.isRunning():
             return
         self._load_btn.setEnabled(False)
-
-        n = len(entries)
-        self._progress_bar.setRange(0, n)
+        self._progress_bar.setRange(0, len(entries))
         self._progress_bar.setValue(0)
         self._progress_bar.show()
-        self._row_progress_bar.hide()
-        self._row_status_lbl.hide()
         self._status_lbl.setText("準備載入…")
 
         self._worker = _LoadWorker(entries, tmpl_idx)
         self._worker.progress.connect(self._on_progress)
-        self._worker.row_progress.connect(self._on_row_progress)
         self._worker.finished.connect(self._on_loaded)
         self._worker.error.connect(self._on_error)
         self._worker.start()
@@ -312,27 +278,14 @@ class Step1LoadWidget(QWidget):
         self._progress_bar.setMaximum(max(total, 1))
         self._progress_bar.setValue(cur)
         self._status_lbl.setText(msg)
-        # Mark completed dataset row as done
         finished_idx = cur - 1
         if 0 <= finished_idx < self._table.rowCount():
             self._table.setItem(finished_idx, self._COL_STATUS,
                                 QTableWidgetItem("✓ 已載入"))
 
-    @pyqtSlot(int, int, str)
-    def _on_row_progress(self, row_i: int, row_total: int, msg: str) -> None:
-        """Row-level progress during coordinate calculation."""
-        if not self._row_progress_bar.isVisible():
-            self._row_progress_bar.show()
-            self._row_status_lbl.show()
-        self._row_progress_bar.setRange(0, max(row_total, 1))
-        self._row_progress_bar.setValue(row_i)
-        self._row_status_lbl.setText(msg)
-
     @pyqtSlot(object, dict, dict)
     def _on_loaded(self, df: pd.DataFrame, ds_klafs: dict, template_parsed: dict) -> None:
         self._progress_bar.hide()
-        self._row_progress_bar.hide()
-        self._row_status_lbl.hide()
         self._load_btn.setEnabled(True)
         self._status_lbl.setText(f"✓ 載入完成，共 {len(df)} 筆")
         self._fill_preview(df)
@@ -341,8 +294,6 @@ class Step1LoadWidget(QWidget):
     @pyqtSlot(str)
     def _on_error(self, msg: str) -> None:
         self._progress_bar.hide()
-        self._row_progress_bar.hide()
-        self._row_status_lbl.hide()
         self._load_btn.setEnabled(True)
         self._status_lbl.setText("")
         QMessageBox.critical(self, "載入失敗", msg)
