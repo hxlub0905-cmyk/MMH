@@ -14,7 +14,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -39,19 +39,22 @@ class DatasetEntry:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def load_dataset(entry: DatasetEntry) -> tuple[pd.DataFrame, dict[str, Any]]:
+def load_dataset(
+    entry: DatasetEntry,
+    phase_cb: Callable[[str], None] | None = None,
+    coord_progress_cb: Callable[[int, int], None] | None = None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Parse one dataset's Excel + KLARF, return (df, parsed_klarf).
 
-    df columns:
-      source_dataset, image_file, image_path, axis, recipe_name,
-      cd_nm, cd_px, nm_per_pixel, cd_line_x_px, cd_line_y_px, flag,
-      old_did, orig_xrel, orig_yrel, new_xrel, new_yrel,
-      laplacian_score, keep, new_did
+    phase_cb(msg)            – called at each major phase (Excel, KLARF, coords)
+    coord_progress_cb(i, n)  – called per row during coordinate calculation
     """
     excel_path   = Path(entry.excel_path)
     image_folder = Path(entry.image_folder)
     klarf_path   = Path(entry.klarf_path)
 
+    if phase_cb:
+        phase_cb("讀取 Excel…")
     df = _read_excel(excel_path)
 
     df["source_dataset"] = entry.name
@@ -59,10 +62,14 @@ def load_dataset(entry: DatasetEntry) -> tuple[pd.DataFrame, dict[str, Any]]:
         lambda fn: str(image_folder / fn) if fn else ""
     )
 
+    if phase_cb:
+        phase_cb("解析 KLARF…")
     parsed = KlarfParser().parse(klarf_path)
     entry.parsed_klarf = parsed
     lookup = build_klarf_lookup(parsed)
 
+    if phase_cb:
+        phase_cb("配對 KLARF 座標…")
     old_dids, orig_xrels, orig_yrels = [], [], []
     for _, row in df.iterrows():
         stem = Path(str(row.get("image_file", ""))).stem.lower()
@@ -80,7 +87,9 @@ def load_dataset(entry: DatasetEntry) -> tuple[pd.DataFrame, dict[str, Any]]:
     df["orig_xrel"] = orig_xrels
     df["orig_yrel"] = orig_yrels
 
-    df = _compute_new_coords(df)
+    if phase_cb:
+        phase_cb("計算修正座標…")
+    df = _compute_new_coords(df, coord_progress_cb)
 
     df["laplacian_score"] = float("nan")
     df["keep"]    = True
@@ -168,25 +177,43 @@ _img_size_cache: dict[str, tuple[int, int]] = {}
 
 
 def _get_image_size(image_path: str) -> tuple[int, int] | None:
+    """Return (W, H) by reading only the image header — never the full pixel data."""
     cached = _img_size_cache.get(image_path)
     if cached:
         return cached
+    # PIL reads only the IFD/header for TIFF; milliseconds vs. seconds for cv2.imread
+    try:
+        from PIL import Image
+        with Image.open(image_path) as im:
+            w, h = im.size
+        if len(_img_size_cache) > 2000:
+            _img_size_cache.clear()
+        _img_size_cache[image_path] = (w, h)
+        return (w, h)
+    except Exception:
+        pass
+    # Fallback: cv2 (slow, but handles formats PIL cannot)
     try:
         img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
         if img is None:
             return None
         h, w = img.shape[:2]
-        if len(_img_size_cache) > 2000:
-            _img_size_cache.clear()
         _img_size_cache[image_path] = (w, h)
         return (w, h)
     except Exception:
         return None
 
 
-def _compute_new_coords(df: pd.DataFrame) -> pd.DataFrame:
+def _compute_new_coords(
+    df: pd.DataFrame,
+    progress_cb: Callable[[int, int], None] | None = None,
+) -> pd.DataFrame:
     new_xrels, new_yrels = [], []
-    for _, row in df.iterrows():
+    total = len(df)
+    for i, (_, row) in enumerate(df.iterrows()):
+        if progress_cb:
+            progress_cb(i, total)
+
         orig_xrel  = row.get("orig_xrel",  float("nan"))
         orig_yrel  = row.get("orig_yrel",  float("nan"))
         image_path = str(row.get("image_path", ""))
