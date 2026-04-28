@@ -147,6 +147,17 @@ class KlarfExportDialog(QDialog):
         hist_btn.setFixedHeight(28)
         hist_btn.clicked.connect(self._load_from_history)
         bg.addWidget(hist_btn)
+
+        # Dataset selector — shown only for multi-batch runs
+        self._ds_combo_label = QLabel("選擇 Dataset：")
+        self._ds_combo_label.setStyleSheet("color:#9a8a7a; font-size:11px;")
+        self._ds_combo = QComboBox()
+        self._ds_combo.setFixedHeight(26)
+        self._ds_combo.hide()
+        self._ds_combo_label.hide()
+        bg.addWidget(self._ds_combo_label)
+        bg.addWidget(self._ds_combo)
+
         lv.addWidget(batch_grp)
 
         # Top N + 升/降冪
@@ -386,18 +397,40 @@ class KlarfExportDialog(QDialog):
         if self._batch_run is None:
             self._batch_dot.setStyleSheet("color:#cc7b6c; font-size:12px; background:transparent;")
             self._batch_info_label.setText("（未載入）")
+            self._ds_combo.hide()
+            self._ds_combo_label.hide()
             return
         from ..core.models import MultiDatasetBatchRun
         if isinstance(self._batch_run, MultiDatasetBatchRun):
             n = self._batch_run.total_images
             d = len(self._batch_run.datasets)
             label = f"Multi-batch · {d} datasets · {n} 張影像"
+            # Populate dataset selector
+            self._ds_combo.blockSignals(True)
+            self._ds_combo.clear()
+            for ds in self._batch_run.datasets:
+                lbl = ds.dataset_label or ds.input_folder or "Dataset"
+                self._ds_combo.addItem(lbl)
+            self._ds_combo.blockSignals(False)
+            self._ds_combo.show()
+            self._ds_combo_label.show()
         else:
             n = self._batch_run.total_images
             label = f"Batch · {n} 張影像"
+            self._ds_combo.hide()
+            self._ds_combo_label.hide()
         self._batch_dot.setStyleSheet("color:#3e7f5d; font-size:12px; background:transparent;")
         self._batch_info_label.setText(label)
         self._batch_info_label.setStyleSheet("color:#3f3428; font-size:11px;")
+
+    def _effective_batch_run(self):
+        """Return the batch run to export: for multi-batch, return the selected dataset."""
+        from ..core.models import MultiDatasetBatchRun
+        if isinstance(self._batch_run, MultiDatasetBatchRun):
+            idx = self._ds_combo.currentIndex()
+            if 0 <= idx < len(self._batch_run.datasets):
+                return self._batch_run.datasets[idx]
+        return self._batch_run
 
     # ── Preview / Export ──────────────────────────────────────────────────────
 
@@ -405,7 +438,7 @@ class KlarfExportDialog(QDialog):
         if not self._klarf_path:
             QMessageBox.warning(self, "缺少輸入", "請選擇 KLARF 檔案。")
             return False
-        if self._batch_run is None:
+        if self._effective_batch_run() is None:
             QMessageBox.warning(self, "缺少 Batch 結果", "請載入 Batch 量測結果。")
             return False
         return True
@@ -442,7 +475,7 @@ class KlarfExportDialog(QDialog):
         ascending = bool(self._sort_combo.currentData())
         self._worker = _ExportWorker(
             klarf_path=self._klarf_path,
-            batch_run=self._batch_run,
+            batch_run=self._effective_batch_run(),
             top_n=self._topn_spin.value(),
             output_path=self._output_path or str(Path(self._klarf_path).parent / "output.klarf"),
             ascending=ascending,

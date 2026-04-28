@@ -598,9 +598,12 @@ class BatchWorkspace(QWidget):
 
     def _open_history_dialog(self) -> None:
         if not self._run_store:
+            QMessageBox.information(self, "歷史記錄", "Run store 未設定，無法載入歷史。")
             return
         dlg = _HistoryDialog(self._run_store, self)
         dlg.run_selected.connect(self._on_history_selected)
+        dlg.raise_()
+        dlg.activateWindow()
         dlg.exec()
 
     def _on_history_selected(self, file_path: str) -> None:
@@ -723,8 +726,14 @@ class _HistoryDialog(QDialog):
     def __init__(self, run_store: BatchRunStore, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Batch Run History")
-        self.setMinimumSize(680, 400)
+        self.setMinimumSize(680, 420)
         layout = QVBoxLayout(self)
+
+        self._empty_lbl = QLabel("尚無歷史記錄。請先執行 Batch 後再載入。")
+        self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_lbl.setStyleSheet("color:#9a8a7a; font-size:13px; padding:16px;")
+        self._empty_lbl.hide()
+        layout.addWidget(self._empty_lbl)
 
         self._table = QTableWidget(0, 6)
         self._table.setHorizontalHeaderLabels(
@@ -735,15 +744,20 @@ class _HistoryDialog(QDialog):
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         layout.addWidget(self._table)
 
+        self._err_lbl = QLabel("")
+        self._err_lbl.setStyleSheet("color:#a05020; font-size:11px;")
+        self._err_lbl.hide()
+        layout.addWidget(self._err_lbl)
+
         btn_row = QHBoxLayout()
-        load_btn  = QPushButton("Load Selected")
+        self._load_btn = QPushButton("Load Selected")
         del_btn   = QPushButton("Delete")
         close_btn = QPushButton("Close")
-        load_btn.clicked.connect(self._load)
+        self._load_btn.clicked.connect(self._load)
         del_btn.clicked.connect(self._delete)
         close_btn.clicked.connect(self.reject)
         btn_row.addStretch()
-        btn_row.addWidget(load_btn)
+        btn_row.addWidget(self._load_btn)
         btn_row.addWidget(del_btn)
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
@@ -753,8 +767,23 @@ class _HistoryDialog(QDialog):
         self._refresh()
 
     def _refresh(self) -> None:
-        self._summaries = self._run_store.list_runs()
+        try:
+            self._summaries = self._run_store.list_runs()
+        except Exception as exc:
+            self._err_lbl.setText(f"無法讀取歷史記錄：{exc}")
+            self._err_lbl.show()
+            self._summaries = []
+
         self._table.setRowCount(0)
+        if not self._summaries:
+            self._empty_lbl.show()
+            self._table.hide()
+            self._load_btn.setEnabled(False)
+            return
+
+        self._empty_lbl.hide()
+        self._table.show()
+        self._load_btn.setEnabled(True)
         for s in self._summaries:
             row = self._table.rowCount()
             self._table.insertRow(row)
@@ -770,10 +799,13 @@ class _HistoryDialog(QDialog):
                 item = QTableWidgetItem(v)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._table.setItem(row, col, item)
+        self._table.resizeColumnsToContents()
+        self._table.horizontalHeader().setStretchLastSection(True)
 
     def _load(self) -> None:
         row = self._table.currentRow()
         if row < 0:
+            QMessageBox.information(self, "提示", "請先選取一筆記錄。")
             return
         self.run_selected.emit(self._summaries[row]["file_path"])
         self.accept()

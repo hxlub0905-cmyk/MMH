@@ -925,7 +925,7 @@ class _ExportDialog(QDialog):
         )
         self._chk_per_dataset.setEnabled(has_multi_batch)
         if has_multi_batch:
-            self._chk_per_dataset.setChecked(False)
+            self._chk_per_dataset.setChecked(True)
 
         # Measurement mode selector (only relevant for Excel)
         meas_mode_row = QHBoxLayout()

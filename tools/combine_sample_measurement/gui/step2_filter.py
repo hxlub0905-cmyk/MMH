@@ -245,6 +245,7 @@ class Step2FilterWidget(QWidget):
         self._progress.setValue(0)
         self._progress.show()
 
+        self._status_lbl.setText(f"品質檢查中… 共 {len(paths)} 張")
         self._worker = _QualityWorker(paths)
         self._worker.row_done.connect(self._on_row_done)
         self._worker.finished.connect(self._on_quality_done)
@@ -256,33 +257,14 @@ class Step2FilterWidget(QWidget):
         if self._df is None:
             return
         self._df.at[self._df.index[row_idx], "laplacian_score"] = score
-
-        threshold = self._thresh_spin.value()
-        pass_str  = "PASS" if score >= threshold else "FAIL"
-
-        self._table.setSortingEnabled(False)
         self._progress.setValue(completed)
-
-        # find table row whose #-column matches row_idx
-        for r in range(self._table.rowCount()):
-            idx_item = self._table.item(r, self._COL_IDX)
-            if idx_item and int(idx_item.text()) == row_idx:
-                lap_item = self._table.item(r, self._COL_LAP)
-                if lap_item:
-                    lap_item.setText(f"{score:.1f}")
-                self._table.item(r, self._COL_PASS).setText(pass_str)
-                color = QColor("#d4edda") if pass_str == "PASS" else QColor("#f8d7da")
-                for c in range(self._table.columnCount()):
-                    cell = self._table.item(r, c)
-                    if cell:
-                        cell.setBackground(color)
-                break
-        self._table.setSortingEnabled(True)
 
     @pyqtSlot()
     def _on_quality_done(self) -> None:
         self._progress.hide()
         self._run_btn.setEnabled(True)
+        # Rebuild entire table once so all Laplacian/Pass columns are updated together
+        self._fill_table()
         self._update_counts()
         self._status_lbl.setText("品質檢查完成")
 
