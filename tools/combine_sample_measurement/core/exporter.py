@@ -306,7 +306,7 @@ def draw_overlay_on_image(
 def _draw_target_marker(img, center, color, arm=60, thickness=3):
     x, y    = center
     outer_r = arm // 2
-    inner_r = max(arm // 5, thickness * 2)
+    dot_r   = max(2, arm // 20)   # tiny center dot (arm=60→3px, arm=136→6px)
 
     # Outer ring — thin black outline + thin colored ring (no crosshair arms)
     ring_thick    = max(1, thickness // 2)
@@ -314,9 +314,9 @@ def _draw_target_marker(img, center, color, arm=60, thickness=3):
     cv2.circle(img, (x, y), outer_r, (0, 0, 0), outline_thick, cv2.LINE_AA)
     cv2.circle(img, (x, y), outer_r, color,      ring_thick,    cv2.LINE_AA)
 
-    # Center filled dot
-    cv2.circle(img, (x, y), inner_r + 1, (0, 0, 0), -1, cv2.LINE_AA)
-    cv2.circle(img, (x, y), inner_r,     color,      -1, cv2.LINE_AA)
+    # Tiny center dot
+    cv2.circle(img, (x, y), dot_r + 1, (0, 0, 0), -1, cv2.LINE_AA)
+    cv2.circle(img, (x, y), dot_r,     color,      -1, cv2.LINE_AA)
 
 
 def _draw_text_with_box(img, text, pos, fg, font=0, font_scale=0.8,
